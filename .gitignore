@@ -1,5 +1,45 @@
+# Build artifacts
 /target
+Cargo.lock
+
+# macOS
+.DS_Store
+._*
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Generated benchmark reports
 report/*.svg
 report/*.json
 report/*.txt
+
+# Generated scalability charts (copied to libviprs-org for publishing)
+scalability_*.svg
+scalability_*.json
+
+# Criterion HTML reports and saved baselines
+target/criterion/
+
+# Flame graph intermediaries
+perf.data
+perf.data.old
+*.folded
+flamegraph_*.svg
+
+# Benchmark fixtures (large files, not tracked)
 fixtures/*.pdf
+fixtures/*.tiff
+fixtures/*.tif
+fixtures/*.png
+fixtures/*.jpg
+fixtures/*.jpeg
+fixtures/*.raw
+
+# Docker build context artifacts
+*.tar
+*.tar.gz
