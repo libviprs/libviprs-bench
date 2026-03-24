@@ -1,0 +1,29 @@
+[package]
+name = "libviprs-bench"
+version = "0.1.0"
+edition = "2024"
+authors = ["Roman Goldmann <roman@devshell.org>"]
+rust-version = "1.85"
+publish = false
+
+[dependencies]
+libviprs = { path = "../libviprs" }
+criterion = { version = "0.5", features = ["html_reports"] }
+inferno = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "engine_comparison"
+harness = false
+
+[[bin]]
+name = "flamegraph"
+path = "src/flamegraph.rs"
+
+[[bin]]
+name = "report"
+path = "src/report.rs"

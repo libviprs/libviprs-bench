@@ -1,0 +1,4 @@
+/target
+report/*.svg
+report/*.json
+report/*.txt
