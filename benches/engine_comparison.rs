@@ -72,6 +72,7 @@ fn bench_streaming_engine(c: &mut Criterion) {
                     let config = StreamingConfig {
                         memory_budget_bytes: STREAMING_BUDGET,
                         engine: EngineConfig::default(),
+                        budget_policy: libviprs::streaming::BudgetPolicy::Error,
                     };
                     let strip_src = RasterStripSource::new(&src);
                     generate_pyramid_streaming(
@@ -95,6 +96,7 @@ fn bench_streaming_engine(c: &mut Criterion) {
                     let config = StreamingConfig {
                         memory_budget_bytes: STREAMING_BUDGET,
                         engine: EngineConfig::default().with_concurrency(4),
+                        budget_policy: libviprs::streaming::BudgetPolicy::Error,
                     };
                     let strip_src = RasterStripSource::new(&src);
                     generate_pyramid_streaming(
@@ -203,6 +205,7 @@ fn bench_head_to_head(c: &mut Criterion) {
                     let config = StreamingConfig {
                         memory_budget_bytes: STREAMING_BUDGET,
                         engine: EngineConfig::default(),
+                        budget_policy: libviprs::streaming::BudgetPolicy::Error,
                     };
                     let strip_src = RasterStripSource::new(&src);
                     generate_pyramid_streaming(
