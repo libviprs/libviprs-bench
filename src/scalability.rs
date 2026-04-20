@@ -59,6 +59,7 @@ fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Durat
     let config = StreamingConfig {
         memory_budget_bytes: budget,
         engine: EngineConfig::default(),
+        budget_policy: libviprs::streaming::BudgetPolicy::Error,
     };
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();

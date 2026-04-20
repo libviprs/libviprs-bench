@@ -178,6 +178,7 @@ pub fn bench_streaming(
     let config = StreamingConfig {
         memory_budget_bytes,
         engine: EngineConfig::default().with_concurrency(concurrency),
+        budget_policy: libviprs::streaming::BudgetPolicy::Error,
     };
 
     let strip_src = RasterStripSource::new(src);
@@ -243,7 +244,7 @@ pub fn bench_mapreduce(
         .iter()
         .filter(|e| matches!(e, EngineEvent::BatchStarted { .. }))
         .count() as u32;
-    let inflight = libviprs::compute_inflight_strips(
+    let inflight = libviprs::streaming_mapreduce::compute_inflight_strips(
         plan,
         src.format(),
         libviprs::compute_strip_height(plan, src.format(), memory_budget_bytes)

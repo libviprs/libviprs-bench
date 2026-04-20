@@ -153,6 +153,7 @@ fn main() {
         let config = StreamingConfig {
             memory_budget_bytes: 1_000_000,
             engine: EngineConfig::default(),
+            budget_policy: libviprs::streaming::BudgetPolicy::Error,
         };
 
         let strip_src = RasterStripSource::new(&src);
