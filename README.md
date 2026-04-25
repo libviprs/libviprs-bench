@@ -1,0 +1,146 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/libviprs/libviprs/main/images/libviprs-logo-claws.svg" alt="libviprs" width="200">
+</p>
+
+<h1 align="center">libviprs-bench</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
+</p>
+
+Benchmark harness for [libviprs](../libviprs), comparing its three pyramid engines against [libvips](https://www.libvips.org/) `dzsave` under identical inputs.
+
+This crate is kept in a separate repository so the library crate stays free of heavy benchmark-only dependencies (criterion, plotters, libvips FFI).
+
+## What this is
+
+`libviprs-bench` measures how libviprs scales as image size and concurrency change, and how it compares to libvips on the same workload. Both libraries are linked into a single process so neither side gets a filesystem-I/O advantage.
+
+The harness produces:
+
+- **Wall time** and **peak memory** per engine, per image size
+- **Throughput** (tiles/second) and **memory efficiency** (tiles/second per MB)
+- **Resource cost** (MB-seconds per tile) — useful for comparing engines in environments where memory and CPU time are both billed
+- **SVG charts** of all of the above, plus version-history trend lines across releases
+- **Flame graphs** built from engine observer events
+- **Criterion** statistical reports with violin plots
+
+## Engines under test
+
+| Engine | Source kind | Description |
+|---|---|---|
+| **Monolithic** | in-memory `Raster` | Decodes the full canvas, downscales level-by-level. Highest peak memory, fastest at small sizes. |
+| **Streaming** | strip source | Sequential strip pipeline bounded by a memory budget. Memory scales with strip width, not image area. |
+| **MapReduce** | strip source | Parallel strip pipeline. Same strip-bounded model as streaming, with `K` in-flight strips trading memory for throughput. |
+| **libvips** | PNG / raw memory | External baseline via `dzsave`. Either spawned as a CLI or, with the `libvips` feature, called in-process through FFI. |
+
+| Bench file | Targets |
+|---|---|
+| `benches/engine_comparison.rs` | Criterion micro-benchmarks for monolithic / streaming / MapReduce, plus a head-to-head group across image sizes. |
+| `src/scalability.rs` (`scalability` bin) | Scalability sweep from 0.2 MP to 47 MP, comparing all four engines on a 1.42:1 aspect ratio matching `43551_California_South.pdf`. |
+| `src/report.rs` (`report` bin) | Full comparison matrix across image sizes and concurrency levels, with versioned history. |
+| `src/flamegraph.rs` (`flamegraph` bin) | Event-based flame graphs for all three libviprs engines on a 4096x4096 image. |
+
+## Running benchmarks
+
+```bash
+# Scalability sweep (default) — writes report/scalability_*.svg + scalability_results.json
+./run-bench.sh
+
+# Full comparison matrix — writes report/chart_*.svg + benchmark_results.json + benchmark_history.json
+./run-bench.sh report
+
+# Force architecture
+./run-bench.sh --arch arm
+./run-bench.sh --arch amd64
+
+# Container memory limit (MB, default 4096)
+./run-bench.sh --memory 2048
+
+# Run locally without Docker (requires libvips-dev + pkg-config installed)
+./run-bench.sh --no-build
+```
+
+Output is written to `report/`. Each run of the `report` command appends an entry to `benchmark_history.json`; once two or more entries exist, the binary also produces trend charts (`chart_history_*.svg`) showing wall time and peak memory across versions.
+
+The criterion micro-benchmarks are run separately:
+
+```bash
+cargo bench
+open target/criterion/report/index.html
+```
+
+Flame graphs are produced by their own binary:
+
+```bash
+cargo run --release --bin flamegraph
+# writes report/flamegraph_{monolithic,streaming,mapreduce}.svg
+```
+
+## Docker
+
+`run-bench.sh` builds a Docker image with libvips, PDFium, and both crates side-by-side, then runs the chosen binary inside it with a memory limit. This is the recommended path because it pins the libvips version and isolates the host from the benchmark.
+
+You can also drive Docker directly:
+
+```bash
+# From the workspace root (parent of libviprs/ and libviprs-bench/)
+docker build -f libviprs-bench/Dockerfile -t libviprs-bench .
+
+# Default: scalability binary
+docker run --rm --memory=4096m \
+    -v "$(pwd)/libviprs-bench/report:/src/libviprs-bench/report" \
+    libviprs-bench
+
+# Run the full report binary
+docker run --rm --memory=4096m \
+    -v "$(pwd)/libviprs-bench/report:/src/libviprs-bench/report" \
+    libviprs-bench \
+    cargo run --release --features libvips --bin report
+```
+
+The `report/` directory is mounted into the container so charts persist after it exits.
+
+## Cargo features
+
+| Feature | Default | Description |
+|---|---|---|
+| `libvips` | off | Enables in-process libvips FFI via `libvips-rs`. Without it, libvips is invoked through the `vips` CLI when present. |
+
+## Output layout
+
+```
+report/
+├── scalability_wall_time.svg
+├── scalability_peak_memory.svg
+├── scalability_throughput.svg
+├── scalability_efficiency.svg
+├── scalability_resource_cost.svg
+├── scalability_results.json
+├── chart_wall_time.svg
+├── chart_peak_memory.svg
+├── chart_throughput.svg
+├── chart_efficiency.svg
+├── chart_resource_cost.svg
+├── chart_history_<size>_c<n>_time.svg
+├── chart_history_<size>_c<n>_memory.svg
+├── benchmark_results.json
+├── benchmark_history.json
+├── comparison_table.txt
+└── flamegraph_{monolithic,streaming,mapreduce}.svg
+```
+
+## Requirements
+
+- Rust 1.85+ (edition 2024)
+- Docker (recommended, used by `run-bench.sh`)
+- For `--no-build`: `libvips-dev` and `pkg-config` on the host
+
+## Related Crates
+
+| Crate | Description |
+|---|---|
+| [libviprs](../libviprs) | The pyramid engine being benchmarked |
+| [libviprs-cli](../libviprs-cli) | Command-line interface (`viprs` binary) |
+| [libviprs-tests](../libviprs-tests) | Integration tests and fixtures |
