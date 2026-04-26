@@ -25,7 +25,19 @@ use libviprs::{
 use libviprs_bench::{bench_libvips, gradient_raster, vips_available, write_temp_png};
 
 const TILE_SIZE: u32 = 256;
-const STREAMING_BUDGET: u64 = 4_000_000; // 4 MB — forces streaming behavior
+/// Floor on the streaming engine's memory budget. Keeps small images in
+/// the "true streaming" regime; large images need more (computed below).
+const STREAMING_BUDGET_FLOOR: u64 = 4_000_000; // 4 MB
+
+/// Compute the per-image streaming budget. The floor `STREAMING_BUDGET_FLOOR`
+/// keeps small images in the streaming regime; for wider canvases we need
+/// at least one tile-aligned strip (`min strip = 2 × tile_size`) to fit,
+/// otherwise `BudgetPolicy::Error` (intentionally strict) trips. The
+/// 2× multiplier leaves headroom for the per-level accumulator chain.
+fn streaming_budget_for(width: u32, tile_size: u32) -> u64 {
+    let min_strip_bytes = (width as u64) * (tile_size as u64) * 2 * 3;
+    (min_strip_bytes * 2).max(STREAMING_BUDGET_FLOOR)
+}
 
 /// Default x-axis crop (megapixels) for scalability charts.
 ///
@@ -472,7 +484,9 @@ fn main() {
         sizes.last().unwrap().0,
         sizes.last().unwrap().1,
     );
-    println!("Tile size: {TILE_SIZE}, streaming budget: {STREAMING_BUDGET} bytes");
+    println!(
+        "Tile size: {TILE_SIZE}, streaming budget floor: {STREAMING_BUDGET_FLOOR} bytes (auto-scaled per width)",
+    );
     if has_vips {
         println!("libvips CLI: included");
     } else {
@@ -537,8 +551,12 @@ fn main() {
         );
         all_points.push(to_point(w, h, "monolithic", dur, peak, tiles));
 
+        // Streaming + MapReduce share a budget chosen per-width so the
+        // tile-aligned minimum strip always fits.
+        let budget = streaming_budget_for(w, TILE_SIZE);
+
         // Streaming
-        let (dur, peak, tiles) = run_streaming(&src, TILE_SIZE, STREAMING_BUDGET);
+        let (dur, peak, tiles) = run_streaming(&src, TILE_SIZE, budget);
         print!(
             "stream={:.0}ms/{:.1}MB  ",
             dur.as_secs_f64() * 1000.0,
@@ -547,7 +565,7 @@ fn main() {
         all_points.push(to_point(w, h, "streaming", dur, peak, tiles));
 
         // MapReduce
-        let (dur, peak, tiles) = run_mapreduce(&src, TILE_SIZE, STREAMING_BUDGET);
+        let (dur, peak, tiles) = run_mapreduce(&src, TILE_SIZE, budget);
         println!(
             "mr={:.0}ms/{:.1}MB",
             dur.as_secs_f64() * 1000.0,
@@ -631,7 +649,7 @@ fn main() {
             largest.0,
             largest.1,
             largest_mp,
-            STREAMING_BUDGET as f64 / (1024.0 * 1024.0),
+            streaming_budget_for(largest.0, TILE_SIZE) as f64 / (1024.0 * 1024.0),
         );
         println!(
             "  Peak memory: {:.1} MB — bounded by strip height, not canvas area.",
@@ -654,7 +672,7 @@ fn main() {
             largest.0,
             largest.1,
             largest_mp,
-            STREAMING_BUDGET as f64 / (1024.0 * 1024.0),
+            streaming_budget_for(largest.0, TILE_SIZE) as f64 / (1024.0 * 1024.0),
         );
         println!(
             "  Peak memory: {:.1} MB — same strip-bounded model as streaming.",
