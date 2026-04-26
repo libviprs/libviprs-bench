@@ -9,6 +9,7 @@ publish = false
 [features]
 default = []
 libvips = ["dep:libvips-rs"]
+pdfium = ["libviprs/pdfium"]
 
 [dependencies]
 libviprs = { path = "../libviprs" }
@@ -40,3 +41,8 @@ path = "src/report.rs"
 [[bin]]
 name = "scalability"
 path = "src/scalability.rs"
+
+[[bin]]
+name = "pdfium_strip_source_bench"
+path = "src/pdfium_strip_source_bench.rs"
+required-features = ["pdfium"]
