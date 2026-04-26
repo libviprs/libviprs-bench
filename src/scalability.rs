@@ -27,6 +27,18 @@ use libviprs_bench::{bench_libvips, gradient_raster, vips_available, write_temp_
 const TILE_SIZE: u32 = 256;
 const STREAMING_BUDGET: u64 = 4_000_000; // 4 MB — forces streaming behavior
 
+/// Default x-axis crop (megapixels) for scalability charts.
+///
+/// The smallest images we benchmark (sub-megapixel up to ~12 MP) sit in a
+/// regime where libvips's per-region working set and the libviprs engines'
+/// fixed setup costs dominate the metrics. On efficiency / resource-cost
+/// charts this manifests as a near-vertical drop on the left side of the
+/// graph that hides the trend in the size range users actually care about
+/// (full-page blueprints at 72 DPI live near 15 MP and above). We crop the
+/// x-axis at this value by default; `--no-crop` falls back to showing the
+/// full series.
+const DEFAULT_X_AXIS_CROP_MP: f64 = 15.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScalabilityPoint {
     width: u32,
@@ -141,13 +153,38 @@ fn draw_scalability_chart(
     x_label: &str,
     y_label: &str,
     series: &[(&str, RGBColor, &[(f64, f64)])],
+    // When `Some(v)`, the chart's x-axis starts at `v` and any data
+    // points with x < v are dropped before plotting. The y-axis range
+    // is recomputed from only the visible points so labels suit the
+    // zoomed-in scale. When `None`, behaves like the original chart
+    // (axis from 0, full series).
+    x_min: Option<f64>,
 ) {
-    let max_x = series
+    let x_lo = x_min.unwrap_or(0.0);
+
+    // Filter every series to the visible x range up-front. Plotters would
+    // clip out-of-range points on its own, but we still need the filtered
+    // view to drive y-axis sizing — otherwise a huge off-chart point keeps
+    // the y-axis stretched and the visible range looks flat against the
+    // axis.
+    let visible_series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = series
+        .iter()
+        .map(|(name, color, pts)| {
+            let visible: Vec<(f64, f64)> = pts
+                .iter()
+                .filter(|(x, _)| *x >= x_lo)
+                .copied()
+                .collect();
+            (*name, *color, visible)
+        })
+        .collect();
+
+    let max_x = visible_series
         .iter()
         .flat_map(|(_, _, pts)| pts.iter().map(|(x, _)| *x))
-        .fold(0.0f64, f64::max)
+        .fold(x_lo, f64::max)
         * 1.05;
-    let max_y = series
+    let max_y = visible_series
         .iter()
         .flat_map(|(_, _, pts)| pts.iter().map(|(_, y)| *y))
         .fold(0.0f64, f64::max)
@@ -156,12 +193,18 @@ fn draw_scalability_chart(
     let root = SVGBackend::new(path, (700, 450)).into_drawing_area();
     root.fill(&WHITE).unwrap();
 
+    let display_title: String = if x_min.is_some() {
+        format!("{title}  (x ≥ {x_lo:.0} MP)")
+    } else {
+        title.to_string()
+    };
+
     let mut chart = ChartBuilder::on(&root)
-        .caption(title, ("sans-serif", 18).into_font())
+        .caption(display_title, ("sans-serif", 18).into_font())
         .margin(15)
         .x_label_area_size(40)
         .y_label_area_size(70)
-        .build_cartesian_2d(0.0..max_x, 0.0..max_y)
+        .build_cartesian_2d(x_lo..max_x, 0.0..max_y)
         .unwrap();
 
     chart
@@ -171,13 +214,16 @@ fn draw_scalability_chart(
         .draw()
         .unwrap();
 
-    for (name, color, pts) in series {
-        let data: Vec<(f64, f64)> = pts.to_vec();
+    for (name, color, pts) in &visible_series {
+        let data = pts.clone();
+        let legend_color = *color;
         chart
             .draw_series(LineSeries::new(data.clone(), color.stroke_width(2)))
             .unwrap()
             .label(*name)
-            .legend(move |(x, y)| Rectangle::new([(x, y - 5), (x + 15, y + 5)], color.filled()));
+            .legend(move |(x, y)| {
+                Rectangle::new([(x, y - 5), (x + 15, y + 5)], legend_color.filled())
+            });
         chart
             .draw_series(
                 data.iter()
@@ -198,9 +244,202 @@ fn draw_scalability_chart(
     root.present().unwrap();
 }
 
+/// Render the five scalability SVGs into `report_dir`. Shared between
+/// the bench-then-render path and the `--replot` path.
+fn render_charts(
+    all_points: &[ScalabilityPoint],
+    report_dir: &std::path::Path,
+    x_min: Option<f64>,
+) {
+    let vips_color = RGBColor(156, 39, 176);
+    let mono_color = RGBColor(66, 133, 244);
+    let stream_color = RGBColor(52, 168, 83);
+    let mr_color = RGBColor(234, 67, 53);
+
+    let extract_series = |engine: &str| -> Vec<(f64, f64, f64, f64, f64, f64)> {
+        all_points
+            .iter()
+            .filter(|p| p.engine == engine)
+            .map(|p| {
+                (
+                    p.megapixels,
+                    p.wall_time_ms,
+                    p.peak_memory_mb,
+                    p.tiles_per_second,
+                    p.tiles_per_second_per_mb,
+                    p.resource_cost,
+                )
+            })
+            .collect()
+    };
+
+    let vips_data = extract_series("libvips");
+    let mono_data = extract_series("monolithic");
+    let stream_data = extract_series("streaming");
+    let mr_data = extract_series("mapreduce");
+
+    // Helper to pull one metric (by tuple field index) from each engine's
+    // (megapixels, m1, m2, m3, m4, m5) tuples.
+    macro_rules! xy {
+        ($data:expr, $idx:tt) => {
+            $data.iter().map(|d| (d.0, d.$idx)).collect::<Vec<_>>()
+        };
+    }
+
+    // Per-chart definition: (filename, title, y-label, tuple-index for the
+    // metric on each engine's series). Looping over this avoids repeating
+    // the build-up boilerplate five times.
+    let charts: [(&str, &str, &str, u8); 5] = [
+        (
+            "scalability_wall_time.svg",
+            "Wall Time Scalability — 43551_California_South.pdf",
+            "Time (ms)",
+            1,
+        ),
+        (
+            "scalability_peak_memory.svg",
+            "Peak Memory Scalability — 43551_California_South.pdf",
+            "Peak Memory (MB)",
+            2,
+        ),
+        (
+            "scalability_throughput.svg",
+            "Throughput Scalability — 43551_California_South.pdf",
+            "Tiles/s",
+            3,
+        ),
+        (
+            "scalability_efficiency.svg",
+            "Memory Efficiency Scalability — Tiles/s per MB",
+            "Tiles/s/MB",
+            4,
+        ),
+        (
+            "scalability_resource_cost.svg",
+            "Resource Cost Scalability — MB\u{00b7}s per Tile (lower is better)",
+            "MB\u{00b7}s / tile",
+            5,
+        ),
+    ];
+
+    for (filename, title, y_label, idx) in charts {
+        let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
+        if !vips_data.is_empty() {
+            let pts = match idx {
+                1 => xy!(vips_data, 1),
+                2 => xy!(vips_data, 2),
+                3 => xy!(vips_data, 3),
+                4 => xy!(vips_data, 4),
+                5 => xy!(vips_data, 5),
+                _ => unreachable!(),
+            };
+            series.push(("libvips", vips_color, pts));
+        }
+        let pts_for = |data: &Vec<(f64, f64, f64, f64, f64, f64)>| match idx {
+            1 => xy!(data, 1),
+            2 => xy!(data, 2),
+            3 => xy!(data, 3),
+            4 => xy!(data, 4),
+            5 => xy!(data, 5),
+            _ => unreachable!(),
+        };
+        series.push(("Monolithic", mono_color, pts_for(&mono_data)));
+        series.push(("Streaming", stream_color, pts_for(&stream_data)));
+        series.push(("MapReduce", mr_color, pts_for(&mr_data)));
+
+        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
+            .iter()
+            .map(|(n, c, d)| (*n, *c, d.as_slice()))
+            .collect();
+
+        draw_scalability_chart(
+            &report_dir.join(filename),
+            title,
+            "Image Size (megapixels)",
+            y_label,
+            &refs,
+            x_min,
+        );
+    }
+}
+
+/// Parsed CLI options for the scalability binary.
+struct CliOpts {
+    /// When true, skip the bench loop and re-render charts from the
+    /// `scalability_results.json` already on disk. Useful for iterating on
+    /// chart styling without paying the multi-minute bench cost.
+    replot: bool,
+    /// When true, draw charts with the original full-range x-axis. When
+    /// false (the default), x-axis starts at `DEFAULT_X_AXIS_CROP_MP` so
+    /// the steep-slope startup region is hidden.
+    no_crop: bool,
+}
+
+fn parse_cli() -> CliOpts {
+    let mut replot = false;
+    let mut no_crop = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--replot" => replot = true,
+            "--no-crop" | "--full-x-range" => no_crop = true,
+            "-h" | "--help" => {
+                println!("Usage: scalability [--replot] [--no-crop]");
+                println!();
+                println!("  --replot     Skip the bench; redraw SVGs from the existing");
+                println!("               report/scalability_results.json.");
+                println!("  --no-crop    Disable the default x-axis crop ({} MP) so the", DEFAULT_X_AXIS_CROP_MP);
+                println!("               startup region of every chart is visible again.");
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("Unknown argument: {other}");
+                eprintln!("Run with --help for usage.");
+                std::process::exit(2);
+            }
+        }
+    }
+    CliOpts { replot, no_crop }
+}
+
 fn main() {
+    let opts = parse_cli();
+    let x_axis_crop: Option<f64> = if opts.no_crop {
+        None
+    } else {
+        Some(DEFAULT_X_AXIS_CROP_MP)
+    };
+
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
     fs::create_dir_all(&report_dir).unwrap();
+
+    // Replot mode: skip the bench, reload points from JSON, jump straight
+    // to chart generation. Lets us iterate on chart styling (cropping,
+    // colors, captions) without paying the multi-minute bench cost.
+    if opts.replot {
+        let json_path = report_dir.join("scalability_results.json");
+        let raw = fs::read_to_string(&json_path).unwrap_or_else(|e| {
+            eprintln!("--replot needs an existing {}: {e}", json_path.display());
+            std::process::exit(1);
+        });
+        let all_points: Vec<ScalabilityPoint> = serde_json::from_str(&raw).unwrap_or_else(|e| {
+            eprintln!("failed to parse {}: {e}", json_path.display());
+            std::process::exit(1);
+        });
+        println!(
+            "Replotting {} points from {} (crop: {})",
+            all_points.len(),
+            json_path.display(),
+            x_axis_crop
+                .map(|v| format!(">= {v} MP"))
+                .unwrap_or_else(|| "off".to_string()),
+        );
+        render_charts(&all_points, &report_dir, x_axis_crop);
+        println!(
+            "Charts written to {}/scalability_*.svg",
+            report_dir.display()
+        );
+        return;
+    }
 
     let has_vips = vips_available();
 
@@ -309,160 +548,7 @@ fn main() {
     }
 
     // --- Generate charts ---
-
-    let vips_color = RGBColor(156, 39, 176);
-    let mono_color = RGBColor(66, 133, 244);
-    let stream_color = RGBColor(52, 168, 83);
-    let mr_color = RGBColor(234, 67, 53);
-
-    let extract_series = |engine: &str| -> Vec<(f64, f64, f64, f64, f64, f64)> {
-        all_points
-            .iter()
-            .filter(|p| p.engine == engine)
-            .map(|p| {
-                (
-                    p.megapixels,
-                    p.wall_time_ms,
-                    p.peak_memory_mb,
-                    p.tiles_per_second,
-                    p.tiles_per_second_per_mb,
-                    p.resource_cost,
-                )
-            })
-            .collect()
-    };
-
-    let vips_data = extract_series("libvips");
-    let mono_data = extract_series("monolithic");
-    let stream_data = extract_series("streaming");
-    let mr_data = extract_series("mapreduce");
-
-    // Helper to pull one metric from the tuple series
-    macro_rules! xy {
-        ($data:expr, $idx:tt) => {
-            $data.iter().map(|d| (d.0, d.$idx)).collect::<Vec<_>>()
-        };
-    }
-
-    // 1. Wall time vs megapixels
-    {
-        let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
-        if !vips_data.is_empty() {
-            series.push(("libvips", vips_color, xy!(vips_data, 1)));
-        }
-        series.push(("Monolithic", mono_color, xy!(mono_data, 1)));
-        series.push(("Streaming", stream_color, xy!(stream_data, 1)));
-        series.push(("MapReduce", mr_color, xy!(mr_data, 1)));
-
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
-            .iter()
-            .map(|(n, c, d)| (*n, *c, d.as_slice()))
-            .collect();
-
-        draw_scalability_chart(
-            &report_dir.join("scalability_wall_time.svg"),
-            "Wall Time Scalability — 43551_California_South.pdf",
-            "Image Size (megapixels)",
-            "Time (ms)",
-            &refs,
-        );
-    }
-
-    // 2. Peak memory vs megapixels
-    {
-        let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
-        if !vips_data.is_empty() {
-            series.push(("libvips", vips_color, xy!(vips_data, 2)));
-        }
-        series.push(("Monolithic", mono_color, xy!(mono_data, 2)));
-        series.push(("Streaming", stream_color, xy!(stream_data, 2)));
-        series.push(("MapReduce", mr_color, xy!(mr_data, 2)));
-
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
-            .iter()
-            .map(|(n, c, d)| (*n, *c, d.as_slice()))
-            .collect();
-
-        draw_scalability_chart(
-            &report_dir.join("scalability_peak_memory.svg"),
-            "Peak Memory Scalability — 43551_California_South.pdf",
-            "Image Size (megapixels)",
-            "Peak Memory (MB)",
-            &refs,
-        );
-    }
-
-    // 3. Throughput vs megapixels
-    {
-        let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
-        if !vips_data.is_empty() {
-            series.push(("libvips", vips_color, xy!(vips_data, 3)));
-        }
-        series.push(("Monolithic", mono_color, xy!(mono_data, 3)));
-        series.push(("Streaming", stream_color, xy!(stream_data, 3)));
-        series.push(("MapReduce", mr_color, xy!(mr_data, 3)));
-
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
-            .iter()
-            .map(|(n, c, d)| (*n, *c, d.as_slice()))
-            .collect();
-
-        draw_scalability_chart(
-            &report_dir.join("scalability_throughput.svg"),
-            "Throughput Scalability — 43551_California_South.pdf",
-            "Image Size (megapixels)",
-            "Tiles/s",
-            &refs,
-        );
-    }
-
-    // 4. Memory efficiency vs megapixels
-    {
-        let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
-        if !vips_data.is_empty() {
-            series.push(("libvips", vips_color, xy!(vips_data, 4)));
-        }
-        series.push(("Monolithic", mono_color, xy!(mono_data, 4)));
-        series.push(("Streaming", stream_color, xy!(stream_data, 4)));
-        series.push(("MapReduce", mr_color, xy!(mr_data, 4)));
-
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
-            .iter()
-            .map(|(n, c, d)| (*n, *c, d.as_slice()))
-            .collect();
-
-        draw_scalability_chart(
-            &report_dir.join("scalability_efficiency.svg"),
-            "Memory Efficiency Scalability — Tiles/s per MB",
-            "Image Size (megapixels)",
-            "Tiles/s/MB",
-            &refs,
-        );
-    }
-
-    // 5. Resource cost vs megapixels
-    {
-        let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
-        if !vips_data.is_empty() {
-            series.push(("libvips", vips_color, xy!(vips_data, 5)));
-        }
-        series.push(("Monolithic", mono_color, xy!(mono_data, 5)));
-        series.push(("Streaming", stream_color, xy!(stream_data, 5)));
-        series.push(("MapReduce", mr_color, xy!(mr_data, 5)));
-
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
-            .iter()
-            .map(|(n, c, d)| (*n, *c, d.as_slice()))
-            .collect();
-
-        draw_scalability_chart(
-            &report_dir.join("scalability_resource_cost.svg"),
-            "Resource Cost Scalability — MB\u{00b7}s per Tile (lower is better)",
-            "Image Size (megapixels)",
-            "MB\u{00b7}s / tile",
-            &refs,
-        );
-    }
+    render_charts(&all_points, &report_dir, x_axis_crop);
 
     // Save raw data
     let json_path = report_dir.join("scalability_results.json");
