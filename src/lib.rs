@@ -5,12 +5,13 @@
 //! profiling binaries.
 
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use libviprs::streaming::BudgetPolicy;
 use libviprs::{
-    CollectingObserver, EngineConfig, EngineEvent, Layout, MapReduceConfig, MemorySink,
-    PixelFormat, PyramidPlan, PyramidPlanner, Raster, RasterStripSource, StreamingConfig,
-    generate_pyramid_mapreduce, generate_pyramid_observed, generate_pyramid_streaming,
+    CollectingObserver, EngineBuilder, EngineConfig, EngineEvent, EngineKind, Layout, MemorySink,
+    PixelFormat, PyramidPlan, PyramidPlanner, Raster, RasterStripSource,
 };
 use serde::{Deserialize, Serialize};
 
@@ -140,11 +141,16 @@ pub fn bench_monolithic(
     label: &str,
 ) -> RunMetrics {
     let sink = MemorySink::new();
-    let observer = CollectingObserver::new();
+    let observer = Arc::new(CollectingObserver::new());
     let config = EngineConfig::default().with_concurrency(concurrency);
 
     let start = Instant::now();
-    let result = generate_pyramid_observed(src, plan, &sink, &config, &observer).unwrap();
+    let result = EngineBuilder::new(src, plan.clone(), &sink)
+        .with_engine(EngineKind::Monolithic)
+        .with_config(config)
+        .with_observer_arc(observer.clone())
+        .run()
+        .unwrap();
     let wall_time = start.elapsed();
 
     RunMetrics {
@@ -174,17 +180,18 @@ pub fn bench_streaming(
     label: &str,
 ) -> RunMetrics {
     let sink = MemorySink::new();
-    let observer = CollectingObserver::new();
-    let config = StreamingConfig {
-        memory_budget_bytes,
-        engine: EngineConfig::default().with_concurrency(concurrency),
-        budget_policy: libviprs::streaming::BudgetPolicy::Error,
-    };
-
+    let observer = Arc::new(CollectingObserver::new());
+    let engine_config = EngineConfig::default().with_concurrency(concurrency);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
-    let result =
-        generate_pyramid_streaming(&strip_src, plan, &sink, &config, &observer).unwrap();
+    let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
+        .with_engine(EngineKind::Streaming)
+        .with_config(engine_config)
+        .with_memory_budget(memory_budget_bytes)
+        .with_budget_policy(BudgetPolicy::Error)
+        .with_observer_arc(observer.clone())
+        .run()
+        .unwrap();
     let wall_time = start.elapsed();
 
     let strips = observer
@@ -220,19 +227,21 @@ pub fn bench_mapreduce(
     label: &str,
 ) -> RunMetrics {
     let sink = MemorySink::new();
-    let observer = CollectingObserver::new();
-    let config = MapReduceConfig {
-        memory_budget_bytes,
-        tile_concurrency,
-        buffer_size: 64,
-        background_rgb: [255, 255, 255],
-        blank_tile_strategy: libviprs::BlankTileStrategy::Emit,
-    };
-
+    let observer = Arc::new(CollectingObserver::new());
+    let engine_config = EngineConfig::default()
+        .with_concurrency(tile_concurrency)
+        .with_buffer_size(64)
+        .with_blank_tile_strategy(libviprs::BlankTileStrategy::Emit);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
-    let result =
-        generate_pyramid_mapreduce(&strip_src, plan, &sink, &config, &observer).unwrap();
+    let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
+        .with_engine(EngineKind::MapReduce)
+        .with_config(engine_config)
+        .with_memory_budget(memory_budget_bytes)
+        .with_budget_policy(BudgetPolicy::Error)
+        .with_observer_arc(observer.clone())
+        .run()
+        .unwrap();
     let wall_time = start.elapsed();
 
     let events = observer.events();
@@ -356,10 +365,7 @@ pub fn bench_libvips(
     let output = match output {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
-            eprintln!(
-                "vips dzsave failed: {}",
-                String::from_utf8_lossy(&o.stderr)
-            );
+            eprintln!("vips dzsave failed: {}", String::from_utf8_lossy(&o.stderr));
             let _ = std::fs::remove_dir_all(&out_dir);
             return None;
         }
@@ -394,7 +400,12 @@ pub fn bench_libvips(
             .lines()
             .find_map(|line| {
                 if line.contains("Maximum resident set size") {
-                    line.split(':').nth(1)?.trim().parse::<u64>().ok().map(|kb| kb * 1024)
+                    line.split(':')
+                        .nth(1)?
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                        .map(|kb| kb * 1024)
                 } else {
                     None
                 }
@@ -413,7 +424,11 @@ pub fn bench_libvips(
     // Count levels (subdirectories)
     let levels_processed = if tiles_dir.exists() {
         std::fs::read_dir(&tiles_dir)
-            .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count() as u32)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .count() as u32
+            })
             .unwrap_or(0)
     } else {
         0
@@ -514,9 +529,12 @@ pub fn bench_libvips_inprocess(
         libvips_rs::bindings::vips_dzsave(
             img,
             dz_path_c.as_ptr(),
-            tile_size_c.as_ptr(), tile_size as i32,
-            overlap_c.as_ptr(), 0i32,
-            suffix_opt_c.as_ptr(), suffix_c.as_ptr(),
+            tile_size_c.as_ptr(),
+            tile_size as i32,
+            overlap_c.as_ptr(),
+            0i32,
+            suffix_opt_c.as_ptr(),
+            suffix_c.as_ptr(),
             std::ptr::null::<std::ffi::c_void>(),
         )
     };
@@ -543,7 +561,11 @@ pub fn bench_libvips_inprocess(
 
     let levels_processed = if tiles_dir.exists() {
         std::fs::read_dir(&tiles_dir)
-            .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).count() as u32)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .count() as u32
+            })
             .unwrap_or(0)
     } else {
         0
@@ -678,20 +700,18 @@ pub fn comparison_suite(
             let mut vips_done = false;
             #[cfg(feature = "libvips")]
             {
-                if let Some(vips) = bench_libvips_inprocess(
-                    &src, tile_size, conc,
-                    &format!("{label}_vips"),
-                ) {
+                if let Some(vips) =
+                    bench_libvips_inprocess(&src, tile_size, conc, &format!("{label}_vips"))
+                {
                     results.push(vips);
                     vips_done = true;
                 }
             }
             if !vips_done {
                 if let Some(ref png) = png_path {
-                    if let Some(vips) = bench_libvips(
-                        png, w, h, tile_size, conc,
-                        &format!("{label}_vips"),
-                    ) {
+                    if let Some(vips) =
+                        bench_libvips(png, w, h, tile_size, conc, &format!("{label}_vips"))
+                    {
                         results.push(vips);
                     }
                 }
@@ -780,10 +800,10 @@ pub fn create_snapshot(
 use plotters::prelude::*;
 
 /// Color palette for the four engines.
-const COLOR_VIPS: RGBColor = RGBColor(156, 39, 176);    // purple — libvips
-const COLOR_MONO: RGBColor = RGBColor(66, 133, 244);    // blue   — monolithic
-const COLOR_STREAM: RGBColor = RGBColor(52, 168, 83);   // green  — streaming
-const COLOR_MR: RGBColor = RGBColor(234, 67, 53);       // red    — mapreduce
+const COLOR_VIPS: RGBColor = RGBColor(156, 39, 176); // purple — libvips
+const COLOR_MONO: RGBColor = RGBColor(66, 133, 244); // blue   — monolithic
+const COLOR_STREAM: RGBColor = RGBColor(52, 168, 83); // green  — streaming
+const COLOR_MR: RGBColor = RGBColor(234, 67, 53); // red    — mapreduce
 
 /// Grouped bar chart data.
 struct ChartGroup {
@@ -793,10 +813,7 @@ struct ChartGroup {
 
 /// Extract chart groups from results. Groups by (width, height, concurrency).
 /// Each group contains one bar per engine found.
-fn extract_groups(
-    results: &[RunMetrics],
-    metric: fn(&RunMetrics) -> f64,
-) -> Vec<ChartGroup> {
+fn extract_groups(results: &[RunMetrics], metric: fn(&RunMetrics) -> f64) -> Vec<ChartGroup> {
     // Group results by config key
     let mut map: std::collections::BTreeMap<String, Vec<&RunMetrics>> =
         std::collections::BTreeMap::new();
@@ -1086,7 +1103,11 @@ pub fn generate_history_chart(
 
     // Draw lines for each engine
     let mut draw_line = |pts: &[Point], color: RGBColor, name: &str| {
-        let series: Vec<(usize, f64)> = pts.iter().enumerate().map(|(i, p)| (i, p.wall_time_ms)).collect();
+        let series: Vec<(usize, f64)> = pts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.wall_time_ms))
+            .collect();
         if !series.is_empty() {
             chart
                 .draw_series(LineSeries::new(series.clone(), color.stroke_width(2)))
@@ -1096,7 +1117,11 @@ pub fn generate_history_chart(
                     Rectangle::new([(x, y - 5), (x + 15, y + 5)], color.filled())
                 });
             chart
-                .draw_series(series.iter().map(|&(x, y)| Circle::new((x, y), 3, color.filled())))
+                .draw_series(
+                    series
+                        .iter()
+                        .map(|&(x, y)| Circle::new((x, y), 3, color.filled())),
+                )
                 .unwrap();
         }
     };
@@ -1154,7 +1179,11 @@ pub fn generate_history_chart(
         .unwrap();
 
     let mut draw_mem_line = |pts: &[Point], color: RGBColor, name: &str| {
-        let series: Vec<(usize, f64)> = pts.iter().enumerate().map(|(i, p)| (i, p.peak_memory_mb)).collect();
+        let series: Vec<(usize, f64)> = pts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.peak_memory_mb))
+            .collect();
         if !series.is_empty() {
             chart
                 .draw_series(LineSeries::new(series.clone(), color.stroke_width(2)))
@@ -1164,7 +1193,11 @@ pub fn generate_history_chart(
                     Rectangle::new([(x, y - 5), (x + 15, y + 5)], color.filled())
                 });
             chart
-                .draw_series(series.iter().map(|&(x, y)| Circle::new((x, y), 3, color.filled())))
+                .draw_series(
+                    series
+                        .iter()
+                        .map(|&(x, y)| Circle::new((x, y), 3, color.filled())),
+                )
                 .unwrap();
         }
     };
@@ -1198,7 +1231,10 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
     println!("{}", "-".repeat(86));
 
     for group in &groups {
-        let config = format!("{}x{} c{}", group[0].width, group[0].height, group[0].concurrency);
+        let config = format!(
+            "{}x{} c{}",
+            group[0].width, group[0].height, group[0].concurrency
+        );
         for (i, r) in group.iter().enumerate() {
             let label = if i == 0 { &config } else { "" };
             println!(

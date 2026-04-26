@@ -15,12 +15,13 @@ use std::path::Path;
 use std::time::Instant;
 
 use inferno::flamegraph::{self, Options};
+use libviprs::streaming::BudgetPolicy;
 use libviprs::{
-    CollectingObserver, EngineConfig, EngineEvent, Layout, MapReduceConfig, MemorySink,
-    PyramidPlanner, RasterStripSource, StreamingConfig, generate_pyramid_mapreduce,
-    generate_pyramid_observed, generate_pyramid_streaming,
+    CollectingObserver, EngineBuilder, EngineConfig, EngineEvent, EngineKind, Layout, MemorySink,
+    PyramidPlanner, RasterStripSource,
 };
 use libviprs_bench::gradient_raster;
+use std::sync::Arc;
 
 const WIDTH: u32 = 4096;
 const HEIGHT: u32 = 4096;
@@ -38,12 +39,12 @@ fn events_to_folded_stacks(events: &[EngineEvent], engine_name: &str) -> Vec<Str
 
     for event in events {
         match event {
-            EngineEvent::LevelStarted { level, tile_count, .. } => {
+            EngineEvent::LevelStarted {
+                level, tile_count, ..
+            } => {
                 current_level = Some(*level);
                 _level_tiles = 0;
-                stacks.push(format!(
-                    "{engine_name};level_{level}_start {tile_count}"
-                ));
+                stacks.push(format!("{engine_name};level_{level}_start {tile_count}"));
             }
             EngineEvent::TileCompleted { coord } => {
                 _level_tiles += 1;
@@ -54,27 +55,43 @@ fn events_to_folded_stacks(events: &[EngineEvent], engine_name: &str) -> Vec<Str
                     ));
                 }
             }
-            EngineEvent::LevelCompleted { level, tiles_produced } => {
+            EngineEvent::LevelCompleted {
+                level,
+                tiles_produced,
+            } => {
                 stacks.push(format!(
                     "{engine_name};level_{level}_complete {tiles_produced}"
                 ));
             }
-            EngineEvent::StripRendered { strip_index, total_strips } => {
+            EngineEvent::StripRendered {
+                strip_index,
+                total_strips,
+            } => {
                 stacks.push(format!(
                     "{engine_name};strip_{strip_index}_of_{total_strips} 1"
                 ));
             }
-            EngineEvent::BatchStarted { batch_index, strips_in_batch, .. } => {
+            EngineEvent::BatchStarted {
+                batch_index,
+                strips_in_batch,
+                ..
+            } => {
                 stacks.push(format!(
                     "{engine_name};batch_{batch_index}_{strips_in_batch}strips 1"
                 ));
             }
-            EngineEvent::BatchCompleted { batch_index, tiles_produced } => {
+            EngineEvent::BatchCompleted {
+                batch_index,
+                tiles_produced,
+            } => {
                 stacks.push(format!(
                     "{engine_name};batch_{batch_index}_done_{tiles_produced}tiles 1"
                 ));
             }
-            EngineEvent::Finished { total_tiles, levels } => {
+            EngineEvent::Finished {
+                total_tiles,
+                levels,
+            } => {
                 stacks.push(format!(
                     "{engine_name};finished_{levels}levels_{total_tiles}tiles 1"
                 ));
@@ -98,12 +115,7 @@ fn generate_flamegraph(stacks: &[String], output_path: &Path, title: &str) {
     let lines: Vec<&str> = stacks.iter().map(|s| s.as_str()).collect();
     let reader = lines.join("\n");
 
-    flamegraph::from_reader(
-        &mut opts,
-        reader.as_bytes(),
-        writer,
-    )
-    .expect("generate flamegraph");
+    flamegraph::from_reader(&mut opts, reader.as_bytes(), writer).expect("generate flamegraph");
 }
 
 fn main() {
@@ -111,8 +123,7 @@ fn main() {
     fs::create_dir_all(&report_dir).unwrap();
 
     let src = gradient_raster(WIDTH, HEIGHT);
-    let planner =
-        PyramidPlanner::new(WIDTH, HEIGHT, TILE_SIZE, 0, Layout::DeepZoom).unwrap();
+    let planner = PyramidPlanner::new(WIDTH, HEIGHT, TILE_SIZE, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
 
     println!("Image: {WIDTH}x{HEIGHT}, tile_size={TILE_SIZE}");
@@ -126,11 +137,15 @@ fn main() {
     // --- Monolithic ---
     {
         let sink = MemorySink::new();
-        let observer = CollectingObserver::new();
-        let config = EngineConfig::default();
+        let observer = Arc::new(CollectingObserver::new());
 
         let start = Instant::now();
-        let result = generate_pyramid_observed(&src, &plan, &sink, &config, &observer).unwrap();
+        let result = EngineBuilder::new(&src, plan.clone(), &sink)
+            .with_engine(EngineKind::Monolithic)
+            .with_config(EngineConfig::default())
+            .with_observer_arc(observer.clone())
+            .run()
+            .unwrap();
         let elapsed = start.elapsed();
 
         println!(
@@ -142,24 +157,29 @@ fn main() {
 
         let stacks = events_to_folded_stacks(&observer.events(), "monolithic");
         let path = report_dir.join("flamegraph_monolithic.svg");
-        generate_flamegraph(&stacks, &path, "libviprs monolithic engine — event flame graph");
+        generate_flamegraph(
+            &stacks,
+            &path,
+            "libviprs monolithic engine — event flame graph",
+        );
         println!("  → {}", path.display());
     }
 
     // --- Streaming ---
     {
         let sink = MemorySink::new();
-        let observer = CollectingObserver::new();
-        let config = StreamingConfig {
-            memory_budget_bytes: 1_000_000,
-            engine: EngineConfig::default(),
-            budget_policy: libviprs::streaming::BudgetPolicy::Error,
-        };
+        let observer = Arc::new(CollectingObserver::new());
 
         let strip_src = RasterStripSource::new(&src);
         let start = Instant::now();
-        let result =
-            generate_pyramid_streaming(&strip_src, &plan, &sink, &config, &observer).unwrap();
+        let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
+            .with_engine(EngineKind::Streaming)
+            .with_config(EngineConfig::default())
+            .with_memory_budget(1_000_000)
+            .with_budget_policy(BudgetPolicy::Error)
+            .with_observer_arc(observer.clone())
+            .run()
+            .unwrap();
         let elapsed = start.elapsed();
 
         let strip_count = observer
@@ -178,24 +198,29 @@ fn main() {
 
         let stacks = events_to_folded_stacks(&observer.events(), "streaming");
         let path = report_dir.join("flamegraph_streaming.svg");
-        generate_flamegraph(&stacks, &path, "libviprs streaming engine — event flame graph");
+        generate_flamegraph(
+            &stacks,
+            &path,
+            "libviprs streaming engine — event flame graph",
+        );
         println!("  → {}", path.display());
     }
 
     // --- MapReduce ---
     {
         let sink = MemorySink::new();
-        let observer = CollectingObserver::new();
-        let config = MapReduceConfig {
-            memory_budget_bytes: 1_000_000,
-            tile_concurrency: 0,
-            ..MapReduceConfig::default()
-        };
+        let observer = Arc::new(CollectingObserver::new());
 
         let strip_src = RasterStripSource::new(&src);
         let start = Instant::now();
-        let result =
-            generate_pyramid_mapreduce(&strip_src, &plan, &sink, &config, &observer).unwrap();
+        let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
+            .with_engine(EngineKind::MapReduce)
+            .with_config(EngineConfig::default().with_concurrency(0))
+            .with_memory_budget(1_000_000)
+            .with_budget_policy(BudgetPolicy::Error)
+            .with_observer_arc(observer.clone())
+            .run()
+            .unwrap();
         let elapsed = start.elapsed();
 
         let events = observer.events();
@@ -219,7 +244,11 @@ fn main() {
 
         let stacks = events_to_folded_stacks(&events, "mapreduce");
         let path = report_dir.join("flamegraph_mapreduce.svg");
-        generate_flamegraph(&stacks, &path, "libviprs MapReduce engine — event flame graph");
+        generate_flamegraph(
+            &stacks,
+            &path,
+            "libviprs MapReduce engine — event flame graph",
+        );
         println!("  → {}", path.display());
     }
 

@@ -27,12 +27,7 @@ fn main() {
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
     fs::create_dir_all(&report_dir).unwrap();
 
-    let sizes: &[(u32, u32)] = &[
-        (512, 512),
-        (1024, 1024),
-        (2048, 2048),
-        (4096, 4096),
-    ];
+    let sizes: &[(u32, u32)] = &[(512, 512), (1024, 1024), (2048, 2048), (4096, 4096)];
     let concurrency_levels: &[usize] = &[0, 4];
     let tile_size: u32 = 256;
     let streaming_budget: u64 = 1_000_000; // 1 MB
@@ -43,7 +38,10 @@ fn main() {
     println!("Tile size: {tile_size}, memory budget: {streaming_budget} bytes");
     println!(
         "Image sizes: {:?}",
-        sizes.iter().map(|(w, h)| format!("{w}x{h}")).collect::<Vec<_>>()
+        sizes
+            .iter()
+            .map(|(w, h)| format!("{w}x{h}"))
+            .collect::<Vec<_>>()
     );
     println!("Concurrency levels: {concurrency_levels:?}");
     println!();

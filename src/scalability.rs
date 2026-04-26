@@ -17,10 +17,10 @@ use std::time::Instant;
 use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use libviprs::streaming::BudgetPolicy;
 use libviprs::{
-    EngineConfig, Layout, MapReduceConfig, MemorySink, PyramidPlanner, Raster, RasterStripSource,
-    StreamingConfig, generate_pyramid, generate_pyramid_mapreduce, generate_pyramid_streaming,
-    observe::NoopObserver,
+    EngineBuilder, EngineConfig, EngineKind, Layout, MemorySink, PyramidPlanner, Raster,
+    RasterStripSource,
 };
 use libviprs_bench::{bench_libvips, gradient_raster, vips_available, write_temp_png};
 
@@ -47,8 +47,16 @@ fn run_monolithic(src: &Raster, tile_size: u32) -> (std::time::Duration, u64, u6
     let plan = planner.plan();
     let sink = MemorySink::new();
     let start = Instant::now();
-    let result = generate_pyramid(src, &plan, &sink, &EngineConfig::default()).unwrap();
-    (start.elapsed(), result.peak_memory_bytes, result.tiles_produced)
+    let result = EngineBuilder::new(src, plan, &sink)
+        .with_engine(EngineKind::Monolithic)
+        .with_config(EngineConfig::default())
+        .run()
+        .unwrap();
+    (
+        start.elapsed(),
+        result.peak_memory_bytes,
+        result.tiles_produced,
+    )
 }
 
 fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Duration, u64, u64) {
@@ -56,16 +64,20 @@ fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Durat
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
     let sink = MemorySink::new();
-    let config = StreamingConfig {
-        memory_budget_bytes: budget,
-        engine: EngineConfig::default(),
-        budget_policy: libviprs::streaming::BudgetPolicy::Error,
-    };
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
-    let result =
-        generate_pyramid_streaming(&strip_src, &plan, &sink, &config, &NoopObserver).unwrap();
-    (start.elapsed(), result.peak_memory_bytes, result.tiles_produced)
+    let result = EngineBuilder::new(strip_src, plan, &sink)
+        .with_engine(EngineKind::Streaming)
+        .with_config(EngineConfig::default())
+        .with_memory_budget(budget)
+        .with_budget_policy(BudgetPolicy::Error)
+        .run()
+        .unwrap();
+    (
+        start.elapsed(),
+        result.peak_memory_bytes,
+        result.tiles_produced,
+    )
 }
 
 fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Duration, u64, u64) {
@@ -73,16 +85,20 @@ fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Durat
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
     let sink = MemorySink::new();
-    let config = MapReduceConfig {
-        memory_budget_bytes: budget,
-        tile_concurrency: 4,
-        ..MapReduceConfig::default()
-    };
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
-    let result =
-        generate_pyramid_mapreduce(&strip_src, &plan, &sink, &config, &NoopObserver).unwrap();
-    (start.elapsed(), result.peak_memory_bytes, result.tiles_produced)
+    let result = EngineBuilder::new(strip_src, plan, &sink)
+        .with_engine(EngineKind::MapReduce)
+        .with_config(EngineConfig::default().with_concurrency(4))
+        .with_memory_budget(budget)
+        .with_budget_policy(BudgetPolicy::Error)
+        .run()
+        .unwrap();
+    (
+        start.elapsed(),
+        result.peak_memory_bytes,
+        result.tiles_produced,
+    )
 }
 
 fn to_point(
@@ -163,7 +179,10 @@ fn draw_scalability_chart(
             .label(*name)
             .legend(move |(x, y)| Rectangle::new([(x, y - 5), (x + 15, y + 5)], color.filled()));
         chart
-            .draw_series(data.iter().map(|&(x, y)| Circle::new((x, y), 4, color.filled())))
+            .draw_series(
+                data.iter()
+                    .map(|&(x, y)| Circle::new((x, y), 4, color.filled())),
+            )
             .unwrap();
     }
 
@@ -230,7 +249,14 @@ fn main() {
                     r.wall_time_ms(),
                     r.peak_memory_mb(),
                 );
-                all_points.push(to_point(w, h, "libvips", r.wall_time, r.peak_memory_bytes, r.tiles_produced));
+                all_points.push(to_point(
+                    w,
+                    h,
+                    "libvips",
+                    r.wall_time,
+                    r.peak_memory_bytes,
+                    r.tiles_produced,
+                ));
                 vips_done = true;
             }
         }
@@ -242,7 +268,14 @@ fn main() {
                     r.wall_time_ms(),
                     r.peak_memory_mb(),
                 );
-                all_points.push(to_point(w, h, "libvips", r.wall_time, r.peak_memory_bytes, r.tiles_produced));
+                all_points.push(to_point(
+                    w,
+                    h,
+                    "libvips",
+                    r.wall_time,
+                    r.peak_memory_bytes,
+                    r.tiles_produced,
+                ));
             }
             let _ = fs::remove_file(&png_path);
         }
@@ -321,8 +354,10 @@ fn main() {
         series.push(("Streaming", stream_color, xy!(stream_data, 1)));
         series.push(("MapReduce", mr_color, xy!(mr_data, 1)));
 
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> =
-            series.iter().map(|(n, c, d)| (*n, *c, d.as_slice())).collect();
+        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
+            .iter()
+            .map(|(n, c, d)| (*n, *c, d.as_slice()))
+            .collect();
 
         draw_scalability_chart(
             &report_dir.join("scalability_wall_time.svg"),
@@ -343,8 +378,10 @@ fn main() {
         series.push(("Streaming", stream_color, xy!(stream_data, 2)));
         series.push(("MapReduce", mr_color, xy!(mr_data, 2)));
 
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> =
-            series.iter().map(|(n, c, d)| (*n, *c, d.as_slice())).collect();
+        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
+            .iter()
+            .map(|(n, c, d)| (*n, *c, d.as_slice()))
+            .collect();
 
         draw_scalability_chart(
             &report_dir.join("scalability_peak_memory.svg"),
@@ -365,8 +402,10 @@ fn main() {
         series.push(("Streaming", stream_color, xy!(stream_data, 3)));
         series.push(("MapReduce", mr_color, xy!(mr_data, 3)));
 
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> =
-            series.iter().map(|(n, c, d)| (*n, *c, d.as_slice())).collect();
+        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
+            .iter()
+            .map(|(n, c, d)| (*n, *c, d.as_slice()))
+            .collect();
 
         draw_scalability_chart(
             &report_dir.join("scalability_throughput.svg"),
@@ -387,8 +426,10 @@ fn main() {
         series.push(("Streaming", stream_color, xy!(stream_data, 4)));
         series.push(("MapReduce", mr_color, xy!(mr_data, 4)));
 
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> =
-            series.iter().map(|(n, c, d)| (*n, *c, d.as_slice())).collect();
+        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
+            .iter()
+            .map(|(n, c, d)| (*n, *c, d.as_slice()))
+            .collect();
 
         draw_scalability_chart(
             &report_dir.join("scalability_efficiency.svg"),
@@ -409,8 +450,10 @@ fn main() {
         series.push(("Streaming", stream_color, xy!(stream_data, 5)));
         series.push(("MapReduce", mr_color, xy!(mr_data, 5)));
 
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> =
-            series.iter().map(|(n, c, d)| (*n, *c, d.as_slice())).collect();
+        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
+            .iter()
+            .map(|(n, c, d)| (*n, *c, d.as_slice()))
+            .collect();
 
         draw_scalability_chart(
             &report_dir.join("scalability_resource_cost.svg"),
@@ -456,7 +499,10 @@ fn main() {
     let largest_mp = largest.0 as f64 * largest.1 as f64 / 1_000_000.0;
 
     // Monolithic bottleneck
-    if let Some(mono) = all_points.iter().find(|p| p.width == largest.0 && p.engine == "monolithic") {
+    if let Some(mono) = all_points
+        .iter()
+        .find(|p| p.width == largest.0 && p.engine == "monolithic")
+    {
         let canvas_bytes = largest.0 as f64 * largest.1 as f64 * 3.0; // RGB8 = 3 bpp
         let canvas_mb = canvas_bytes / (1024.0 * 1024.0);
         println!(
@@ -471,72 +517,65 @@ fn main() {
             "  The source raster ({:.1} MB) is cloned into a canvas-sized buffer.",
             canvas_mb,
         );
-        println!(
-            "  During downscale, the current level + next level coexist in memory,",
-        );
+        println!("  During downscale, the current level + next level coexist in memory,",);
         println!(
             "  producing peak ≈ canvas + canvas/4 = {:.1} MB.",
             canvas_mb * 1.25,
         );
-        println!(
-            "  This scales O(width × height) — doubling image dimensions quadruples memory.",
-        );
+        println!("  This scales O(width × height) — doubling image dimensions quadruples memory.",);
     }
 
     // Streaming bottleneck
-    if let Some(stream) = all_points.iter().find(|p| p.width == largest.0 && p.engine == "streaming") {
+    if let Some(stream) = all_points
+        .iter()
+        .find(|p| p.width == largest.0 && p.engine == "streaming")
+    {
         println!();
         println!(
             "STREAMING at {}x{} ({:.1} MP), budget {} MB:",
-            largest.0, largest.1, largest_mp,
+            largest.0,
+            largest.1,
+            largest_mp,
             STREAMING_BUDGET as f64 / (1024.0 * 1024.0),
         );
         println!(
             "  Peak memory: {:.1} MB — bounded by strip height, not canvas area.",
             stream.peak_memory_mb,
         );
-        println!(
-            "  The engine holds: current strip + accumulator at each pyramid level",
-        );
-        println!(
-            "  (geometric series: strip + strip/4 + strip/16 + ...). Strip height is",
-        );
-        println!(
-            "  maximised within the budget. Memory scales O(width × strip_height),",
-        );
-        println!(
-            "  independent of image height. The bottleneck is strip width (= canvas width).",
-        );
+        println!("  The engine holds: current strip + accumulator at each pyramid level",);
+        println!("  (geometric series: strip + strip/4 + strip/16 + ...). Strip height is",);
+        println!("  maximised within the budget. Memory scales O(width × strip_height),",);
+        println!("  independent of image height. The bottleneck is strip width (= canvas width).",);
     }
 
     // MapReduce bottleneck
-    if let Some(mr) = all_points.iter().find(|p| p.width == largest.0 && p.engine == "mapreduce") {
+    if let Some(mr) = all_points
+        .iter()
+        .find(|p| p.width == largest.0 && p.engine == "mapreduce")
+    {
         println!();
         println!(
             "MAPREDUCE at {}x{} ({:.1} MP), budget {} MB:",
-            largest.0, largest.1, largest_mp,
+            largest.0,
+            largest.1,
+            largest_mp,
             STREAMING_BUDGET as f64 / (1024.0 * 1024.0),
         );
         println!(
             "  Peak memory: {:.1} MB — same strip-bounded model as streaming.",
             mr.peak_memory_mb,
         );
-        println!(
-            "  With K in-flight strips, peak = K × strip_cost + accumulator chain.",
-        );
-        println!(
-            "  The budget was too small for K>1 in-flight strips at this image width,",
-        );
-        println!(
-            "  so memory matches streaming. With a larger budget, K>1 trades memory",
-        );
-        println!(
-            "  for throughput by overlapping strip rendering.",
-        );
+        println!("  With K in-flight strips, peak = K × strip_cost + accumulator chain.",);
+        println!("  The budget was too small for K>1 in-flight strips at this image width,",);
+        println!("  so memory matches streaming. With a larger budget, K>1 trades memory",);
+        println!("  for throughput by overlapping strip rendering.",);
     }
 
     // libvips bottleneck
-    if let Some(vips) = all_points.iter().find(|p| p.width == largest.0 && p.engine == "libvips") {
+    if let Some(vips) = all_points
+        .iter()
+        .find(|p| p.width == largest.0 && p.engine == "libvips")
+    {
         println!();
         println!(
             "LIBVIPS at {}x{} ({:.1} MP):",
@@ -546,29 +585,26 @@ fn main() {
             "  Peak RSS: {:.1} MB — libvips uses a demand-driven pipeline where pixels",
             vips.peak_memory_mb,
         );
-        println!(
-            "  are computed on demand per-region (O(tile_size²) working set). The RSS",
-        );
-        println!(
-            "  measured here includes the OS-level allocation footprint, which is higher",
-        );
-        println!(
-            "  than the logical working set due to memory mapping, page tables, and the",
-        );
-        println!(
-            "  decoded source image cache.",
-        );
+        println!("  are computed on demand per-region (O(tile_size²) working set). The RSS",);
+        println!("  measured here includes the OS-level allocation footprint, which is higher",);
+        println!("  than the logical working set due to memory mapping, page tables, and the",);
+        println!("  decoded source image cache.",);
     }
 
     // Scaling comparison
     println!();
     println!("SCALING SUMMARY:");
     let smallest = sizes.first().unwrap();
-    let scale_factor = (largest.0 as f64 * largest.1 as f64) / (smallest.0 as f64 * smallest.1 as f64);
+    let scale_factor =
+        (largest.0 as f64 * largest.1 as f64) / (smallest.0 as f64 * smallest.1 as f64);
 
     for engine in &["libvips", "monolithic", "streaming", "mapreduce"] {
-        let small = all_points.iter().find(|p| p.width == smallest.0 && p.engine == *engine);
-        let large = all_points.iter().find(|p| p.width == largest.0 && p.engine == *engine);
+        let small = all_points
+            .iter()
+            .find(|p| p.width == smallest.0 && p.engine == *engine);
+        let large = all_points
+            .iter()
+            .find(|p| p.width == largest.0 && p.engine == *engine);
         if let (Some(s), Some(l)) = (small, large) {
             let mem_scale = l.peak_memory_mb / s.peak_memory_mb.max(0.01);
             let time_scale = l.wall_time_ms / s.wall_time_ms.max(0.01);
@@ -580,6 +616,9 @@ fn main() {
     }
 
     println!();
-    println!("Charts written to {}/scalability_*.svg", report_dir.display());
+    println!(
+        "Charts written to {}/scalability_*.svg",
+        report_dir.display()
+    );
     println!("JSON written to {}", json_path.display());
 }
