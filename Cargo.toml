@@ -10,6 +10,11 @@ publish = false
 default = []
 libvips = ["dep:libvips-rs"]
 pdfium = ["libviprs/pdfium"]
+# Cross-version analysis stack. Pulls in polars for columnar
+# aggregation over the BenchmarkSnapshot history. Heavy (~5 MB
+# compiled), kept off by default so the everyday bench builds stay
+# light. Gates the `cross_version` binary.
+polars = ["dep:polars"]
 
 [dependencies]
 libviprs = { path = "../libviprs" }
@@ -20,6 +25,14 @@ inferno = "0.12"
 libc = "0.2"
 libvips-rs = { version = "8.18", optional = true }
 plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series"] }
+polars = { version = "0.50", optional = true, default-features = false, features = [
+    "lazy",
+    "csv",
+    "fmt",
+    "diff",
+    "round_series",
+    "rank",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -46,3 +59,8 @@ path = "src/scalability.rs"
 name = "pdfium_strip_source_bench"
 path = "src/pdfium_strip_source_bench.rs"
 required-features = ["pdfium"]
+
+[[bin]]
+name = "cross_version"
+path = "src/cross_version.rs"
+required-features = ["polars"]

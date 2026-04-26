@@ -445,14 +445,23 @@ fn main() {
 
     // Scalability series: generate gradient rasters at progressively larger
     // sizes. Uses 1.42:1 aspect ratio matching 43551_California_South.pdf
-    // (4608x3240 pts). The largest size is the full PDF page at 72 DPI.
+    // (4608x3240 pts). The grid intentionally spans both the small "noise"
+    // regime (sub-megapixel) and several points well above the default
+    // x-axis crop (15 MP) so the cropped charts have real lines instead
+    // of a single dot per series. Memory: monolithic peak ≈ w×h×3×1.25
+    // bytes — capped here at ~1.7 GB so the default 4 GB Docker container
+    // still has headroom for libvips alongside.
     let sizes: Vec<(u32, u32)> = vec![
         (512, 360),
         (1024, 720),
         (2048, 1440),
         (4096, 2880),
-        (4608, 3240), // full California South page at 72 DPI
-        (8192, 5760), // beyond the PDF — tests pure scaling
+        (4608, 3240),   // full California South page at 72 DPI (14.93 MP)
+        (8192, 5760),   // beyond the PDF — pure scaling (47.18 MP)
+        (10000, 7000),  // 70 MP
+        (12000, 8400),  // 100.8 MP
+        (16384, 11520), // 188.7 MP
+        (20000, 14000), // 280 MP — mono peak ≈ 1.05 GB
     ];
 
     println!("=== Engine Scalability Benchmark ===");
