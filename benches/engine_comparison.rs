@@ -75,14 +75,8 @@ fn bench_streaming_engine(c: &mut Criterion) {
                         budget_policy: libviprs::streaming::BudgetPolicy::Error,
                     };
                     let strip_src = RasterStripSource::new(&src);
-                    generate_pyramid_streaming(
-                        &strip_src,
-                        &plan,
-                        &sink,
-                        &config,
-                        &NoopObserver,
-                    )
-                    .unwrap();
+                    generate_pyramid_streaming(&strip_src, &plan, &sink, &config, &NoopObserver)
+                        .unwrap();
                 });
             },
         );
@@ -99,14 +93,8 @@ fn bench_streaming_engine(c: &mut Criterion) {
                         budget_policy: libviprs::streaming::BudgetPolicy::Error,
                     };
                     let strip_src = RasterStripSource::new(&src);
-                    generate_pyramid_streaming(
-                        &strip_src,
-                        &plan,
-                        &sink,
-                        &config,
-                        &NoopObserver,
-                    )
-                    .unwrap();
+                    generate_pyramid_streaming(&strip_src, &plan, &sink, &config, &NoopObserver)
+                        .unwrap();
                 });
             },
         );
@@ -136,14 +124,8 @@ fn bench_mapreduce_engine(c: &mut Criterion) {
                         ..MapReduceConfig::default()
                     };
                     let strip_src = RasterStripSource::new(&src);
-                    generate_pyramid_mapreduce(
-                        &strip_src,
-                        &plan,
-                        &sink,
-                        &config,
-                        &NoopObserver,
-                    )
-                    .unwrap();
+                    generate_pyramid_mapreduce(&strip_src, &plan, &sink, &config, &NoopObserver)
+                        .unwrap();
                 });
             },
         );
@@ -160,14 +142,8 @@ fn bench_mapreduce_engine(c: &mut Criterion) {
                         ..MapReduceConfig::default()
                     };
                     let strip_src = RasterStripSource::new(&src);
-                    generate_pyramid_mapreduce(
-                        &strip_src,
-                        &plan,
-                        &sink,
-                        &config,
-                        &NoopObserver,
-                    )
-                    .unwrap();
+                    generate_pyramid_mapreduce(&strip_src, &plan, &sink, &config, &NoopObserver)
+                        .unwrap();
                 });
             },
         );
@@ -208,14 +184,8 @@ fn bench_head_to_head(c: &mut Criterion) {
                         budget_policy: libviprs::streaming::BudgetPolicy::Error,
                     };
                     let strip_src = RasterStripSource::new(&src);
-                    generate_pyramid_streaming(
-                        &strip_src,
-                        &plan,
-                        &sink,
-                        &config,
-                        &NoopObserver,
-                    )
-                    .unwrap();
+                    generate_pyramid_streaming(&strip_src, &plan, &sink, &config, &NoopObserver)
+                        .unwrap();
                 });
             },
         );
@@ -232,14 +202,8 @@ fn bench_head_to_head(c: &mut Criterion) {
                         ..MapReduceConfig::default()
                     };
                     let strip_src = RasterStripSource::new(&src);
-                    generate_pyramid_mapreduce(
-                        &strip_src,
-                        &plan,
-                        &sink,
-                        &config,
-                        &NoopObserver,
-                    )
-                    .unwrap();
+                    generate_pyramid_mapreduce(&strip_src, &plan, &sink, &config, &NoopObserver)
+                        .unwrap();
                 });
             },
         );
@@ -256,14 +220,8 @@ fn bench_head_to_head(c: &mut Criterion) {
                         ..MapReduceConfig::default()
                     };
                     let strip_src = RasterStripSource::new(&src);
-                    generate_pyramid_mapreduce(
-                        &strip_src,
-                        &plan,
-                        &sink,
-                        &config,
-                        &NoopObserver,
-                    )
-                    .unwrap();
+                    generate_pyramid_mapreduce(&strip_src, &plan, &sink, &config, &NoopObserver)
+                        .unwrap();
                 });
             },
         );
