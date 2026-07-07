@@ -455,6 +455,79 @@ pub fn bench_libvips(
     })
 }
 
+/// RAII wrapper around a no-copy `VipsImage` created from a [`Raster`]'s
+/// pixel buffer.
+///
+/// `vips_image_new_from_memory` does **not** copy: the returned image
+/// aliases the raster's bytes. This guard borrows the raster for `'a`, so
+/// the image handle cannot outlive the buffer it points into, and it
+/// unrefs the image on drop. The borrow is enforced at compile time:
+///
+/// ```compile_fail
+/// use libviprs_bench::{gradient_raster, VipsImageGuard};
+/// let guard;
+/// {
+///     let raster = gradient_raster(8, 8);
+///     guard = VipsImageGuard::from_raster(&raster).unwrap();
+/// } // `raster` dropped here, but `guard` still borrows it
+/// let _ = guard.as_ptr();
+/// ```
+#[cfg(feature = "libvips")]
+pub struct VipsImageGuard<'a> {
+    img: *mut libvips_rs::bindings::VipsImage,
+    _borrow: std::marker::PhantomData<&'a [u8]>,
+}
+
+#[cfg(feature = "libvips")]
+impl<'a> VipsImageGuard<'a> {
+    /// Wrap `src` as a no-copy `VipsImage`. Returns `None` if libvips
+    /// rejects the buffer. The returned guard borrows `src` for `'a`.
+    pub fn from_raster(src: &'a Raster) -> Option<Self> {
+        let w = src.width() as i32;
+        let h = src.height() as i32;
+        // RGB8 = 3 bands, RGBA8 = 4 bands, Gray8 = 1 band
+        let bands = src.format().bytes_per_pixel() as i32;
+        let data = src.data();
+        // SAFETY: `data` is borrowed for `'a` and outlives the returned
+        // guard, so the aliased buffer stays valid for the image's life;
+        // we pass its true byte length and vips reads only within it.
+        let img = unsafe {
+            libvips_rs::bindings::vips_image_new_from_memory(
+                data.as_ptr() as *const std::ffi::c_void,
+                data.len() as u64,
+                w,
+                h,
+                bands,
+                libvips_rs::bindings::VipsBandFormat_VIPS_FORMAT_UCHAR,
+            )
+        };
+        if img.is_null() {
+            eprintln!("vips_image_new_from_memory failed");
+            return None;
+        }
+        Some(Self {
+            img,
+            _borrow: std::marker::PhantomData,
+        })
+    }
+
+    /// Raw `VipsImage` pointer, valid for the lifetime of this guard.
+    pub fn as_ptr(&self) -> *mut libvips_rs::bindings::VipsImage {
+        self.img
+    }
+}
+
+#[cfg(feature = "libvips")]
+impl Drop for VipsImageGuard<'_> {
+    fn drop(&mut self) {
+        // SAFETY: `img` is a non-null `VipsImage` for which this guard
+        // holds exactly one reference, released here.
+        unsafe {
+            libvips_rs::bindings::g_object_unref(self.img as *mut std::ffi::c_void);
+        }
+    }
+}
+
 /// Run libvips dzsave in-process via FFI bindings (requires `libvips` feature).
 ///
 /// Creates a `VipsImage` from the raw pixel buffer, runs `dzsave` to a temp
@@ -470,45 +543,20 @@ pub fn bench_libvips_inprocess(
     concurrency: usize,
     label: &str,
 ) -> Option<RunMetrics> {
-    use libvips_rs::{VipsApp, VipsImage};
+    use libvips_rs::VipsApp;
     use std::ffi::CString;
 
-    // Initialize libvips once
-    static INIT: std::sync::Once = std::sync::Once::new();
-    static mut APP: Option<VipsApp> = None;
-    INIT.call_once(|| unsafe {
-        APP = Some(VipsApp::new("bench", false).unwrap());
-    });
+    // Initialize libvips once. A `OnceLock` gives a sound, process-wide
+    // handle without an aliased `static mut` global (see #152).
+    static APP: std::sync::OnceLock<VipsApp> = std::sync::OnceLock::new();
+    let app = APP.get_or_init(|| VipsApp::new("bench", false).unwrap());
+    app.concurrency_set(concurrency.max(1) as i32);
 
-    unsafe {
-        if let Some(ref app) = APP {
-            app.concurrency_set(concurrency.max(1) as i32);
-        }
-    }
-
-    let w = src.width() as i32;
-    let h = src.height() as i32;
-    let bpp = src.format().bytes_per_pixel();
-    // RGB8 = 3 bands, RGBA8 = 4 bands, Gray8 = 1 band
-    let bands = bpp as i32;
-    let data = src.data();
-
-    // Create VipsImage from raw memory (vips references our buffer, no copy)
-    let img = unsafe {
-        let ptr = libvips_rs::bindings::vips_image_new_from_memory(
-            data.as_ptr() as *const std::ffi::c_void,
-            data.len() as u64,
-            w,
-            h,
-            bands,
-            libvips_rs::bindings::VipsBandFormat_VIPS_FORMAT_UCHAR,
-        );
-        if ptr.is_null() {
-            eprintln!("vips_image_new_from_memory failed");
-            return None;
-        }
-        ptr
-    };
+    // Wrap the raster as a no-copy `VipsImage`. The guard borrows `src`,
+    // so the image handle cannot outlive the buffer it aliases; it unrefs
+    // the image on drop.
+    let img_guard = VipsImageGuard::from_raster(src)?;
+    let img = img_guard.as_ptr();
 
     // dzsave to temp directory
     let out_dir = std::env::temp_dir()
@@ -540,10 +588,7 @@ pub fn bench_libvips_inprocess(
     };
     let wall_time = start.elapsed();
 
-    // Clean up the VipsImage
-    unsafe {
-        libvips_rs::bindings::g_object_unref(img as *mut std::ffi::c_void);
-    }
+    // `img_guard` unrefs the VipsImage when it drops at the end of scope.
 
     if ret != 0 {
         eprintln!("vips_dzsave failed (return code {ret})");
