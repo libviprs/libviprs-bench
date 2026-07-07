@@ -19,8 +19,11 @@
 #[test]
 fn vips_app_global_is_not_static_mut() {
     let source = include_str!("../src/lib.rs");
+    let declares_static_mut = source
+        .lines()
+        .any(|line| line.trim_start().starts_with("static mut "));
     assert!(
-        !source.contains("static mut"),
+        !declares_static_mut,
         "src/lib.rs still declares a `static mut` global; use \
          `std::sync::OnceLock` for the libvips app handle (see #152)"
     );

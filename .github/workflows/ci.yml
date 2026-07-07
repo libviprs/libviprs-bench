@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check & Lint feature cells
+    runs-on: ubuntu-latest
+    steps:
+      # libviprs-bench depends on `libviprs = { path = "../libviprs" }`, so
+      # the core repo must sit alongside as a sibling directory.
+      - uses: actions/checkout@v4
+        with:
+          path: libviprs-bench
+      - name: Clone libviprs core (sibling path dep)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" \
+            https://github.com/${{ github.repository_owner }}/libviprs.git libviprs 2>/dev/null \
+            || git clone --depth 1 \
+              https://github.com/${{ github.repository_owner }}/libviprs.git libviprs
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: libviprs-bench
+      # Feature cells. Target selection is `--lib --bins --tests` so the
+      # feature-gated FFI code is exercised without pulling the criterion
+      # bench harness into every cell.
+      - name: check (default)
+        working-directory: libviprs-bench
+        run: cargo check --lib --bins --tests
+      - name: check (libvips)
+        working-directory: libviprs-bench
+        run: cargo check --lib --bins --tests --features libvips
+      - name: check (pdfium)
+        working-directory: libviprs-bench
+        run: cargo check --lib --bins --features pdfium
+      - name: check (polars)
+        working-directory: libviprs-bench
+        run: cargo check --lib --bins --features polars
+      - name: clippy (libvips)
+        working-directory: libviprs-bench
+        run: cargo clippy --lib --tests --features libvips
+
+  test:
+    name: Test (libvips FFI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: libviprs-bench
+      - name: Clone libviprs core (sibling path dep)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" \
+            https://github.com/${{ github.repository_owner }}/libviprs.git libviprs 2>/dev/null \
+            || git clone --depth 1 \
+              https://github.com/${{ github.repository_owner }}/libviprs.git libviprs
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: libviprs-bench
+      - name: Test (libvips feature)
+        working-directory: libviprs-bench
+        run: cargo test --lib --tests --doc --features libvips
