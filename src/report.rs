@@ -19,8 +19,9 @@ use std::fs;
 use std::path::Path;
 
 use libviprs_bench::{
-    comparison_suite, create_snapshot, generate_charts, generate_history_chart, load_history,
-    print_comparison_table, print_savings_summary, save_history,
+    comparison_suite, core_git_sha, core_version, create_snapshot, generate_charts,
+    generate_history_chart, load_history, print_comparison_table, print_savings_summary,
+    save_history,
 };
 
 fn main() {
@@ -33,7 +34,12 @@ fn main() {
     let streaming_budget: u64 = 1_000_000; // 1 MB
 
     println!("=== libviprs engine comparison benchmark (monolithic / streaming / mapreduce) ===");
-    println!("    version: {}", env!("CARGO_PKG_VERSION"));
+    println!(
+        "    measured libviprs core: {} ({})",
+        core_version(),
+        core_git_sha()
+    );
+    println!("    bench harness: {}", env!("CARGO_PKG_VERSION"));
     println!();
     println!("Tile size: {tile_size}, memory budget: {streaming_budget} bytes");
     println!(
@@ -66,8 +72,11 @@ fn main() {
     let mut txt = String::new();
     txt.push_str(&format!(
         "libviprs engine comparison benchmark (monolithic / streaming / mapreduce)\n\
-         version: {}\n\
+         measured libviprs core: {} ({})\n\
+         bench harness: {}\n\
          Tile size: {tile_size}, memory budget: {streaming_budget} bytes\n\n",
+        core_version(),
+        core_git_sha(),
         env!("CARGO_PKG_VERSION"),
     ));
 
@@ -108,35 +117,53 @@ fn main() {
     println!("Charts written:");
     println!("  {}", report_dir.join("chart_wall_time.svg").display());
     println!("  {}", report_dir.join("chart_peak_memory.svg").display());
-    println!("  {}", report_dir.join("chart_tracked_memory.svg").display());
+    println!(
+        "  {}",
+        report_dir.join("chart_tracked_memory.svg").display()
+    );
     println!("  {}", report_dir.join("chart_throughput.svg").display());
     println!("  {}", report_dir.join("chart_efficiency.svg").display());
     println!("  {}", report_dir.join("chart_resource_cost.svg").display());
 
     // --- Versioned benchmark history ---
+    //
+    // If the existing history file is corrupt, I refuse to overwrite it:
+    // appending a fresh snapshot would clobber every prior run. I keep
+    // the old file in place, report the problem, and skip this run's
+    // append so the accumulated history survives for inspection/repair.
     let history_path = report_dir.join("benchmark_history.json");
-    let mut history = load_history(&history_path);
-
-    let snapshot = create_snapshot(results.clone(), tile_size, streaming_budget);
-    history.push(snapshot);
-
-    save_history(&history_path, &history);
     println!();
-    println!(
-        "Benchmark history updated: {} entries in {}",
-        history.len(),
-        history_path.display()
-    );
+    match load_history(&history_path) {
+        Ok(mut history) => {
+            let snapshot = create_snapshot(results.clone(), tile_size, streaming_budget);
+            history.push(snapshot);
+            save_history(&history_path, &history);
+            println!(
+                "Benchmark history updated: {} entries in {}",
+                history.len(),
+                history_path.display()
+            );
 
-    // Generate history trend charts if we have multiple versions
-    if history.len() >= 2 {
-        for &(w, h) in sizes {
-            for &conc in concurrency_levels {
-                generate_history_chart(&history, &report_dir, (w, h), conc);
+            // Generate history trend charts if we have multiple versions
+            if history.len() >= 2 {
+                for &(w, h) in sizes {
+                    for &conc in concurrency_levels {
+                        generate_history_chart(&history, &report_dir, (w, h), conc);
+                    }
+                }
+                println!("History trend charts written to {}", report_dir.display());
+            } else {
+                println!("(run again on a different version to generate trend charts)");
             }
         }
-        println!("History trend charts written to {}", report_dir.display());
-    } else {
-        println!("(run again on a different version to generate trend charts)");
+        Err(e) => {
+            eprintln!("warning: {e}");
+            eprintln!(
+                "Leaving {} untouched so prior history is not discarded.",
+                history_path.display()
+            );
+            eprintln!("Fix or move the file, then re-run to resume appending snapshots.");
+            eprintln!("Skipping history trend charts for this run.");
+        }
     }
 }

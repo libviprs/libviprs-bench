@@ -30,8 +30,16 @@ pub const BENCH_TILE_SUFFIX: &str = ".png";
 /// tracked across releases. Each run appends one entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkSnapshot {
-    /// libviprs version (from Cargo.toml).
+    /// Version of the *measured* `libviprs` core crate, captured at
+    /// build time from `../libviprs/Cargo.toml`. This is the engine the
+    /// numbers describe, not this harness's own `CARGO_PKG_VERSION`
+    /// (the two drift, e.g. bench 0.3.0 while core is 0.3.1).
     pub version: String,
+    /// Short git SHA of the measured core crate's checkout, or
+    /// `"unknown"` when git could not resolve it at build time. Defaults
+    /// to empty for history files written before this field existed.
+    #[serde(default)]
+    pub git_sha: String,
     /// ISO 8601 timestamp of the run.
     pub timestamp: String,
     /// Tile size used.
@@ -932,12 +940,38 @@ pub fn grouped_results(results: &[RunMetrics]) -> Vec<Vec<&RunMetrics>> {
     map.into_values().collect()
 }
 
-/// Load benchmark history from disk, or return an empty vec.
-pub fn load_history(path: &std::path::Path) -> Vec<BenchmarkSnapshot> {
+/// Load benchmark history from disk.
+///
+/// A missing file is not an error: there's simply no history yet, so I
+/// return an empty vec. A file that exists but fails to parse *is* an
+/// error, surfaced to the caller instead of swallowed. The previous
+/// `unwrap_or_default()` turned a corrupt file into an empty vec, and
+/// the very next [`save_history`] then overwrote the file with only the
+/// current run, silently destroying every accumulated snapshot. Callers
+/// must treat `Err` as "leave the existing file untouched".
+pub fn load_history(path: &std::path::Path) -> Result<Vec<BenchmarkSnapshot>, String> {
     match std::fs::read_to_string(path) {
-        Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
-        Err(_) => Vec::new(),
+        Ok(json) => serde_json::from_str(&json)
+            .map_err(|e| format!("couldn't parse benchmark history {}: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(format!(
+            "couldn't read benchmark history {}: {e}",
+            path.display()
+        )),
     }
+}
+
+/// Version of the *measured* `libviprs` core crate, captured at build
+/// time from `../libviprs/Cargo.toml` (see `build.rs`). Falls back to
+/// `"unknown"` if the build script could not stamp it.
+pub fn core_version() -> &'static str {
+    option_env!("LIBVIPRS_CORE_VERSION").unwrap_or("unknown")
+}
+
+/// Short git SHA of the measured core crate's checkout, captured at
+/// build time. `"unknown"` when git could not resolve it.
+pub fn core_git_sha() -> &'static str {
+    option_env!("LIBVIPRS_CORE_GIT_SHA").unwrap_or("unknown")
 }
 
 /// Append a snapshot to the history file.
@@ -953,7 +987,8 @@ pub fn create_snapshot(
     memory_budget_bytes: u64,
 ) -> BenchmarkSnapshot {
     BenchmarkSnapshot {
-        version: env!("CARGO_PKG_VERSION").to_string(),
+        version: core_version().to_string(),
+        git_sha: core_git_sha().to_string(),
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         tile_size,
         memory_budget_bytes,
@@ -1435,5 +1470,79 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
             );
         }
         println!();
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+
+    /// A unique scratch path under the OS temp dir, no external crate.
+    fn scratch_path(tag: &str) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("libviprs_bench_{tag}_{nanos}.json"))
+    }
+
+    #[test]
+    fn missing_history_file_is_empty_not_error() {
+        let path = scratch_path("missing");
+        // Ensure it really does not exist.
+        let _ = std::fs::remove_file(&path);
+        let loaded = load_history(&path).expect("missing file must be Ok(empty)");
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn valid_history_round_trips() {
+        let path = scratch_path("valid");
+        let history = vec![create_snapshot(Vec::new(), 256, 1_000_000)];
+        save_history(&path, &history);
+
+        let loaded = load_history(&path).expect("valid file must parse");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].version, history[0].version);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn corrupt_history_is_reported_and_left_intact() {
+        let path = scratch_path("corrupt");
+        // A prior run's accumulated history that happens to be corrupt.
+        let corrupt = "[ { \"version\": \"0.3.1\", not-valid-json ]";
+        std::fs::write(&path, corrupt).unwrap();
+
+        // load_history must surface the error rather than silently
+        // returning an empty vec (which the caller would then persist,
+        // wiping the file).
+        let result = load_history(&path);
+        assert!(
+            result.is_err(),
+            "corrupt history must be an error, got {result:?}"
+        );
+
+        // And critically, load_history does not itself mutate the file:
+        // the accumulated (if unreadable) history is preserved on disk
+        // for repair instead of being discarded.
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, corrupt);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn snapshot_records_measured_core_version_not_the_harness() {
+        // The recorded version must be the measured core crate's version
+        // (from build.rs), not this bench harness's own CARGO_PKG_VERSION.
+        // A regression to `env!("CARGO_PKG_VERSION")` would fail here
+        // whenever core and bench versions differ (the real-world case).
+        let snap = create_snapshot(Vec::new(), 256, 1_000_000);
+        assert_eq!(snap.version, core_version());
+        assert_eq!(snap.git_sha, core_git_sha());
+        assert!(!snap.version.is_empty());
     }
 }
