@@ -105,7 +105,8 @@ fn build_dataframe(history: &[BenchmarkSnapshot]) -> PolarsResult<DataFrame> {
     let mut engine: Vec<String> = Vec::with_capacity(total);
     let mut concurrency: Vec<u32> = Vec::with_capacity(total);
     let mut wall_time_ms: Vec<f64> = Vec::with_capacity(total);
-    let mut peak_memory_mb: Vec<f64> = Vec::with_capacity(total);
+    let mut tracked_memory_mb: Vec<f64> = Vec::with_capacity(total);
+    let mut peak_rss_mb: Vec<f64> = Vec::with_capacity(total);
     let mut tiles_produced: Vec<u64> = Vec::with_capacity(total);
     let mut tiles_per_second: Vec<f64> = Vec::with_capacity(total);
     let mut tiles_per_second_per_mb: Vec<f64> = Vec::with_capacity(total);
@@ -123,7 +124,8 @@ fn build_dataframe(history: &[BenchmarkSnapshot]) -> PolarsResult<DataFrame> {
             engine.push(run.engine.clone());
             concurrency.push(run.concurrency as u32);
             wall_time_ms.push(run.wall_time_ms());
-            peak_memory_mb.push(run.peak_memory_mb());
+            tracked_memory_mb.push(run.tracked_memory_mb());
+            peak_rss_mb.push(run.peak_rss_mb());
             tiles_produced.push(run.tiles_produced);
             tiles_per_second.push(run.tiles_per_second());
             tiles_per_second_per_mb.push(run.tiles_per_second_per_mb());
@@ -142,7 +144,8 @@ fn build_dataframe(history: &[BenchmarkSnapshot]) -> PolarsResult<DataFrame> {
         "engine" => engine,
         "concurrency" => concurrency,
         "wall_time_ms" => wall_time_ms,
-        "peak_memory_mb" => peak_memory_mb,
+        "tracked_memory_mb" => tracked_memory_mb,
+        "peak_rss_mb" => peak_rss_mb,
         "tiles_produced" => tiles_produced,
         "tiles_per_second" => tiles_per_second,
         "tiles_per_second_per_mb" => tiles_per_second_per_mb,
@@ -189,9 +192,10 @@ fn write_markdown_report(df: &DataFrame, path: &PathBuf) {
         ));
         for metric in [
             ("wall_time_ms", "Wall time (ms)", false),
-            ("peak_memory_mb", "Peak memory (MB)", false),
+            ("tracked_memory_mb", "Tracked working set (MB)", false),
+            ("peak_rss_mb", "Peak RSS (MB)", false),
             ("tiles_per_second", "Throughput (tiles/s)", true),
-            ("tiles_per_second_per_mb", "Efficiency (tiles/s/MB)", true),
+            ("tiles_per_second_per_mb", "Efficiency (tiles/s/RSS-MB)", true),
         ] {
             let (col, title, higher_is_better) = metric;
             out.push_str(&format!("### {title}\n\n"));

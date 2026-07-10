@@ -72,18 +72,27 @@ fn main() {
     ));
 
     txt.push_str(&format!(
-        "{:<24} {:<12} {:>10} {:>10} {:>8} {:>8} {:>10} {:>12}\n",
-        "Label", "Engine", "Time (ms)", "Mem (MB)", "Tiles", "T/s", "T/s/MB", "MB\u{00b7}s/tile"
+        "{:<24} {:<12} {:>10} {:>12} {:>10} {:>8} {:>8} {:>10} {:>12}\n",
+        "Label",
+        "Engine",
+        "Time (ms)",
+        "Tracked MB",
+        "RSS MB",
+        "Tiles",
+        "T/s",
+        "T/s/RSS-MB",
+        "RSS-MB\u{00b7}s/tile"
     ));
-    txt.push_str(&format!("{}\n", "-".repeat(100)));
+    txt.push_str(&format!("{}\n", "-".repeat(112)));
 
     for r in &results {
         txt.push_str(&format!(
-            "{:<24} {:<12} {:>10.1} {:>10.2} {:>8} {:>8.0} {:>10.1} {:>12.4}\n",
+            "{:<24} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>8.0} {:>10.1} {:>12.4}\n",
             r.label,
             r.engine,
             r.wall_time_ms(),
-            r.peak_memory_mb(),
+            r.tracked_memory_mb(),
+            r.peak_rss_mb(),
             r.tiles_produced,
             r.tiles_per_second(),
             r.tiles_per_second_per_mb(),
@@ -99,6 +108,7 @@ fn main() {
     println!("Charts written:");
     println!("  {}", report_dir.join("chart_wall_time.svg").display());
     println!("  {}", report_dir.join("chart_peak_memory.svg").display());
+    println!("  {}", report_dir.join("chart_tracked_memory.svg").display());
     println!("  {}", report_dir.join("chart_throughput.svg").display());
     println!("  {}", report_dir.join("chart_efficiency.svg").display());
     println!("  {}", report_dir.join("chart_resource_cost.svg").display());
