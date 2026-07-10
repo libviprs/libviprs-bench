@@ -15,11 +15,11 @@
 # a floating base image, an unpinned `libvips-dev`, or a `latest` PDFium
 # would silently change the numbers between runs (issue #153). Bump these
 # deliberately, never implicitly.
-#   PDFIUM_RELEASE  — bblanchon/pdfium-binaries release tag (was `latest`)
+#   PDFIUM_RELEASE  : libviprs-dep release tag (checksum-verified builder)
 #   LIBVIPS_VERSION — exact Debian bookworm `libvips*` package version
 # The Rust and Debian base images are pinned by tag on the FROM lines below.
 # ---------------------------------------------------------------------------
-ARG PDFIUM_RELEASE=chromium/7934
+ARG PDFIUM_RELEASE=pdfium-7881
 # Exact `libvips*` version currently in Debian bookworm. Debian only keeps the
 # newest security build of a package on the live mirror, so this must name the
 # current `8.14.1-3+deb12uN` — bump `N` when a new bookworm security update
@@ -33,18 +33,23 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH
 ARG PDFIUM_RELEASE
-# The release tag contains a `/` (e.g. `chromium/7934`); it must be
-# percent-encoded to `%2F` in the download URL.
+# PDFium provenance (libviprs/libviprs#156): consume the pinned,
+# checksum-verified binaries published by libviprs-dep (the branch-pinned
+# builder that runs real ABI/symbol verification), the same source
+# libviprs-tests consumes. Keep PDFIUM_RELEASE and the per-arch SHA-256
+# digests in lockstep with libviprs-tests. The libviprs-dep tarball nests
+# its contents under a `pdfium-<arch>/` top directory, hence
+# `--strip-components=1`.
 RUN case "${TARGETARCH}" in \
-        amd64) PDFIUM_ARCH="linux-x64" ;; \
-        arm64) PDFIUM_ARCH="linux-arm64" ;; \
+        amd64) PDFIUM_ARCH="linux-x64";   PDFIUM_SHA256="653f24f074afe6c868f634ae0cc954a1a89821f33bc7795f16065a14022b662b" ;; \
+        arm64) PDFIUM_ARCH="linux-arm64"; PDFIUM_SHA256="3a8940ae414a54601f6bc0b25fb3d589025320ee91fff378e12708259da5702d" ;; \
         *)     echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac && \
-    PDFIUM_TAG_ENC="$(echo "${PDFIUM_RELEASE}" | sed 's#/#%2F#g')" && \
     curl -fL -o /tmp/pdfium.tgz \
-        "https://github.com/bblanchon/pdfium-binaries/releases/download/${PDFIUM_TAG_ENC}/pdfium-${PDFIUM_ARCH}.tgz" && \
+        "https://github.com/libviprs/libviprs-dep/releases/download/${PDFIUM_RELEASE}/pdfium-${PDFIUM_ARCH}.tgz" && \
+    echo "${PDFIUM_SHA256}  /tmp/pdfium.tgz" | sha256sum -c - && \
     mkdir -p /opt/pdfium && \
-    tar xzf /tmp/pdfium.tgz -C /opt/pdfium && \
+    tar xzf /tmp/pdfium.tgz -C /opt/pdfium --strip-components=1 && \
     rm /tmp/pdfium.tgz
 
 # Stage 2: Build and run benchmarks
