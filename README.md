@@ -18,13 +18,14 @@ This crate is kept in a separate repository so the library crate stays free of h
 
 ## What this is
 
-`libviprs-bench` measures how libviprs scales as image size and concurrency change, and how it compares to libvips on the same workload. Both libraries are linked into a single process so neither side gets a filesystem-I/O advantage.
+`libviprs-bench` measures how libviprs scales as image size and concurrency change, and how it compares to libvips on the same workload. To keep the cross-engine comparison apples-to-apples, every engine — the three libviprs engines and libvips `dzsave` — writes its tiles as **PNG files to a real on-disk sink** under the same DeepZoom layout, so neither side gets an in-RAM-sink or tile-codec advantage.
 
 The harness produces:
 
-- **Wall time** and **peak memory** per engine, per image size
-- **Throughput** (tiles/second) and **memory efficiency** (tiles/second per MB)
-- **Resource cost** (MB-seconds per tile) — useful for comparing engines in environments where memory and CPU time are both billed
+- **Wall time** per engine, per image size
+- **Memory** in two clearly separated columns — an engine-tracked working set (a per-run, libviprs-internal figure; `0` for libvips, which exposes no equivalent) and **peak RSS** (the OS-level high-water mark, measured the same way for every engine). Cross-engine comparison uses the common RSS basis; the two are never conflated.
+- **Throughput** (tiles/second) and **memory efficiency** (tiles/second per RSS-MB)
+- **Resource cost** (RSS-MB-seconds per tile) — useful for comparing engines in environments where memory and CPU time are both billed
 - **SVG charts** of all of the above, plus version-history trend lines across releases
 - **Flame graphs** built from engine observer events
 - **Criterion** statistical reports with violin plots
@@ -36,7 +37,7 @@ The harness produces:
 | **Monolithic** | in-memory `Raster` | Decodes the full canvas, downscales level-by-level. Highest peak memory, fastest at small sizes. |
 | **Streaming** | strip source | Sequential strip pipeline bounded by a memory budget. Memory scales with strip width, not image area. |
 | **MapReduce** | strip source | Parallel strip pipeline. Same strip-bounded model as streaming, with `K` in-flight strips trading memory for throughput. |
-| **libvips** | PNG / raw memory | External baseline via `dzsave`. Either spawned as a CLI or, with the `libvips` feature, called in-process through FFI. |
+| **libvips** | in-memory `VipsImage` | External baseline via `dzsave`, writing PNG tiles to the same on-disk sink as the libviprs engines. Either spawned as a CLI or, with the `libvips` feature, called in-process through FFI. |
 
 | Bench file | Targets |
 |---|---|

@@ -19,10 +19,31 @@ use serde::{Deserialize, Serialize};
 
 use libviprs::streaming::BudgetPolicy;
 use libviprs::{
-    EngineBuilder, EngineConfig, EngineKind, Layout, MemorySink, PyramidPlanner, Raster,
-    RasterStripSource,
+    EngineBuilder, EngineConfig, EngineKind, FsSink, Layout, PyramidPlanner, Raster,
+    RasterStripSource, TileFormat,
 };
 use libviprs_bench::{bench_libvips, gradient_raster, vips_available, write_temp_png};
+
+/// Peak RSS of the current process in bytes. Mirrors the RSS basis the
+/// libvips paths report so the scalability charts compare like-for-like
+/// memory (issue #153). `ru_maxrss` is a process-wide high-water mark; see
+/// the note in `libviprs_bench::RunMetrics::peak_rss_mb`.
+fn process_peak_rss() -> u64 {
+    use std::mem::MaybeUninit;
+    let mut rusage = MaybeUninit::<libc::rusage>::uninit();
+    let ret = unsafe { libc::getrusage(libc::RUSAGE_SELF, rusage.as_mut_ptr()) };
+    if ret != 0 {
+        return 0;
+    }
+    let rusage = unsafe { rusage.assume_init() };
+    if cfg!(target_os = "macos") {
+        // macOS reports ru_maxrss in bytes.
+        rusage.ru_maxrss as u64
+    } else {
+        // Linux reports ru_maxrss in kilobytes.
+        rusage.ru_maxrss as u64 * 1024
+    }
+}
 
 const TILE_SIZE: u32 = 256;
 /// Floor on the streaming engine's memory budget. Keeps small images in
@@ -58,36 +79,70 @@ struct ScalabilityPoint {
     megapixels: f64,
     engine: String,
     wall_time_ms: f64,
-    peak_memory_mb: f64,
+    /// Engine-tracked working set (libviprs engines; 0 for libvips). Kept in a
+    /// separate field from `peak_rss_mb` so the two memory bases are never
+    /// conflated (issue #153).
+    tracked_memory_mb: f64,
+    /// Process/child peak RSS — the cross-engine-comparable memory basis.
+    peak_rss_mb: f64,
     tiles_produced: u64,
     tiles_per_second: f64,
+    /// Tiles/s per RSS-MB (common basis).
     tiles_per_second_per_mb: f64,
+    /// RSS-MB-seconds per tile (common basis).
     resource_cost: f64,
 }
 
-fn run_monolithic(src: &Raster, tile_size: u32) -> (std::time::Duration, u64, u64) {
+/// A libviprs engine run's measurements: wall time, engine-tracked working
+/// set, process peak RSS, and tile count.
+struct EngineRun {
+    dur: std::time::Duration,
+    tracked_bytes: u64,
+    rss_bytes: u64,
+    tiles: u64,
+}
+
+/// Fresh temp directory for on-disk tile output. The libviprs engines write
+/// real PNG tiles here just like libvips `dzsave`, so neither side gets an
+/// in-RAM sink advantage (issue #153). Removed by the caller once counted.
+fn sink_dir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir()
+        .join("libviprs-bench")
+        .join(format!("scal_{}_{label}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn run_monolithic(src: &Raster, tile_size: u32) -> EngineRun {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
-    let sink = MemorySink::new();
+    let out_dir = sink_dir("mono");
+    let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
     let start = Instant::now();
     let result = EngineBuilder::new(src, plan, &sink)
         .with_engine(EngineKind::Monolithic)
         .with_config(EngineConfig::default())
         .run()
         .unwrap();
-    (
-        start.elapsed(),
-        result.peak_memory_bytes,
-        result.tiles_produced,
-    )
+    let dur = start.elapsed();
+    let rss_bytes = process_peak_rss();
+    let _ = std::fs::remove_dir_all(&out_dir);
+    EngineRun {
+        dur,
+        tracked_bytes: result.peak_memory_bytes,
+        rss_bytes,
+        tiles: result.tiles_produced,
+    }
 }
 
-fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Duration, u64, u64) {
+fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
-    let sink = MemorySink::new();
+    let out_dir = sink_dir("stream");
+    let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
     let result = EngineBuilder::new(strip_src, plan, &sink)
@@ -97,18 +152,23 @@ fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Durat
         .with_budget_policy(BudgetPolicy::Error)
         .run()
         .unwrap();
-    (
-        start.elapsed(),
-        result.peak_memory_bytes,
-        result.tiles_produced,
-    )
+    let dur = start.elapsed();
+    let rss_bytes = process_peak_rss();
+    let _ = std::fs::remove_dir_all(&out_dir);
+    EngineRun {
+        dur,
+        tracked_bytes: result.peak_memory_bytes,
+        rss_bytes,
+        tiles: result.tiles_produced,
+    }
 }
 
-fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Duration, u64, u64) {
+fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
-    let sink = MemorySink::new();
+    let out_dir = sink_dir("mr");
+    let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
     let result = EngineBuilder::new(strip_src, plan, &sink)
@@ -118,11 +178,15 @@ fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> (std::time::Durat
         .with_budget_policy(BudgetPolicy::Error)
         .run()
         .unwrap();
-    (
-        start.elapsed(),
-        result.peak_memory_bytes,
-        result.tiles_produced,
-    )
+    let dur = start.elapsed();
+    let rss_bytes = process_peak_rss();
+    let _ = std::fs::remove_dir_all(&out_dir);
+    EngineRun {
+        dur,
+        tracked_bytes: result.peak_memory_bytes,
+        rss_bytes,
+        tiles: result.tiles_produced,
+    }
 }
 
 fn to_point(
@@ -130,17 +194,21 @@ fn to_point(
     h: u32,
     engine: &str,
     dur: std::time::Duration,
-    peak: u64,
+    tracked_bytes: u64,
+    rss_bytes: u64,
     tiles: u64,
 ) -> ScalabilityPoint {
     let mp = w as f64 * h as f64 / 1_000_000.0;
     let secs = dur.as_secs_f64();
     let ms = secs * 1000.0;
-    let peak_mb = peak as f64 / (1024.0 * 1024.0);
+    let tracked_mb = tracked_bytes as f64 / (1024.0 * 1024.0);
+    let rss_mb = rss_bytes as f64 / (1024.0 * 1024.0);
     let tps = if secs > 0.0 { tiles as f64 / secs } else { 0.0 };
-    let tps_mb = if peak_mb > 0.0 { tps / peak_mb } else { 0.0 };
+    // Efficiency and resource-cost use the common RSS basis so every engine's
+    // number means the same thing (issue #153).
+    let tps_mb = if rss_mb > 0.0 { tps / rss_mb } else { 0.0 };
     let cost = if tiles > 0 {
-        (peak_mb * secs) / tiles as f64
+        (rss_mb * secs) / tiles as f64
     } else {
         0.0
     };
@@ -151,7 +219,8 @@ fn to_point(
         megapixels: mp,
         engine: engine.to_string(),
         wall_time_ms: ms,
-        peak_memory_mb: peak_mb,
+        tracked_memory_mb: tracked_mb,
+        peak_rss_mb: rss_mb,
         tiles_produced: tiles,
         tiles_per_second: tps,
         tiles_per_second_per_mb: tps_mb,
@@ -276,7 +345,7 @@ fn render_charts(
                 (
                     p.megapixels,
                     p.wall_time_ms,
-                    p.peak_memory_mb,
+                    p.peak_rss_mb,
                     p.tiles_per_second,
                     p.tiles_per_second_per_mb,
                     p.resource_cost,
@@ -310,8 +379,8 @@ fn render_charts(
         ),
         (
             "scalability_peak_memory.svg",
-            "Peak Memory Scalability — 43551_California_South.pdf",
-            "Peak Memory (MB)",
+            "Peak RSS Scalability — 43551_California_South.pdf",
+            "Peak RSS (MB)",
             2,
         ),
         (
@@ -506,17 +575,14 @@ fn main() {
         #[cfg(feature = "libvips")]
         {
             if let Some(r) = libviprs_bench::bench_libvips_inprocess(&src, TILE_SIZE, 1, "vips") {
-                print!(
-                    "vips={:.0}ms/{:.1}MB  ",
-                    r.wall_time_ms(),
-                    r.peak_memory_mb(),
-                );
+                print!("vips={:.0}ms/{:.1}MB(rss)  ", r.wall_time_ms(), r.peak_rss_mb());
                 all_points.push(to_point(
                     w,
                     h,
                     "libvips",
                     r.wall_time,
-                    r.peak_memory_bytes,
+                    r.tracked_memory_bytes,
+                    r.peak_rss_bytes,
                     r.tiles_produced,
                 ));
                 vips_done = true;
@@ -525,17 +591,14 @@ fn main() {
         if !vips_done && has_vips {
             let png_path = write_temp_png(&src);
             if let Some(r) = bench_libvips(&png_path, w, h, TILE_SIZE, 1, "vips") {
-                print!(
-                    "vips={:.0}ms/{:.1}MB  ",
-                    r.wall_time_ms(),
-                    r.peak_memory_mb(),
-                );
+                print!("vips={:.0}ms/{:.1}MB(rss)  ", r.wall_time_ms(), r.peak_rss_mb());
                 all_points.push(to_point(
                     w,
                     h,
                     "libvips",
                     r.wall_time,
-                    r.peak_memory_bytes,
+                    r.tracked_memory_bytes,
+                    r.peak_rss_bytes,
                     r.tiles_produced,
                 ));
             }
@@ -543,35 +606,59 @@ fn main() {
         }
 
         // Monolithic
-        let (dur, peak, tiles) = run_monolithic(&src, TILE_SIZE);
+        let run = run_monolithic(&src, TILE_SIZE);
         print!(
-            "mono={:.0}ms/{:.1}MB  ",
-            dur.as_secs_f64() * 1000.0,
-            peak as f64 / (1024.0 * 1024.0),
+            "mono={:.0}ms/{:.1}MB(trk)  ",
+            run.dur.as_secs_f64() * 1000.0,
+            run.tracked_bytes as f64 / (1024.0 * 1024.0),
         );
-        all_points.push(to_point(w, h, "monolithic", dur, peak, tiles));
+        all_points.push(to_point(
+            w,
+            h,
+            "monolithic",
+            run.dur,
+            run.tracked_bytes,
+            run.rss_bytes,
+            run.tiles,
+        ));
 
         // Streaming + MapReduce share a budget chosen per-width so the
         // tile-aligned minimum strip always fits.
         let budget = streaming_budget_for(w, TILE_SIZE);
 
         // Streaming
-        let (dur, peak, tiles) = run_streaming(&src, TILE_SIZE, budget);
+        let run = run_streaming(&src, TILE_SIZE, budget);
         print!(
-            "stream={:.0}ms/{:.1}MB  ",
-            dur.as_secs_f64() * 1000.0,
-            peak as f64 / (1024.0 * 1024.0),
+            "stream={:.0}ms/{:.1}MB(trk)  ",
+            run.dur.as_secs_f64() * 1000.0,
+            run.tracked_bytes as f64 / (1024.0 * 1024.0),
         );
-        all_points.push(to_point(w, h, "streaming", dur, peak, tiles));
+        all_points.push(to_point(
+            w,
+            h,
+            "streaming",
+            run.dur,
+            run.tracked_bytes,
+            run.rss_bytes,
+            run.tiles,
+        ));
 
         // MapReduce
-        let (dur, peak, tiles) = run_mapreduce(&src, TILE_SIZE, budget);
+        let run = run_mapreduce(&src, TILE_SIZE, budget);
         println!(
-            "mr={:.0}ms/{:.1}MB",
-            dur.as_secs_f64() * 1000.0,
-            peak as f64 / (1024.0 * 1024.0),
+            "mr={:.0}ms/{:.1}MB(trk)",
+            run.dur.as_secs_f64() * 1000.0,
+            run.tracked_bytes as f64 / (1024.0 * 1024.0),
         );
-        all_points.push(to_point(w, h, "mapreduce", dur, peak, tiles));
+        all_points.push(to_point(
+            w,
+            h,
+            "mapreduce",
+            run.dur,
+            run.tracked_bytes,
+            run.rss_bytes,
+            run.tiles,
+        ));
     }
 
     // --- Generate charts ---
@@ -585,17 +672,25 @@ fn main() {
     // Print summary table
     println!();
     println!(
-        "{:<14} {:<12} {:>10} {:>10} {:>8} {:>10} {:>12}",
-        "Size", "Engine", "Time (ms)", "Mem (MB)", "Tiles", "T/s/MB", "MB\u{00b7}s/tile",
+        "{:<14} {:<12} {:>10} {:>12} {:>10} {:>8} {:>12} {:>14}",
+        "Size",
+        "Engine",
+        "Time (ms)",
+        "Tracked MB",
+        "RSS MB",
+        "Tiles",
+        "T/s/RSS-MB",
+        "RSS-MB\u{00b7}s/tile",
     );
-    println!("{}", "-".repeat(80));
+    println!("{}", "-".repeat(92));
     for p in &all_points {
         println!(
-            "{:<14} {:<12} {:>10.1} {:>10.2} {:>8} {:>10.1} {:>12.4}",
+            "{:<14} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>12.1} {:>14.4}",
             format!("{}x{}", p.width, p.height),
             p.engine,
             p.wall_time_ms,
-            p.peak_memory_mb,
+            p.tracked_memory_mb,
+            p.peak_rss_mb,
             p.tiles_produced,
             p.tiles_per_second_per_mb,
             p.resource_cost,
@@ -623,8 +718,8 @@ fn main() {
             largest.0, largest.1, largest_mp,
         );
         println!(
-            "  Peak memory: {:.1} MB — dominated by the full canvas allocation",
-            mono.peak_memory_mb,
+            "  Tracked working set: {:.1} MB — dominated by the full canvas allocation",
+            mono.tracked_memory_mb,
         );
         println!(
             "  The source raster ({:.1} MB) is cloned into a canvas-sized buffer.",
@@ -652,8 +747,8 @@ fn main() {
             streaming_budget_for(largest.0, TILE_SIZE) as f64 / (1024.0 * 1024.0),
         );
         println!(
-            "  Peak memory: {:.1} MB — bounded by strip height, not canvas area.",
-            stream.peak_memory_mb,
+            "  Tracked working set: {:.1} MB — bounded by strip height, not canvas area.",
+            stream.tracked_memory_mb,
         );
         println!("  The engine holds: current strip + accumulator at each pyramid level",);
         println!("  (geometric series: strip + strip/4 + strip/16 + ...). Strip height is",);
@@ -675,8 +770,8 @@ fn main() {
             streaming_budget_for(largest.0, TILE_SIZE) as f64 / (1024.0 * 1024.0),
         );
         println!(
-            "  Peak memory: {:.1} MB — same strip-bounded model as streaming.",
-            mr.peak_memory_mb,
+            "  Tracked working set: {:.1} MB — same strip-bounded model as streaming.",
+            mr.tracked_memory_mb,
         );
         println!("  With K in-flight strips, peak = K × strip_cost + accumulator chain.",);
         println!("  The budget was too small for K>1 in-flight strips at this image width,",);
@@ -696,7 +791,7 @@ fn main() {
         );
         println!(
             "  Peak RSS: {:.1} MB — libvips uses a demand-driven pipeline where pixels",
-            vips.peak_memory_mb,
+            vips.peak_rss_mb,
         );
         println!("  are computed on demand per-region (O(tile_size²) working set). The RSS",);
         println!("  measured here includes the OS-level allocation footprint, which is higher",);
@@ -719,7 +814,7 @@ fn main() {
             .iter()
             .find(|p| p.width == largest.0 && p.engine == *engine);
         if let (Some(s), Some(l)) = (small, large) {
-            let mem_scale = l.peak_memory_mb / s.peak_memory_mb.max(0.01);
+            let mem_scale = l.peak_rss_mb / s.peak_rss_mb.max(0.01);
             let time_scale = l.wall_time_ms / s.wall_time_ms.max(0.01);
             println!(
                 "  {:<12} image area {:.0}x larger → memory {:.1}x, time {:.1}x",

@@ -4,9 +4,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # run-bench.sh — Build and run libviprs benchmarks in Docker
 #
-# Provides a controlled environment where libvips (C) and libviprs (Rust)
-# run side-by-side with identical inputs. Both libraries are linked into
-# the same process — no CLI spawning, no filesystem I/O advantage.
+# Provides a controlled, pinned environment where libvips (C) and libviprs
+# (Rust) run side-by-side with identical inputs: every engine writes PNG
+# tiles to a real on-disk sink with the same codec, so neither side gets an
+# in-RAM-sink or encoding advantage.
 #
 # Usage:
 #   ./run-bench.sh                     # scalability benchmark (default)
