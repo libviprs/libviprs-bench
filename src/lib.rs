@@ -10,10 +10,19 @@ use std::time::{Duration, Instant};
 
 use libviprs::streaming::BudgetPolicy;
 use libviprs::{
-    CollectingObserver, EngineBuilder, EngineConfig, EngineEvent, EngineKind, Layout, MemorySink,
-    PixelFormat, PyramidPlan, PyramidPlanner, Raster, RasterStripSource,
+    CollectingObserver, EngineBuilder, EngineConfig, EngineEvent, EngineKind, FsSink, Layout,
+    PixelFormat, PyramidPlan, PyramidPlanner, Raster, RasterStripSource, TileFormat,
 };
 use serde::{Deserialize, Serialize};
+
+/// The single tile codec used on **both** sides of the cross-engine
+/// comparison. The libviprs engines encode their tiles in this format via
+/// [`FsSink`], and libvips `dzsave` is invoked with the matching `--suffix`,
+/// so the codec is never a hidden variable between the two engines (issue
+/// #153). Keep [`BENCH_TILE_FORMAT`] and [`BENCH_TILE_SUFFIX`] in lockstep.
+pub const BENCH_TILE_FORMAT: TileFormat = TileFormat::Png;
+/// dzsave `--suffix` (and file extension) matching [`BENCH_TILE_FORMAT`].
+pub const BENCH_TILE_SUFFIX: &str = ".png";
 
 /// A snapshot of benchmark results for a specific libviprs version.
 ///
@@ -45,8 +54,20 @@ pub struct RunMetrics {
     pub engine: String,
     /// Wall-clock time for pyramid generation.
     pub wall_time: Duration,
-    /// Peak tracked memory in bytes (raster buffers only).
-    pub peak_memory_bytes: u64,
+    /// Peak engine-tracked working set in bytes (raster buffers the engine
+    /// accounts for during the run). This is a per-run figure, reset for each
+    /// engine, and is available only for the libviprs engines. libvips does
+    /// not expose an equivalent internal counter, so it is reported as `0`
+    /// there — the two figures are kept in **separate** columns rather than
+    /// being compared against each other (issue #153).
+    pub tracked_memory_bytes: u64,
+    /// Peak resident set size (RSS) in bytes — the OS-level high-water mark.
+    /// This is measured the same way for every engine (via `getrusage` for
+    /// in-process engines, `/usr/bin/time` for the libvips CLI child), so it
+    /// is the one memory basis that is directly comparable across libviprs
+    /// and libvips. See [`RunMetrics::peak_rss_mb`] for the shared-process
+    /// caveat.
+    pub peak_rss_bytes: u64,
     /// Total tiles produced.
     pub tiles_produced: u64,
     /// Levels processed.
@@ -66,8 +87,27 @@ pub struct RunMetrics {
 }
 
 impl RunMetrics {
-    pub fn peak_memory_mb(&self) -> f64 {
-        self.peak_memory_bytes as f64 / (1024.0 * 1024.0)
+    /// Peak engine-tracked working set in MB (libviprs engines; `0` for
+    /// libvips). A per-run, engine-internal figure — not comparable against
+    /// [`RunMetrics::peak_rss_mb`], which is why the two are surfaced as
+    /// separate, labelled columns.
+    pub fn tracked_memory_mb(&self) -> f64 {
+        self.tracked_memory_bytes as f64 / (1024.0 * 1024.0)
+    }
+
+    /// Peak process/child RSS in MB. This is the memory basis that is
+    /// directly comparable across engines and drives the cross-engine
+    /// efficiency and resource-cost metrics below.
+    ///
+    /// Caveat: for the in-process engines several runs share a single
+    /// process and `ru_maxrss` is a monotonic high-water mark, so an
+    /// in-process RSS figure reflects the largest allocation seen in the
+    /// process up to that point rather than a freshly-reset per-run peak.
+    /// The libvips CLI path spawns a child per run and therefore reports a
+    /// strict per-run peak; isolate a single libviprs engine per process for
+    /// the same guarantee.
+    pub fn peak_rss_mb(&self) -> f64 {
+        self.peak_rss_bytes as f64 / (1024.0 * 1024.0)
     }
 
     pub fn wall_time_ms(&self) -> f64 {
@@ -82,15 +122,17 @@ impl RunMetrics {
         }
     }
 
-    /// Memory-normalised throughput: tiles per second per MB of peak memory.
+    /// Memory-normalised throughput on the common RSS basis: tiles per second
+    /// per MB of peak RSS.
     ///
-    /// Captures how efficiently the engine converts memory into work.
-    /// A monolithic engine that processes 300 tiles/s using 48 MB scores
-    /// 6.25, while a streaming engine at 200 tiles/s using 5.25 MB scores
-    /// 38.1 — the streaming engine is 6x more memory-efficient despite
-    /// being slower in raw throughput.
+    /// Uses peak RSS — not the engine-tracked working set — so the figure
+    /// means the same thing for libviprs and libvips. Comparing the libviprs
+    /// engine-tracked bytes against the libvips process RSS is what made the
+    /// old "Nx more memory-efficient" headline apples-to-oranges (issue
+    /// #153); both sides now share the RSS basis. Returns `0` when RSS is
+    /// unavailable.
     pub fn tiles_per_second_per_mb(&self) -> f64 {
-        let mb = self.peak_memory_mb();
+        let mb = self.peak_rss_mb();
         if mb > 0.0 {
             self.tiles_per_second() / mb
         } else {
@@ -98,14 +140,14 @@ impl RunMetrics {
         }
     }
 
-    /// Resource cost: MB-seconds per tile.
+    /// Resource cost: RSS-MB-seconds per tile.
     ///
-    /// Lower is better. Measures the total resource-time consumed per tile,
-    /// penalising both high memory and long wall time. Useful for comparing
-    /// engines in environments where memory and CPU time are both billed
-    /// (containers, serverless).
+    /// Lower is better. Measures the total resource-time consumed per tile on
+    /// the common RSS basis, penalising both high memory and long wall time.
+    /// Useful for comparing engines in environments where memory and CPU time
+    /// are both billed (containers, serverless).
     pub fn resource_cost_per_tile(&self) -> f64 {
-        let mb = self.peak_memory_mb();
+        let mb = self.peak_rss_mb();
         let secs = self.wall_time.as_secs_f64();
         if self.tiles_produced > 0 {
             (mb * secs) / self.tiles_produced as f64
@@ -133,6 +175,27 @@ pub fn gradient_raster(w: u32, h: u32) -> Raster {
     Raster::new(w, h, PixelFormat::Rgb8, data).unwrap()
 }
 
+/// Create a fresh, unique temp directory for a libviprs engine's on-disk tile
+/// output. Both the libviprs engines and libvips `dzsave` write their tiles as
+/// real files under `TMPDIR/libviprs-bench/…`, so neither side gets an in-RAM
+/// sink advantage (issue #153). The directory is removed by the caller once
+/// the tiles have been counted.
+fn fs_sink_dir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir()
+        .join("libviprs-bench")
+        .join(format!("engine_{}_{label}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Build the on-disk PNG sink used by every libviprs engine, rooted under a
+/// fresh temp directory. Mirrors the libvips `dzsave` output: real files, same
+/// [`BENCH_TILE_FORMAT`] codec, DeepZoom layout.
+fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
+    FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(BENCH_TILE_FORMAT)
+}
+
 /// Run the monolithic engine and collect metrics.
 pub fn bench_monolithic(
     src: &Raster,
@@ -140,7 +203,8 @@ pub fn bench_monolithic(
     concurrency: usize,
     label: &str,
 ) -> RunMetrics {
-    let sink = MemorySink::new();
+    let out_dir = fs_sink_dir(label);
+    let sink = engine_fs_sink(&out_dir, plan);
     let observer = Arc::new(CollectingObserver::new());
     let config = EngineConfig::default().with_concurrency(concurrency);
 
@@ -152,6 +216,8 @@ pub fn bench_monolithic(
         .run()
         .unwrap();
     let wall_time = start.elapsed();
+    let peak_rss_bytes = get_peak_rss();
+    let _ = std::fs::remove_dir_all(&out_dir);
 
     RunMetrics {
         label: label.to_string(),
@@ -159,7 +225,8 @@ pub fn bench_monolithic(
         height: src.height(),
         engine: "monolithic".to_string(),
         wall_time,
-        peak_memory_bytes: result.peak_memory_bytes,
+        tracked_memory_bytes: result.peak_memory_bytes,
+        peak_rss_bytes,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -179,7 +246,8 @@ pub fn bench_streaming(
     memory_budget_bytes: u64,
     label: &str,
 ) -> RunMetrics {
-    let sink = MemorySink::new();
+    let out_dir = fs_sink_dir(label);
+    let sink = engine_fs_sink(&out_dir, plan);
     let observer = Arc::new(CollectingObserver::new());
     let engine_config = EngineConfig::default().with_concurrency(concurrency);
     let strip_src = RasterStripSource::new(src);
@@ -193,6 +261,8 @@ pub fn bench_streaming(
         .run()
         .unwrap();
     let wall_time = start.elapsed();
+    let peak_rss_bytes = get_peak_rss();
+    let _ = std::fs::remove_dir_all(&out_dir);
 
     let strips = observer
         .events()
@@ -206,7 +276,8 @@ pub fn bench_streaming(
         height: src.height(),
         engine: "streaming".to_string(),
         wall_time,
-        peak_memory_bytes: result.peak_memory_bytes,
+        tracked_memory_bytes: result.peak_memory_bytes,
+        peak_rss_bytes,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -226,11 +297,13 @@ pub fn bench_mapreduce(
     memory_budget_bytes: u64,
     label: &str,
 ) -> RunMetrics {
-    let sink = MemorySink::new();
+    let out_dir = fs_sink_dir(label);
+    let sink = engine_fs_sink(&out_dir, plan);
     let observer = Arc::new(CollectingObserver::new());
+    let buffer_size = 64usize;
     let engine_config = EngineConfig::default()
         .with_concurrency(tile_concurrency)
-        .with_buffer_size(64)
+        .with_buffer_size(buffer_size)
         .with_blank_tile_strategy(libviprs::BlankTileStrategy::Emit);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
@@ -243,6 +316,8 @@ pub fn bench_mapreduce(
         .run()
         .unwrap();
     let wall_time = start.elapsed();
+    let peak_rss_bytes = get_peak_rss();
+    let _ = std::fs::remove_dir_all(&out_dir);
 
     let events = observer.events();
     let strips = events
@@ -253,11 +328,25 @@ pub fn bench_mapreduce(
         .iter()
         .filter(|e| matches!(e, EngineEvent::BatchStarted { .. }))
         .count() as u32;
+    let strip_height = libviprs::compute_strip_height(plan, src.format(), memory_budget_bytes)
+        .unwrap_or(2 * plan.tile_size);
+    // Mirror the engine's own channel-backlog charge so the reported
+    // in-flight strip count matches what the MapReduce engine actually
+    // budgets for (libviprs `streaming_mapreduce`): the parallel emitter
+    // holds up to `buffer_size + concurrency` decoded tiles in its bounded
+    // channel. Zero when running single-threaded (`tile_concurrency == 0`).
+    let channel_bytes = if tile_concurrency > 0 {
+        let tile_bytes =
+            plan.tile_size as u64 * plan.tile_size as u64 * src.format().bytes_per_pixel() as u64;
+        (buffer_size as u64 + tile_concurrency as u64) * tile_bytes
+    } else {
+        0
+    };
     let inflight = libviprs::streaming_mapreduce::compute_inflight_strips(
         plan,
         src.format(),
-        libviprs::compute_strip_height(plan, src.format(), memory_budget_bytes)
-            .unwrap_or(2 * plan.tile_size),
+        strip_height,
+        channel_bytes,
         memory_budget_bytes,
     );
 
@@ -267,7 +356,8 @@ pub fn bench_mapreduce(
         height: src.height(),
         engine: "mapreduce".to_string(),
         wall_time,
-        peak_memory_bytes: result.peak_memory_bytes,
+        tracked_memory_bytes: result.peak_memory_bytes,
+        peak_rss_bytes,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -347,7 +437,14 @@ pub fn bench_libvips(
             .args(["-l", "vips", "dzsave"])
             .arg(png_path)
             .arg(&dz_path)
-            .args(["--tile-size", &ts_str, "--overlap", "0", "--suffix", ".png"])
+            .args([
+                "--tile-size",
+                &ts_str,
+                "--overlap",
+                "0",
+                "--suffix",
+                BENCH_TILE_SUFFIX,
+            ])
             .env("VIPS_CONCURRENCY", &conc_str)
             .output()
     } else {
@@ -355,7 +452,14 @@ pub fn bench_libvips(
             .args(["-v", "vips", "dzsave"])
             .arg(png_path)
             .arg(&dz_path)
-            .args(["--tile-size", &ts_str, "--overlap", "0", "--suffix", ".png"])
+            .args([
+                "--tile-size",
+                &ts_str,
+                "--overlap",
+                "0",
+                "--suffix",
+                BENCH_TILE_SUFFIX,
+            ])
             .env("VIPS_CONCURRENCY", &conc_str)
             .output()
     };
@@ -443,7 +547,10 @@ pub fn bench_libvips(
         height,
         engine: "libvips".to_string(),
         wall_time,
-        peak_memory_bytes,
+        // libvips exposes no engine-internal working-set counter, so the
+        // tracked column is left at 0 and only the RSS column is populated.
+        tracked_memory_bytes: 0,
+        peak_rss_bytes: peak_memory_bytes,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
@@ -567,7 +674,11 @@ pub fn bench_libvips_inprocess(
 
     let dz_path = out_dir.join("pyramid");
     let dz_path_c = CString::new(dz_path.to_str().unwrap()).unwrap();
-    let suffix_c = CString::new(".raw").unwrap();
+    // Same tile codec as the libviprs `FsSink` and the libvips CLI path — the
+    // in-process path historically wrote `.raw`, which meant "libvips" rows
+    // secretly skipped PNG tile encoding that both other paths paid (issue
+    // #153). Encode PNG here too so the codec is identical everywhere.
+    let suffix_c = CString::new(BENCH_TILE_SUFFIX).unwrap();
     let tile_size_c = CString::new("tile-size").unwrap();
     let overlap_c = CString::new("overlap").unwrap();
     let suffix_opt_c = CString::new("suffix").unwrap();
@@ -616,8 +727,10 @@ pub fn bench_libvips_inprocess(
         0
     };
 
-    // Measure peak RSS of current process (approximate — includes our own allocations)
-    let peak_memory_bytes = get_peak_rss();
+    // Measure peak RSS of the current process. This is a process-wide
+    // high-water mark (see `RunMetrics::peak_rss_mb`), and libvips exposes no
+    // internal working-set counter, so the tracked column stays 0.
+    let peak_rss_bytes = get_peak_rss();
 
     let _ = std::fs::remove_dir_all(&out_dir);
 
@@ -627,7 +740,8 @@ pub fn bench_libvips_inprocess(
         height: src.height(),
         engine: "libvips".to_string(),
         wall_time,
-        peak_memory_bytes,
+        tracked_memory_bytes: 0,
+        peak_rss_bytes,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
@@ -775,18 +889,27 @@ pub fn comparison_suite(
 /// Print a comparison table to stdout.
 pub fn print_comparison_table(results: &[RunMetrics]) {
     println!(
-        "{:<24} {:<12} {:>10} {:>10} {:>8} {:>8} {:>10} {:>12}",
-        "Label", "Engine", "Time (ms)", "Mem (MB)", "Tiles", "T/s", "T/s/MB", "MB\u{00b7}s/tile"
+        "{:<24} {:<12} {:>10} {:>12} {:>10} {:>8} {:>8} {:>10} {:>12}",
+        "Label",
+        "Engine",
+        "Time (ms)",
+        "Tracked MB",
+        "RSS MB",
+        "Tiles",
+        "T/s",
+        "T/s/RSS-MB",
+        "RSS-MB\u{00b7}s/tile"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(112));
 
     for r in results {
         println!(
-            "{:<24} {:<12} {:>10.1} {:>10.2} {:>8} {:>8.0} {:>10.1} {:>12.4}",
+            "{:<24} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>8.0} {:>10.1} {:>12.4}",
             r.label,
             r.engine,
             r.wall_time_ms(),
-            r.peak_memory_mb(),
+            r.tracked_memory_mb(),
+            r.peak_rss_mb(),
             r.tiles_produced,
             r.tiles_per_second(),
             r.tiles_per_second_per_mb(),
@@ -1018,12 +1141,22 @@ pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
         &groups,
     );
 
-    // Peak memory chart
-    let groups = extract_groups(results, |r| r.peak_memory_mb());
+    // Peak RSS chart — the cross-engine-comparable memory basis.
+    let groups = extract_groups(results, |r| r.peak_rss_mb());
     draw_grouped_bar_chart(
         &report_dir.join("chart_peak_memory.svg"),
-        "Peak Memory (lower is better)",
-        "Memory (MB)",
+        "Peak RSS (lower is better)",
+        "Peak RSS (MB)",
+        &groups,
+    );
+
+    // Engine-tracked working set — a libviprs-only, per-run figure kept in a
+    // separate chart so it is never confused with the RSS basis above.
+    let groups = extract_groups(results, |r| r.tracked_memory_mb());
+    draw_grouped_bar_chart(
+        &report_dir.join("chart_tracked_memory.svg"),
+        "Engine-Tracked Working Set (libviprs engines; lower is better)",
+        "Tracked (MB)",
         &groups,
     );
 
@@ -1040,8 +1173,8 @@ pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
     let groups = extract_groups(results, |r| r.tiles_per_second_per_mb());
     draw_grouped_bar_chart(
         &report_dir.join("chart_efficiency.svg"),
-        "Memory Efficiency — Tiles/s per MB (higher is better)",
-        "Tiles/s/MB",
+        "Memory Efficiency — Tiles/s per RSS-MB (higher is better)",
+        "Tiles/s/RSS-MB",
         &groups,
     );
 
@@ -1049,8 +1182,8 @@ pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
     let groups = extract_groups(results, |r| r.resource_cost_per_tile());
     draw_grouped_bar_chart(
         &report_dir.join("chart_resource_cost.svg"),
-        "Resource Cost — MB\u{00b7}s per Tile (lower is better)",
-        "MB\u{00b7}s / tile",
+        "Resource Cost — RSS-MB\u{00b7}s per Tile (lower is better)",
+        "RSS-MB\u{00b7}s / tile",
         &groups,
     );
 }
@@ -1089,7 +1222,7 @@ pub fn generate_history_chart(
             let pt = Point {
                 version: snap.version.clone(),
                 wall_time_ms: run.wall_time_ms(),
-                peak_memory_mb: run.peak_memory_mb(),
+                peak_memory_mb: run.peak_rss_mb(),
             };
             match run.engine.as_str() {
                 "libvips" => vips_pts.push(pt),
@@ -1201,7 +1334,7 @@ pub fn generate_history_chart(
 
     let mut chart = ChartBuilder::on(&root)
         .caption(
-            format!("Peak Memory History — {w}x{h} c{concurrency}"),
+            format!("Peak RSS History — {w}x{h} c{concurrency}"),
             ("sans-serif", 16).into_font(),
         )
         .margin(10)
@@ -1270,10 +1403,17 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
 
     println!();
     println!(
-        "{:<16} {:<12} {:>10} {:>10} {:>10} {:>10} {:>12}",
-        "Config", "Engine", "Time (ms)", "Mem (MB)", "T/s", "T/s/MB", "MB\u{00b7}s/tile",
+        "{:<16} {:<12} {:>10} {:>12} {:>10} {:>10} {:>10} {:>12}",
+        "Config",
+        "Engine",
+        "Time (ms)",
+        "Tracked MB",
+        "RSS MB",
+        "T/s",
+        "T/s/RSS-MB",
+        "RSS-MB\u{00b7}s/tile",
     );
-    println!("{}", "-".repeat(86));
+    println!("{}", "-".repeat(98));
 
     for group in &groups {
         let config = format!(
@@ -1283,11 +1423,12 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
         for (i, r) in group.iter().enumerate() {
             let label = if i == 0 { &config } else { "" };
             println!(
-                "{:<16} {:<12} {:>10.1} {:>10.2} {:>10.0} {:>10.1} {:>12.4}",
+                "{:<16} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>10.0} {:>10.1} {:>12.4}",
                 label,
                 r.engine,
                 r.wall_time_ms(),
-                r.peak_memory_mb(),
+                r.tracked_memory_mb(),
+                r.peak_rss_mb(),
                 r.tiles_per_second(),
                 r.tiles_per_second_per_mb(),
                 r.resource_cost_per_tile(),
