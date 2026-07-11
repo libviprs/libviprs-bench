@@ -74,4 +74,4 @@ required-features = ["polars"]
 # `Pdfium`. Keep this pin in lockstep with `../libviprs/Cargo.toml`;
 # drop both once the fork is upstreamed and released.
 [patch.crates-io]
-pdfium-render = { git = "https://github.com/libviprs/pdfium-render.git", branch = "libviprs/per-call-thread-safety" }
+pdfium-render = { git = "https://github.com/libviprs/pdfium-render.git", branch = "libviprs/integration" }
