@@ -46,7 +46,7 @@ fn events_to_folded_stacks(events: &[EngineEvent], engine_name: &str) -> Vec<Str
                 _level_tiles = 0;
                 stacks.push(format!("{engine_name};level_{level}_start {tile_count}"));
             }
-            EngineEvent::TileCompleted { coord } => {
+            EngineEvent::TileCompleted { coord, .. } => {
                 _level_tiles += 1;
                 if let Some(lvl) = current_level {
                     stacks.push(format!(
