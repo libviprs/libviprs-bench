@@ -214,7 +214,7 @@ pub fn bench_streaming(
         batches: 0,
         inflight_strips: 0,
         concurrency,
-        memory_budget_bytes: memory_budget_bytes,
+        memory_budget_bytes,
     }
 }
 
@@ -253,11 +253,22 @@ pub fn bench_mapreduce(
         .iter()
         .filter(|e| matches!(e, EngineEvent::BatchStarted { .. }))
         .count() as u32;
+    // Mirror the core MapReduce path's parallel tile-emission backlog so the
+    // reported in-flight strip count matches the real run (libviprs#327/#103).
+    // This harness builds its config with buffer_size = 64.
+    let bpp = src.format().bytes_per_pixel() as u64;
+    let channel_bytes = if tile_concurrency > 0 {
+        let tile_bytes = plan.tile_size as u64 * plan.tile_size as u64 * bpp;
+        (64u64 + tile_concurrency as u64) * tile_bytes
+    } else {
+        0
+    };
     let inflight = libviprs::streaming_mapreduce::compute_inflight_strips(
         plan,
         src.format(),
         libviprs::compute_strip_height(plan, src.format(), memory_budget_bytes)
             .unwrap_or(2 * plan.tile_size),
+        channel_bytes,
         memory_budget_bytes,
     );
 
@@ -595,6 +606,7 @@ pub fn bench_libvips_inprocess(
 }
 
 /// Get current process peak RSS in bytes.
+#[allow(dead_code)] // retained for ad-hoc RSS probing; peak now comes from EngineResult
 fn get_peak_rss() -> u64 {
     #[cfg(target_os = "macos")]
     {
@@ -697,7 +709,7 @@ pub fn comparison_suite(
             results.push(mr);
 
             // libvips: prefer in-process FFI when available, fall back to CLI
-            let mut vips_done = false;
+            let vips_done = false;
             #[cfg(feature = "libvips")]
             {
                 if let Some(vips) =
