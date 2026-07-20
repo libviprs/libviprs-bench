@@ -63,6 +63,10 @@ fn main() {
 /// Cargo manifest. I keep this to a small hand scan rather than pulling
 /// in a TOML parser as a build dependency: the `[package] version` line
 /// is stable and appears before any other table.
+///
+/// This intentionally duplicates the library's `version_matrix::read_package_field`:
+/// a build script cannot depend on the crate it builds, so the two copies can't
+/// be merged. Keep them in step.
 fn read_package_version(manifest: &Path) -> Option<String> {
     let text = std::fs::read_to_string(manifest).ok()?;
     let mut in_package = false;

@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod harness;
 pub mod provenance;
+pub mod version_id;
 pub mod version_matrix;
 
 /// Current on-disk schema version for [`BenchmarkSnapshot`] /
@@ -34,6 +35,20 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const BENCH_TILE_FORMAT: TileFormat = TileFormat::Png;
 /// dzsave `--suffix` (and file extension) matching [`BENCH_TILE_FORMAT`].
 pub const BENCH_TILE_SUFFIX: &str = ".png";
+
+/// The canonical measurement suite, defined once and shared by every axis so
+/// "the identical suite" is a compile-time fact rather than hand-copied
+/// literals. The everyday `report` binary and the version-matrix runner's
+/// [`version_matrix::MatrixConfig::default`] both consume these, mirroring how
+/// they already share [`harness::DEFAULT_ITERS`] / [`harness::DEFAULT_WARMUP`]
+/// (issue #19). Changing any of them re-defines the suite for both axes at once.
+pub const DEFAULT_SIZES: &[(u32, u32)] = &[(512, 512), (1024, 1024), (2048, 2048), (4096, 4096)];
+/// Concurrency levels swept per size (`0` = serial).
+pub const DEFAULT_CONCURRENCY: &[usize] = &[0, 4];
+/// Tile edge in pixels for the measured pyramids.
+pub const BENCH_TILE_SIZE: u32 = 256;
+/// Streaming engine memory budget, in bytes (1 MB).
+pub const BENCH_STREAMING_BUDGET: u64 = 1_000_000;
 
 /// A snapshot of benchmark results for a specific libviprs version.
 ///
@@ -1176,10 +1191,51 @@ pub fn core_git_sha() -> &'static str {
     option_env!("LIBVIPRS_CORE_GIT_SHA").unwrap_or("unknown")
 }
 
-/// Append a snapshot to the history file.
-pub fn save_history(path: &std::path::Path, history: &[BenchmarkSnapshot]) {
-    let json = serde_json::to_string_pretty(history).unwrap();
-    std::fs::write(path, json).unwrap();
+/// Persist the full history to `path` atomically.
+///
+/// The history file is the canonical accumulation of every recorded run, so a
+/// partial write must never be able to truncate it: a crash or `ENOSPC` between
+/// `open`-for-truncate and the final `write` (what the previous
+/// `fs::write(path, …)` did) would leave a mangled file and lose the lot. This
+/// serializes to a sibling temp file in the *same directory* and `rename`s it
+/// into place — `rename` is atomic on POSIX, so a reader (and a crash) sees
+/// either the complete old file or the complete new one, never a torn one.
+///
+/// # Errors
+/// Returns the rendered IO/serialization error if the temp file cannot be
+/// written, flushed, or renamed. The destination is left untouched on error, so
+/// callers can surface the failure and keep the prior history intact. The
+/// version-matrix runner writes this file once per version, so hardening the
+/// primitive here protects the tool that exercises it the hardest (issue #19).
+pub fn save_history(path: &std::path::Path, history: &[BenchmarkSnapshot]) -> Result<(), String> {
+    use std::io::Write as _;
+
+    let json = serde_json::to_string_pretty(history)
+        .map_err(|e| format!("couldn't serialize benchmark history: {e}"))?;
+
+    // Temp sibling in the same directory so the final `rename` is a same-filesystem
+    // (hence atomic) move rather than a cross-device copy.
+    let dir = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let tmp = dir.join(format!(
+        ".{}.tmp.{}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("benchmark_history.json"),
+        std::process::id()
+    ));
+
+    let mut f = std::fs::File::create(&tmp)
+        .map_err(|e| format!("couldn't create temp history {}: {e}", tmp.display()))?;
+    f.write_all(json.as_bytes())
+        .and_then(|()| f.flush())
+        .map_err(|e| format!("couldn't write temp history {}: {e}", tmp.display()))?;
+    drop(f);
+
+    std::fs::rename(&tmp, path).map_err(|e| {
+        // Best effort: don't leave the temp file lying around on a failed rename.
+        let _ = std::fs::remove_file(&tmp);
+        format!("couldn't move history into place {}: {e}", path.display())
+    })
 }
 
 /// Create a `BenchmarkSnapshot` from current run metrics, tagged with the
@@ -1859,7 +1915,7 @@ mod history_tests {
     fn valid_history_round_trips() {
         let path = scratch_path("valid");
         let history = vec![create_snapshot(Vec::new(), 256, 1_000_000)];
-        save_history(&path, &history);
+        save_history(&path, &history).expect("save must succeed");
 
         let loaded = load_history(&path).expect("valid file must parse");
         assert_eq!(loaded.len(), 1);

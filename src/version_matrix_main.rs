@@ -20,11 +20,10 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use libviprs_bench::harness;
 use libviprs_bench::provenance::Provenance;
-use libviprs_bench::version_matrix::{
-    MatrixConfig, VersionOutcome, core_repo_dir, run_matrix, version_key,
-};
+use libviprs_bench::version_id::version_key;
+use libviprs_bench::version_matrix::{MatrixConfig, VersionOutcome, core_repo_dir, run_matrix};
+use libviprs_bench::{harness, load_history};
 
 const USAGE: &str = "\
 usage: version_matrix --versions <tag,tag,HEAD> [options]
@@ -35,7 +34,13 @@ usage: version_matrix --versions <tag,tag,HEAD> [options]
   --sizes <WxH,...>      image sizes (default: 512x512,1024x1024,2048x2048,4096x4096)
   --concurrency <N,...>  concurrency levels (default: 0,4)
 
-env: BENCH_ITERS / BENCH_WARMUP override per-cell iteration counts.";
+env: BENCH_ITERS / BENCH_WARMUP override per-cell iteration counts.
+
+exit codes:
+  0  every requested version was benchmarked and appended
+  1  total failure: nothing was recorded (all versions skipped)
+  2  usage error (bad/missing arguments), or the history file is unusable
+  3  partial success: some versions appended, some skipped";
 
 struct Options {
     versions: Vec<String>,
@@ -138,6 +143,11 @@ fn main() -> ExitCode {
     if let Some(code) = harness::maybe_run_single_subcommand() {
         return ExitCode::from(code as u8);
     }
+    // Same defensive reasoning for the `--print-core` self-report probe: a
+    // reused/aliased invocation of this binary could land here.
+    if let Some(code) = harness::maybe_run_print_core_subcommand() {
+        return ExitCode::from(code as u8);
+    }
 
     let args: Vec<String> = std::env::args().collect();
     let opts = match Options::parse(&args[1..]) {
@@ -197,6 +207,20 @@ fn main() -> ExitCode {
         }
     }
 
+    // Pre-flight the shared history once. A corrupt/unreadable file is a
+    // whole-run precondition failure: the load path refuses to clobber it, so
+    // every append would fail identically. Fail fast *before* spending a full
+    // rebuild + suite per version rather than after (issue #19). A missing file
+    // is fine — an empty history to append to.
+    if let Err(e) = load_history(&opts.history) {
+        eprintln!("error: {e}");
+        eprintln!(
+            "Refusing to run: fix or move {} first so prior history is not at risk.",
+            opts.history.display()
+        );
+        return ExitCode::from(2);
+    }
+
     let outcomes = run_matrix(&repo, &opts.versions, &cfg, &opts.history);
 
     println!();
@@ -217,9 +241,9 @@ fn main() -> ExitCode {
                     version_key(version, short_sha)
                 );
             }
-            VersionOutcome::Skipped { refname, reason } => {
+            VersionOutcome::Skipped { refname, error } => {
                 skipped += 1;
-                println!("  skip  {refname:<16} -> {reason}");
+                println!("  skip  {refname:<16} -> {error}");
             }
         }
     }
@@ -230,13 +254,15 @@ fn main() -> ExitCode {
     );
 
     if appended == 0 {
+        // Total failure: nothing was recorded.
         eprintln!("no versions were successfully benchmarked");
         return ExitCode::FAILURE;
     }
     if skipped > 0 {
-        // Partial success: surface a non-zero code so scripts/CI notice, but
-        // the snapshots that did land are already persisted.
-        return ExitCode::from(1);
+        // Partial success: a distinct code (3) so CI can tell "some recorded,
+        // some skipped" apart from total failure (1); the snapshots that did
+        // land are already persisted.
+        return ExitCode::from(3);
     }
     ExitCode::SUCCESS
 }

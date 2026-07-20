@@ -29,7 +29,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use libviprs_bench::provenance::OracleMatch;
-use libviprs_bench::version_matrix::{ordered_version_keys, version_key};
+use libviprs_bench::version_id::{ordered_version_keys, version_key};
 use libviprs_bench::{BenchmarkSnapshot, RunMetrics};
 use polars::prelude::*;
 
@@ -390,6 +390,13 @@ fn render_metric_table(
 
 /// Look up (metric value, CI half-width, environment fingerprint) for one
 /// (engine, version_key) cell. CI is 0 when the metric has no CI column.
+///
+/// If a `version_key` collides — the same `version@short_sha` benchmarked in two
+/// separate snapshots, e.g. HEAD re-run with no new commit — this keeps the
+/// first matching row (`get(0)`) and the other measurement does not inform the
+/// cell. Distinct commits already get distinct keys via the `@short_sha`
+/// suffix, so a collision only happens for genuine re-runs of the identical
+/// build.
 fn lookup_row(
     df: &DataFrame,
     engine: &str,

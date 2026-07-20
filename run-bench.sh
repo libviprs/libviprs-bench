@@ -67,6 +67,13 @@ MEMORY_MB="${MEMORY_MB:-4096}"
 # of the sibling core crate, so it must run on the host toolchain rather than
 # inside the pinned Docker image (which carries no git worktree topology).
 # Force local execution for it.
+#
+# Consequence: unlike every other axis (measured inside the pinned container),
+# the release-history axis is measured on THIS host's toolchain/libvips. Its
+# snapshots are a self-contained series — compare them only within themselves,
+# not against Docker-measured snapshots in the same history. Each snapshot
+# records its environment fingerprint, and cross_version flags cross-environment
+# cells with `env≠`, so the two are never silently mixed.
 if [ "$BENCH_CMD" = "version_matrix" ]; then
     NO_BUILD=true
     if [ -z "$VERSIONS" ]; then

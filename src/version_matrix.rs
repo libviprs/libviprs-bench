@@ -20,19 +20,26 @@
 //!     append-to-history path. A build failure at an old tag is a skip+warn,
 //!     never an abort of the whole matrix.
 //!
-//! Version identity is keyed by `version@short_sha` ([`version_key`]) and
-//! ordered by (semver, timestamp) ([`ordered_version_keys`]), so two builds of
-//! the same version don't collapse into one column and `0.10.0` sorts after
-//! `0.9.0` rather than lexically before `0.3.1` (issue #19).
+//! Version identity (keying by `version@short_sha`, ordering by (semver,
+//! timestamp)) is pure domain logic and lives in [`crate::version_id`]; this
+//! module is the process-orchestration half.
+//!
+//! Measurement note: unlike the everyday axis (measured inside the pinned
+//! Docker image), the release-history axis is driven on the **host** toolchain —
+//! it needs the core repo's real git worktree topology, which the container does
+//! not carry. Its snapshots are therefore a self-contained series, only
+//! comparable within themselves on one host; the environment fingerprint each
+//! snapshot records (and `cross_version`'s `env≠` guard) keeps them from being
+//! silently compared against Docker-measured numbers.
 
-use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::RunMetrics;
 use crate::harness::{self, Engine};
-use crate::{BenchmarkSnapshot, RunMetrics};
+use crate::version_id::version_key;
 
 /// The harness binary rebuilt per tag and re-invoked (as `--single` children)
 /// to measure each cell. It is the same `report` bin the everyday benchmark
@@ -41,17 +48,26 @@ const HARNESS_BIN: &str = "report";
 
 /// Anything that can go wrong resolving, building, or recording one version.
 ///
-/// Every variant is recoverable at the matrix level: [`run_matrix`] turns it
-/// into a skip+warn for that version and carries on, so one un-buildable old
-/// tag never sinks the whole release-history run.
-#[derive(Debug)]
+/// [`Git`](MatrixError::Git) and [`Build`](MatrixError::Build) are *per-version*
+/// failures: [`run_matrix`] turns them into a skip+warn for that version and
+/// carries on, so one un-buildable old tag never sinks the whole run.
+///
+/// [`History`](MatrixError::History) is different — it signals the shared
+/// history file itself is unusable (corrupt/unreadable), a whole-run
+/// precondition. The runner pre-flights the load once up front and aborts
+/// before doing any expensive work rather than rebuilding + benchmarking every
+/// ref only to fail identically at each append. A `History` still surfacing
+/// mid-sweep (e.g. a same-directory temp write that fails) degrades to a
+/// per-version skip so already-recorded snapshots survive.
+#[derive(Debug, Clone)]
 pub enum MatrixError {
     /// A `git` invocation failed (bad ref, worktree add/remove, rev-parse).
     Git(String),
-    /// The per-tag `cargo build` failed or produced no harness binary.
+    /// The per-tag `cargo build` failed, produced no harness binary, or built a
+    /// binary whose self-reported core did not match the requested ref.
     Build(String),
-    /// The history file could not be loaded (e.g. corrupt) — refused rather
-    /// than clobbered, mirroring [`crate::load_history`].
+    /// The history file could not be loaded or persisted — refused rather than
+    /// clobbered, mirroring [`crate::load_history`] / [`crate::save_history`].
     History(String),
 }
 
@@ -83,14 +99,17 @@ pub fn core_repo_dir() -> PathBuf {
 #[derive(Debug)]
 pub struct CoreWorktree {
     /// The worktree directory (a full checkout of the core crate at `refname`).
-    pub path: PathBuf,
+    /// Private: `Drop` calls `remove_dir_all(&self.path)`, so letting a holder
+    /// reassign it would orphan the real worktree and point cleanup at the wrong
+    /// directory. Read it through [`CoreWorktree::path`].
+    path: PathBuf,
     /// The ref requested (`"HEAD"`, `"v0.3.1"`, a SHA, …).
-    pub refname: String,
+    refname: String,
     /// The concrete short SHA the ref resolved to.
-    pub short_sha: String,
+    short_sha: String,
     /// The `[package] version` read out of the checked-out core manifest, or
     /// `"unknown"` if it could not be parsed.
-    pub version: String,
+    version: String,
     /// The source core repo, retained so `Drop` can `git worktree remove`.
     repo: PathBuf,
     removed: bool,
@@ -138,17 +157,43 @@ impl CoreWorktree {
             )));
         }
 
-        let short_sha = git_stdout(&path, &["rev-parse", "--short", "HEAD"])?;
-        let version = read_package_version(&path.join("Cargo.toml"));
-
-        Ok(CoreWorktree {
+        // Arm cleanup *before* the fallible resolves below. Past this point the
+        // worktree exists on disk and in git's registry, so construct the RAII
+        // guard first with a placeholder identity and fill it in afterwards: if
+        // `rev-parse` or the manifest read fails, `wt` drops on the `?` and its
+        // `Drop` removes + prunes the worktree instead of leaking it.
+        let mut wt = CoreWorktree {
             path,
             refname: refname.to_string(),
-            short_sha,
-            version,
+            short_sha: String::new(),
+            version: String::new(),
             repo,
             removed: false,
-        })
+        };
+        wt.short_sha = git_stdout(&wt.path, &["rev-parse", "--short", "HEAD"])?;
+        wt.version = read_package_version(&wt.path.join("Cargo.toml"));
+        Ok(wt)
+    }
+
+    /// The worktree directory — a full checkout of the core crate at its ref.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The ref requested (`"HEAD"`, `"v0.3.1"`, a SHA, …).
+    pub fn refname(&self) -> &str {
+        &self.refname
+    }
+
+    /// The concrete short SHA the ref resolved to.
+    pub fn short_sha(&self) -> &str {
+        &self.short_sha
+    }
+
+    /// The `[package] version` read out of the checked-out core manifest, or
+    /// `"unknown"` if it could not be parsed.
+    pub fn version(&self) -> &str {
+        &self.version
     }
 
     /// Remove the worktree and prune it from the repo's registry. Idempotent.
@@ -174,8 +219,15 @@ impl CoreWorktree {
             .arg(&self.repo)
             .args(["worktree", "prune"])
             .output();
+        // Success is defined by the end state, not by which step achieved it: if
+        // the directory is gone the worktree is cleaned up even when the initial
+        // `git worktree remove` returned non-zero (the backstop finished the job
+        // and prune dropped the registry entry). Only a directory we could not
+        // delete is a genuine error worth surfacing.
+        if !self.path.exists() {
+            return Ok(());
+        }
         match status {
-            Ok(o) if o.status.success() => Ok(()),
             Ok(o) => Err(MatrixError::Git(format!(
                 "git worktree remove failed: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
@@ -198,14 +250,36 @@ impl Drop for CoreWorktree {
 pub enum HarnessBuild {
     /// Rebuild the harness from source against the worktree — the real path,
     /// pinning `[profile.release]` and redirecting the `libviprs` dependency.
+    /// After the build, the binary's `build.rs`-stamped self-report is asserted
+    /// to match the requested ref, so a snapshot's identity comes from the
+    /// artifact rather than a side channel (see [`build_harness`]).
     Rebuild,
-    /// Skip the rebuild and reuse an already-built harness binary. Used by
-    /// tests and a fast local smoke, where the heavy release rebuild is not
-    /// what is under test.
-    Reuse(PathBuf),
+    /// Skip the per-ref rebuild and reuse an already-built harness binary.
+    ///
+    /// **Unchecked identity.** The supplied binary is *not* rebuilt against the
+    /// checked-out ref, so its measurements reflect whatever core it was
+    /// originally linked against while the appended snapshot is still tagged
+    /// with the requested ref's version/SHA. That is only sound when the two
+    /// coincide (e.g. reusing a `report` built against `HEAD` to measure
+    /// `HEAD`). The everyday runner always uses
+    /// [`Rebuild`](HarnessBuild::Rebuild); this exists for tests and a fast
+    /// local smoke where the heavy release rebuild is not what is under test. In
+    /// debug builds [`build_harness`] `debug_assert!`s the reused binary's
+    /// self-report matches the ref, to catch accidental misuse.
+    ReuseUnchecked(PathBuf),
 }
 
+/// The package name of the measured core crate. A Cargo `paths` override only
+/// applies to a crate whose name matches a graph dependency, so the worktree's
+/// manifest is checked against this before a build is spent on it.
+const CORE_CRATE_NAME: &str = "libviprs";
+
 /// A harness binary ready to drive the isolated suite for one version.
+///
+/// Under a shared `target_dir` (the default) the `exe` path is a fixed location
+/// that the *next* [`build_harness`] overwrites, so a handle must be consumed
+/// before the next per-tag build. The strictly-serial [`run_matrix`] loop
+/// upholds this: it builds, runs, and appends one version fully before the next.
 #[derive(Debug, Clone)]
 pub struct BuiltHarness {
     /// The `report` binary re-invoked (as `--single` children) to measure each
@@ -235,39 +309,86 @@ pub fn build_harness(
     target_dir: &Path,
     mode: &HarnessBuild,
 ) -> Result<BuiltHarness, MatrixError> {
-    if let HarnessBuild::Reuse(exe) = mode {
+    if let HarnessBuild::ReuseUnchecked(exe) = mode {
         if !exe.exists() {
             return Err(MatrixError::Build(format!(
                 "reuse harness {} does not exist",
                 exe.display()
             )));
         }
+        // Best-effort guard against accidental misuse (see `ReuseUnchecked`): in
+        // debug builds, fail loudly if the reused binary was linked against a
+        // different core than the ref it is being made to represent.
+        #[cfg(debug_assertions)]
+        if let Ok((reported_version, _)) = harness_core_identity(exe) {
+            debug_assert_eq!(
+                reported_version,
+                worktree.version(),
+                "reused harness self-reports core {reported_version} but ref {} is core {}",
+                worktree.refname(),
+                worktree.version(),
+            );
+        }
         return Ok(BuiltHarness { exe: exe.clone() });
     }
 
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let worktree_abs = std::fs::canonicalize(&worktree.path).unwrap_or(worktree.path.clone());
+    let worktree_abs =
+        std::fs::canonicalize(worktree.path()).unwrap_or_else(|_| worktree.path().to_path_buf());
+
+    // Cheap pre-flight: a Cargo `paths` override is *silently ignored* when the
+    // overriding crate's package name does not match a dependency in the graph —
+    // which would leave us measuring the current sibling core under an old tag's
+    // identity. Confirm the worktree really is the `libviprs` crate before we
+    // spend a full release build on it.
+    let worktree_name = read_package_name(&worktree_abs.join("Cargo.toml"));
+    if worktree_name.as_deref() != Some(CORE_CRATE_NAME) {
+        return Err(MatrixError::Build(format!(
+            "worktree at {} is package {:?}, expected `{CORE_CRATE_NAME}` — a `paths` override \
+             would be silently ignored",
+            worktree.refname(),
+            worktree_name.as_deref().unwrap_or("<unreadable>"),
+        )));
+    }
+
     let exe_path = target_dir.join("release").join(HARNESS_BIN);
 
     // Never let a stale binary from a previous version masquerade as this
     // build's output: drop it first and require the build to recreate it.
     let _ = std::fs::remove_file(&exe_path);
 
-    let paths_override = format!("paths=[\"{}\"]", worktree_abs.display());
-    let status = Command::new("cargo")
-        .current_dir(manifest_dir)
+    // The path is embedded in a TOML basic string; escape it so a temp/canonical
+    // path containing a `"` or `\` (or a Windows path) can't produce malformed
+    // TOML that cargo would mis-parse.
+    let paths_override = format!(
+        "paths=[\"{}\"]",
+        toml_escape(&worktree_abs.display().to_string())
+    );
+    let mut cmd = Command::new("cargo");
+    cmd.current_dir(manifest_dir)
         .args(["build", "--release", "--bin", HARNESS_BIN])
         .arg("--target-dir")
         .arg(target_dir)
         .arg("--config")
         .arg(&paths_override)
-        .env("BENCH_CORE_DIR", &worktree_abs)
+        .env("BENCH_CORE_DIR", &worktree_abs);
+    // Forward the bench crate's `libvips` feature to the per-tag build when this
+    // driver was compiled with it. The feature selects how the libvips baseline
+    // cell is measured — in-process FFI (`bench_libvips_inprocess`) with it, the
+    // `vips` CLI fallback without — so matching the driver keeps that cell
+    // measured the same way as the everyday `report`. It is a bench-crate
+    // concern, independent of the core tag; gating on the driver's own build
+    // also guarantees the system libvips it needs is present (issue #19).
+    #[cfg(feature = "libvips")]
+    cmd.args(["--features", "libvips"]);
+    let status = cmd
         .status()
         .map_err(|e| MatrixError::Build(format!("failed to spawn cargo build: {e}")))?;
     if !status.success() {
         return Err(MatrixError::Build(format!(
             "cargo build against {} ({}) failed",
-            worktree.refname, worktree.short_sha
+            worktree.refname(),
+            worktree.short_sha()
         )));
     }
     if !exe_path.exists() {
@@ -276,7 +397,76 @@ pub fn build_harness(
             exe_path.display()
         )));
     }
+
+    // Make the artifact the single source of truth for identity. The freshly
+    // built binary self-reports the core its `build.rs` stamped from
+    // `BENCH_CORE_DIR`; assert it matches the ref we resolved *before* any
+    // measurement is recorded under that ref. A mismatch means the version
+    // plumbing broke (a stale re-used stamp, an unhonoured `BENCH_CORE_DIR`), so
+    // refuse to persist numbers under a false identity rather than doing it
+    // silently.
+    let (reported_version, reported_sha) = harness_core_identity(&exe_path)?;
+    if reported_version != worktree.version() {
+        return Err(MatrixError::Build(format!(
+            "built harness self-reports core {reported_version} but ref {} resolved to {}",
+            worktree.refname(),
+            worktree.version(),
+        )));
+    }
+    // The SHA is a second, independent check; skip it only when either side is
+    // the `unknown` git-less fallback.
+    if reported_sha != "unknown"
+        && worktree.short_sha() != "unknown"
+        && reported_sha != worktree.short_sha()
+    {
+        return Err(MatrixError::Build(format!(
+            "built harness self-reports sha {reported_sha} but ref {} resolved to {}",
+            worktree.refname(),
+            worktree.short_sha(),
+        )));
+    }
+
     Ok(BuiltHarness { exe: exe_path })
+}
+
+/// Ask a built harness binary which core it was compiled against, via the
+/// hidden `--print-core` subcommand (see
+/// [`harness::maybe_run_print_core_subcommand`]). The output is one line,
+/// `version\tshort_sha` — the `build.rs` stamp. This is what lets
+/// [`build_harness`] treat the measured artifact, not a side channel, as the
+/// source of truth for a snapshot's identity.
+fn harness_core_identity(exe: &Path) -> Result<(String, String), MatrixError> {
+    let out = Command::new(exe)
+        .arg("--print-core")
+        .output()
+        .map_err(|e| {
+            MatrixError::Build(format!(
+                "failed to spawn {} --print-core: {e}",
+                exe.display()
+            ))
+        })?;
+    if !out.status.success() {
+        return Err(MatrixError::Build(format!(
+            "{} --print-core exited non-zero",
+            exe.display()
+        )));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.trim();
+    let (version, sha) = line.split_once('\t').ok_or_else(|| {
+        MatrixError::Build(format!(
+            "unparseable --print-core output from {}: {line:?}",
+            exe.display()
+        ))
+    })?;
+    Ok((version.trim().to_string(), sha.trim().to_string()))
+}
+
+/// Escape a string for embedding in a TOML basic (double-quoted) string:
+/// backslash and double-quote are the only characters that would break out of,
+/// or be mis-parsed inside, `"…"`.
+fn toml_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 /// Append one tagged, environment-fingerprinted snapshot to the history file.
@@ -298,71 +488,20 @@ pub fn append_version_snapshot(
     let snapshot =
         crate::create_snapshot_for(version, git_sha, runs, tile_size, memory_budget_bytes);
     history.push(snapshot);
-    crate::save_history(history_path, &history);
+    // `save_history` is atomic (temp file + rename) and fallible: a write fault
+    // is surfaced as a per-version `History` skip so the sweep continues and the
+    // prior file stays intact, never a panic that aborts the whole run.
+    crate::save_history(history_path, &history).map_err(MatrixError::History)?;
     Ok(history.len())
 }
 
-/// Version identity key: `version@short_sha`, so two builds of the same
-/// version at different commits stay distinct (issue #19).
-///
-/// Falls back to the bare version when the SHA is empty or `"unknown"` (legacy
-/// history predating the SHA field), so those snapshots still group sanely.
-pub fn version_key(version: &str, git_sha: &str) -> String {
-    if git_sha.is_empty() || git_sha == "unknown" {
-        version.to_string()
-    } else {
-        format!("{version}@{git_sha}")
-    }
-}
-
-/// The version keys of `history`, deduplicated and ordered by (semver,
-/// timestamp) — the ordering `cross_version` presents releases in.
-///
-/// Semver ordering (not lexicographic) means `0.9.0` precedes `0.10.0`; ties on
-/// version are broken by the RFC 3339 timestamp (chronological), and any
-/// unparseable version sorts last but deterministically.
-pub fn ordered_version_keys(history: &[BenchmarkSnapshot]) -> Vec<String> {
-    let mut items: Vec<(String, (u64, u64, u64), String)> = history
-        .iter()
-        .map(|s| {
-            (
-                version_key(&s.version, &s.git_sha),
-                semver_sort_key(&s.version),
-                s.timestamp.clone(),
-            )
-        })
-        .collect();
-    // (semver, timestamp, key) — the trailing key makes the order total and
-    // stable across equal (semver, timestamp) pairs.
-    items.sort_by(|a, b| a.1.cmp(&b.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
-
-    let mut seen = HashSet::new();
-    items
-        .into_iter()
-        .filter_map(|(key, _, _)| seen.insert(key.clone()).then_some(key))
-        .collect()
-}
-
-/// Parse a `MAJOR.MINOR.PATCH` version (tolerating a leading `v` and a
-/// `-pre`/`+build` suffix) into a numerically sortable tuple. Anything that
-/// isn't three integer components sorts last via an all-`MAX` key.
-fn semver_sort_key(version: &str) -> (u64, u64, u64) {
-    let core = version
-        .trim_start_matches('v')
-        .split(['-', '+'])
-        .next()
-        .unwrap_or("");
-    let mut it = core.split('.');
-    let next = |it: &mut std::str::Split<'_, char>| it.next().and_then(|s| s.parse::<u64>().ok());
-    match (next(&mut it), next(&mut it), next(&mut it)) {
-        (Some(a), Some(b), Some(c)) => (a, b, c),
-        _ => (u64::MAX, u64::MAX, u64::MAX),
-    }
-}
-
-/// Configuration for a [`run_matrix`] sweep. [`Default`] mirrors the everyday
-/// `report` benchmark (same sizes, concurrency levels, tile size, budget, and
-/// iteration counts) so the release-history axis measures the identical suite.
+/// Configuration for a [`run_matrix`] sweep. [`Default`] consumes the shared
+/// suite constants ([`crate::DEFAULT_SIZES`], [`crate::DEFAULT_CONCURRENCY`],
+/// [`crate::BENCH_TILE_SIZE`], [`crate::BENCH_STREAMING_BUDGET`], and
+/// [`harness::DEFAULT_ITERS`] / [`harness::DEFAULT_WARMUP`]) — the exact same
+/// definitions the everyday `report` benchmark uses — so the release-history
+/// axis measures the identical suite as a compile-time fact, not by hand-copied
+/// literals.
 #[derive(Debug, Clone)]
 pub struct MatrixConfig {
     pub sizes: Vec<(u32, u32)>,
@@ -381,10 +520,10 @@ pub struct MatrixConfig {
 impl Default for MatrixConfig {
     fn default() -> Self {
         MatrixConfig {
-            sizes: vec![(512, 512), (1024, 1024), (2048, 2048), (4096, 4096)],
-            concurrency: vec![0, 4],
-            tile_size: 256,
-            memory_budget_bytes: 1_000_000,
+            sizes: crate::DEFAULT_SIZES.to_vec(),
+            concurrency: crate::DEFAULT_CONCURRENCY.to_vec(),
+            tile_size: crate::BENCH_TILE_SIZE,
+            memory_budget_bytes: crate::BENCH_STREAMING_BUDGET,
             iters: harness::DEFAULT_ITERS,
             warmup: harness::DEFAULT_WARMUP,
             build: HarnessBuild::Rebuild,
@@ -404,9 +543,30 @@ pub enum VersionOutcome {
         short_sha: String,
         entries: usize,
     },
-    /// The version was skipped (checkout/build/append failed); `reason` is the
-    /// rendered [`MatrixError`].
-    Skipped { refname: String, reason: String },
+    /// The version was skipped: `error` is the typed [`MatrixError`] (a `Git`
+    /// checkout failure, a `Build` failure, or a per-version `History` write
+    /// fault), so a consumer can tell the reason apart programmatically. Render
+    /// it with `error.to_string()` at the print site.
+    Skipped { refname: String, error: MatrixError },
+}
+
+/// RAII cleanup for a matrix-owned temporary target directory.
+///
+/// A synthesised `--release` build tree can be hundreds of MB; removing it in
+/// `Drop` makes cleanup panic-safe and symmetric with [`CoreWorktree`], instead
+/// of leaking the tree when the sweep panics partway through. A caller-supplied
+/// `target_dir` is not owned and is left in place.
+struct OwnedTargetDir {
+    path: PathBuf,
+    owned: bool,
+}
+
+impl Drop for OwnedTargetDir {
+    fn drop(&mut self) {
+        if self.owned {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
 }
 
 /// Run the identical isolated suite against each ref in `refs` and append one
@@ -425,26 +585,41 @@ pub fn run_matrix(
     history_path: &Path,
 ) -> Vec<VersionOutcome> {
     // Per-tag builds share one target dir so dependency compilation is reused
-    // across versions (only the core crate + harness relink per tag). A dir we
-    // synthesised is cleaned up at the end; a caller-supplied one is left be.
-    let (target_dir, owned) = match &cfg.target_dir {
-        Some(dir) => (dir.clone(), false),
-        None => (
-            std::env::temp_dir()
+    // across versions (only the core crate + harness relink per tag; the shared
+    // stamp is re-verified against each ref after the build). A dir we
+    // synthesised is cleaned up (RAII, panic-safe); a caller-supplied one is
+    // left be.
+    let target = match &cfg.target_dir {
+        Some(dir) => OwnedTargetDir {
+            path: dir.clone(),
+            owned: false,
+        },
+        None => OwnedTargetDir {
+            path: std::env::temp_dir()
                 .join("libviprs-bench-vmatrix-target")
                 .join(std::process::id().to_string()),
-            true,
-        ),
+            owned: true,
+        },
     };
 
-    let mut outcomes = Vec::with_capacity(refs.len());
-    for refname in refs {
-        match run_one_version(repo, refname, cfg, &target_dir, history_path) {
+    let total = refs.len();
+    let mut outcomes = Vec::with_capacity(total);
+    for (idx, refname) in refs.iter().enumerate() {
+        // Per-tag heartbeat + wall-clock on stderr (stdout stays parseable): each
+        // step is a full LTO release build plus the isolated suite — many minutes.
+        eprintln!(
+            "version-matrix: [{}/{total}] building {refname} ...",
+            idx + 1
+        );
+        let started = Instant::now();
+        match run_one_version(repo, refname, cfg, &target.path, history_path) {
             Ok((version, short_sha, entries)) => {
                 eprintln!(
-                    "version-matrix: appended {} ({}) — {entries} snapshot(s) on record",
+                    "version-matrix: [{}/{total}] appended {} ({refname}) in {:.1}s — \
+                     {entries} snapshot(s) on record",
+                    idx + 1,
                     version_key(&version, &short_sha),
-                    refname
+                    started.elapsed().as_secs_f64(),
                 );
                 outcomes.push(VersionOutcome::Appended {
                     refname: refname.clone(),
@@ -454,19 +629,20 @@ pub fn run_matrix(
                 });
             }
             Err(e) => {
-                eprintln!("version-matrix: WARNING skipping {refname}: {e}");
+                eprintln!(
+                    "version-matrix: [{}/{total}] WARNING skipping {refname} after {:.1}s: {e}",
+                    idx + 1,
+                    started.elapsed().as_secs_f64(),
+                );
                 outcomes.push(VersionOutcome::Skipped {
                     refname: refname.clone(),
-                    reason: e.to_string(),
+                    error: e,
                 });
             }
         }
     }
-
-    if owned && matches!(cfg.build, HarnessBuild::Rebuild) {
-        let _ = std::fs::remove_dir_all(&target_dir);
-    }
     outcomes
+    // `target` drops here, removing the owned build tree.
 }
 
 /// Check out, build, run, and append for a single version. The worktree is a
@@ -495,15 +671,15 @@ fn run_one_version(
 
     let entries = append_version_snapshot(
         history_path,
-        &worktree.version,
-        &worktree.short_sha,
+        worktree.version(),
+        worktree.short_sha(),
         runs,
         cfg.tile_size,
         cfg.memory_budget_bytes,
     )?;
     Ok((
-        worktree.version.clone(),
-        worktree.short_sha.clone(),
+        worktree.version().to_string(),
+        worktree.short_sha().to_string(),
         entries,
     ))
 }
@@ -537,12 +713,15 @@ fn sanitize_ref(refname: &str) -> String {
     }
 }
 
-/// Read the `[package] version` from a Cargo manifest with a small hand scan
-/// (no TOML dependency), mirroring `build.rs`. `"unknown"` if absent.
-fn read_package_version(manifest: &Path) -> String {
-    let Ok(text) = std::fs::read_to_string(manifest) else {
-        return "unknown".to_string();
-    };
+/// Read a bare string field (`name`, `version`, …) from the `[package]` table
+/// of a Cargo manifest with a small hand scan (no TOML dependency), mirroring
+/// `build.rs`. `None` if the manifest is unreadable or the field is absent.
+///
+/// `build.rs` keeps its own copy of this scan out of necessity — a build script
+/// cannot depend on the crate it builds — but the two library call sites
+/// (version, name) share this one implementation.
+fn read_package_field(manifest: &Path, field: &str) -> Option<String> {
+    let text = std::fs::read_to_string(manifest).ok()?;
     let mut in_package = false;
     for line in text.lines() {
         let line = line.trim();
@@ -551,14 +730,26 @@ fn read_package_version(manifest: &Path) -> String {
             continue;
         }
         if in_package {
-            if let Some(rest) = line.strip_prefix("version") {
+            if let Some(rest) = line.strip_prefix(field) {
+                // Guard against key-prefix collisions (`name` vs `namespace`):
+                // the key must be followed by optional whitespace then `=`.
                 if let Some(rest) = rest.trim_start().strip_prefix('=') {
-                    return rest.trim().trim_matches('"').to_string();
+                    return Some(rest.trim().trim_matches('"').to_string());
                 }
             }
         }
     }
-    "unknown".to_string()
+    None
+}
+
+/// The `[package] version` of a Cargo manifest, or `"unknown"` if absent.
+fn read_package_version(manifest: &Path) -> String {
+    read_package_field(manifest, "version").unwrap_or_else(|| "unknown".to_string())
+}
+
+/// The `[package] name` of a Cargo manifest, or `None` if absent/unreadable.
+fn read_package_name(manifest: &Path) -> Option<String> {
+    read_package_field(manifest, "name")
 }
 
 /// Run a `git -C repo <args>` command, returning trimmed stdout or a
@@ -584,29 +775,47 @@ fn git_stdout(repo: &Path, args: &[&str]) -> Result<String, MatrixError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn semver_key_orders_numerically_not_lexically() {
-        assert!(semver_sort_key("0.9.0") < semver_sort_key("0.10.0"));
-        assert!(semver_sort_key("0.3.1") < semver_sort_key("0.9.0"));
-        // Leading v and pre-release suffix are tolerated.
-        assert_eq!(semver_sort_key("v0.3.1"), (0, 3, 1));
-        assert_eq!(semver_sort_key("0.4.0-rc.1"), (0, 4, 0));
-        // Unparseable sorts last.
-        assert_eq!(semver_sort_key("nightly"), (u64::MAX, u64::MAX, u64::MAX));
-        assert!(semver_sort_key("9.9.9") < semver_sort_key("nightly"));
-    }
-
-    #[test]
-    fn version_key_uses_sha_when_known() {
-        assert_eq!(version_key("0.3.1", "abc1234"), "0.3.1@abc1234");
-        assert_eq!(version_key("0.3.1", ""), "0.3.1");
-        assert_eq!(version_key("0.3.1", "unknown"), "0.3.1");
-    }
+    // Pure version identity/ordering (`version_key`, `ordered_version_keys`,
+    // `semver_sort_key`) is tested in `crate::version_id`; this module owns the
+    // orchestration-adjacent helpers.
 
     #[test]
     fn sanitize_ref_is_filesystem_safe() {
         assert_eq!(sanitize_ref("v0.3.1"), "v0.3.1");
         assert_eq!(sanitize_ref("feature/foo"), "feature_foo");
         assert_eq!(sanitize_ref(""), "ref");
+    }
+
+    #[test]
+    fn toml_escape_neutralises_quote_and_backslash() {
+        assert_eq!(toml_escape("/tmp/plain"), "/tmp/plain");
+        assert_eq!(toml_escape(r"C:\tmp\wt"), r"C:\\tmp\\wt");
+        // A crafted path cannot break out of the `paths=["…"]` basic string to
+        // close the array or inject a trailing key: the `"` is escaped.
+        assert_eq!(toml_escape(r#"/tmp/a"]evil=["#), r#"/tmp/a\"]evil=["#);
+    }
+
+    #[test]
+    fn read_package_field_reads_name_and_version_guarding_prefix_collisions() {
+        let dir = std::env::temp_dir().join(format!("vmatrix_manifest_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("Cargo.toml");
+        std::fs::write(
+            &manifest,
+            "[package]\nnamespace = \"nope\"\nname = \"libviprs\"\nversion = \"0.4.0\"\n\n[dependencies]\nname = \"wrong-table\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(read_package_name(&manifest).as_deref(), Some("libviprs"));
+        assert_eq!(read_package_version(&manifest), "0.4.0");
+        // `name` must not be matched by the `namespace` line that precedes it,
+        // and a key that is only a prefix (`nam`) matches nothing.
+        assert_eq!(read_package_field(&manifest, "nam"), None);
+        // Absent field / unreadable manifest degrade cleanly.
+        assert_eq!(read_package_field(&manifest, "edition"), None);
+        assert_eq!(read_package_version(&dir.join("missing.toml")), "unknown");
+        assert_eq!(read_package_name(&dir.join("missing.toml")), None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

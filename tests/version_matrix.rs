@@ -18,9 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
+use libviprs_bench::version_id::{ordered_version_keys, version_key};
 use libviprs_bench::version_matrix::{
     self, CoreWorktree, HarnessBuild, append_version_snapshot, build_harness, core_repo_dir,
-    ordered_version_keys, version_key,
 };
 use libviprs_bench::{BenchmarkSnapshot, CURRENT_SCHEMA_VERSION, RunMetrics, load_history};
 
@@ -98,26 +98,27 @@ fn checkout_resolves_head_sha_into_a_temp_worktree_and_cleans_up() {
     let wt = CoreWorktree::checkout(&repo, "HEAD").expect("checkout of HEAD must succeed");
 
     // The driver reports the ref it resolved and its concrete SHA.
-    assert_eq!(wt.refname, "HEAD");
+    assert_eq!(wt.refname(), "HEAD");
     assert_eq!(
-        wt.short_sha, expected,
+        wt.short_sha(),
+        expected,
         "resolved worktree SHA must match `git rev-parse --short HEAD`"
     );
     // A real, populated worktree exists on disk with the core manifest.
-    assert!(wt.path.exists(), "worktree dir must exist");
+    assert!(wt.path().exists(), "worktree dir must exist");
     assert!(
-        wt.path.join("Cargo.toml").exists(),
+        wt.path().join("Cargo.toml").exists(),
         "worktree must contain the core Cargo.toml"
     );
     // The measured core version is read out of the checked-out manifest.
-    assert!(!wt.version.is_empty(), "worktree version must resolve");
+    assert!(!wt.version().is_empty(), "worktree version must resolve");
     assert_eq!(
-        wt.version,
-        git_manifest_version(&wt.path),
+        wt.version(),
+        git_manifest_version(wt.path()),
         "resolved version must be the worktree manifest's [package] version"
     );
 
-    let path = wt.path.clone();
+    let path = wt.path().to_path_buf();
     drop(wt); // Drop tears the worktree down deterministically.
 
     assert!(
@@ -171,14 +172,56 @@ fn build_harness_reuse_fast_path_yields_a_runnable_exe() {
     let target = std::env::temp_dir().join(format!("vmatrix_target_{}", std::process::id()));
 
     let prebuilt = PathBuf::from(env!("CARGO_BIN_EXE_report"));
-    let built = build_harness(&wt, &target, &HarnessBuild::Reuse(prebuilt.clone()))
-        .expect("reuse build must succeed");
+    let built = build_harness(
+        &wt,
+        &target,
+        &HarnessBuild::ReuseUnchecked(prebuilt.clone()),
+    )
+    .expect("reuse build must succeed");
 
     assert_eq!(
         built.exe, prebuilt,
         "reuse mode must hand back the given exe"
     );
     assert!(built.exe.exists(), "the reused harness binary must exist");
+}
+
+#[test]
+fn run_matrix_skips_build_failures_and_continues() {
+    // A reuse path that does not exist forces build_harness into its failure
+    // branch; run_matrix must record a typed Build skip and carry on rather than
+    // panic, and must not create the history file (nothing was appended). This
+    // exercises the skip-continues path without paying a real release rebuild.
+    let history = scratch_path("skip_build");
+    let _ = std::fs::remove_file(&history);
+
+    let repo = core_repo_dir();
+    let cfg = version_matrix::MatrixConfig {
+        sizes: vec![(64, 64)],
+        concurrency: vec![0],
+        iters: 1,
+        warmup: 0,
+        build: HarnessBuild::ReuseUnchecked(PathBuf::from("/nonexistent/harness/binary")),
+        ..Default::default()
+    };
+
+    let outcomes = version_matrix::run_matrix(&repo, &["HEAD".to_string()], &cfg, &history);
+    assert_eq!(outcomes.len(), 1);
+    match &outcomes[0] {
+        version_matrix::VersionOutcome::Skipped { refname, error } => {
+            assert_eq!(refname, "HEAD");
+            assert!(
+                matches!(error, version_matrix::MatrixError::Build(_)),
+                "a missing reuse binary must be a Build skip, got {error:?}"
+            );
+        }
+        other => panic!("expected a Build skip, got {other:?}"),
+    }
+    assert!(
+        !history.exists(),
+        "a fully-skipped sweep must not create the history file"
+    );
+    let _ = std::fs::remove_file(&history);
 }
 
 #[test]
@@ -324,7 +367,7 @@ fn run_matrix_reuse_appends_one_snapshot_per_version() {
         concurrency: vec![0],
         iters: 1,
         warmup: 0,
-        build: HarnessBuild::Reuse(PathBuf::from(env!("CARGO_BIN_EXE_report"))),
+        build: HarnessBuild::ReuseUnchecked(PathBuf::from(env!("CARGO_BIN_EXE_report"))),
         ..Default::default()
     };
 
@@ -340,6 +383,62 @@ fn run_matrix_reuse_appends_one_snapshot_per_version() {
     assert!(!hist[0].version.is_empty(), "snapshot is version-tagged");
     assert_eq!(hist[0].git_sha, git_short_sha(&repo, "HEAD"));
     assert!(!hist[0].runs.is_empty(), "the suite produced runs");
+
+    let _ = std::fs::remove_file(&history);
+}
+
+#[test]
+#[ignore = "performs a real per-tag release rebuild; run explicitly with --ignored"]
+fn run_matrix_rebuild_tags_snapshot_with_the_built_artifacts_identity() {
+    // The *real* orchestration end-to-end: check out a ref, rebuild the harness
+    // against it (paths override + BENCH_CORE_DIR), verify the built binary's
+    // self-reported core matches the ref, run the suite, and append. Unlike the
+    // Reuse tests (which assert a trivially-true HEAD==HEAD tautology while
+    // build_harness's real arm never runs), this drives build_harness's Rebuild
+    // path and asserts the appended identity is the built *artifact's* — the
+    // check that catches a silently-ignored paths override or a broken stamp.
+    let history = scratch_path("run_matrix_rebuild");
+    let _ = std::fs::remove_file(&history);
+
+    let repo = core_repo_dir();
+    let expected_sha = git_short_sha(&repo, "HEAD");
+    let expected_version = {
+        let wt = CoreWorktree::checkout(&repo, "HEAD").expect("checkout HEAD");
+        wt.version().to_string()
+    };
+
+    // Rebuild (not Reuse) against HEAD, tiny + single-shot to bound the run.
+    let cfg = version_matrix::MatrixConfig {
+        sizes: vec![(64, 64)],
+        concurrency: vec![0],
+        iters: 1,
+        warmup: 0,
+        build: HarnessBuild::Rebuild,
+        ..Default::default()
+    };
+
+    let outcomes = version_matrix::run_matrix(&repo, &["HEAD".to_string()], &cfg, &history);
+    assert_eq!(outcomes.len(), 1);
+    match &outcomes[0] {
+        version_matrix::VersionOutcome::Appended {
+            version, short_sha, ..
+        } => {
+            assert_eq!(
+                version, &expected_version,
+                "snapshot tagged with built core version"
+            );
+            assert_eq!(
+                short_sha, &expected_sha,
+                "snapshot tagged with built core SHA"
+            );
+        }
+        other => panic!("Rebuild against HEAD should append, got {other:?}"),
+    }
+
+    let hist = load_history(&history).expect("history loads");
+    assert_eq!(hist.len(), 1);
+    assert_eq!(hist[0].version, expected_version);
+    assert_eq!(hist[0].git_sha, expected_sha);
 
     let _ = std::fs::remove_file(&history);
 }
