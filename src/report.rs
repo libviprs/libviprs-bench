@@ -19,7 +19,7 @@ use std::fs;
 use std::path::Path;
 
 use libviprs_bench::harness::{self, Engine};
-use libviprs_bench::provenance::Provenance;
+use libviprs_bench::provenance::{OracleMatch, Provenance};
 use libviprs_bench::{
     core_git_sha, core_version, create_snapshot, executive_verdict, generate_charts,
     generate_history_chart, load_history, print_comparison_table, print_savings_summary,
@@ -67,6 +67,23 @@ fn main() {
     println!("    bench harness: {}", env!("CARGO_PKG_VERSION"));
     println!("    environment:  {}", prov.fingerprint());
     println!("    cpu: {} ({} cpus)", prov.host.cpu_model, prov.host.ncpu);
+    println!(
+        "    libvips oracle: measured {} / pinned {}",
+        prov.libvips_version, prov.pinned_libvips_version
+    );
+    // Mismatched-oracle guard (#33): if this run measured a different libvips
+    // than the environment was pinned to build, its numbers are not comparable
+    // to a pinned-oracle run — say so loudly on stderr. Only fires on a genuine
+    // parsed mismatch, never on a host run that simply has no libvips.
+    if let OracleMatch::Mismatch { measured, pinned } = prov.libvips_oracle_match() {
+        eprintln!(
+            "WARNING: measured libvips {}.{} != pinned oracle {}.{} — this run \
+             measured a different libvips than the environment was pinned to \
+             build (issue #33); its numbers are NOT comparable to a \
+             pinned-oracle run.",
+            measured.0, measured.1, pinned.0, pinned.1
+        );
+    }
     println!();
     println!("Tile size: {tile_size}, memory budget: {streaming_budget} bytes");
     println!("Iterations: {iters} timed + {warmup} warm-up per cell (child-isolated)");

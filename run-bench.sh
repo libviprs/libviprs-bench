@@ -73,6 +73,13 @@ esac
 CONTAINER_NAME="libviprs-bench"
 IMAGE_NAME="libviprs-bench:local"
 
+# The libvips release the Docker image builds from source (issue #33), read
+# from the Dockerfile so this script and the image share a single pin. Shown
+# in the banners below; inside the container it is also recorded into each
+# snapshot's provenance (the measured-vs-pinned oracle).
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIBVIPS_PIN="$(sed -n 's/^ARG LIBVIPS_VERSION=//p' "$SCRIPT_DIR/Dockerfile" | head -1)"
+
 # Pinned measurement RUSTFLAGS. Recorded into every snapshot's provenance
 # (build.rs stamps $RUSTFLAGS) so the reported numbers carry the exact
 # codegen config they were measured under. Kept in lockstep with the
@@ -92,7 +99,8 @@ if [ "$NO_BUILD" = true ]; then
     FEATURES=""
     if pkg-config --exists vips 2>/dev/null; then
         FEATURES="--features libvips"
-        echo "libvips detected via pkg-config — using in-process FFI"
+        echo "libvips detected via pkg-config ($(pkg-config --modversion vips)) — using in-process FFI"
+        echo "  (Docker path pins libvips ${LIBVIPS_PIN:-unknown}, built from source)"
     else
         echo "libvips not found — falling back to CLI comparison"
     fi
@@ -126,7 +134,6 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER_NAME}$"; then
     docker rm -f "$CONTAINER_NAME" >/dev/null
 fi
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=== libviprs benchmark (${ARCH_LABEL}, ${MEMORY_MB} MB) ==="
@@ -134,6 +141,7 @@ echo ""
 echo "Building Docker image..."
 echo "  Platform:  ${PLATFORM}"
 echo "  Workspace: ${WORKSPACE_DIR}"
+echo "  libvips:   ${LIBVIPS_PIN:-unknown} (built from source, issue #33)"
 echo "  Command:   ${BENCH_CMD}"
 echo ""
 
