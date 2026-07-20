@@ -38,14 +38,26 @@ fn tile_weight_is_the_inter_tile_gap_in_micros() {
 #[test]
 fn tile_weight_floors_at_one() {
     let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
-    assert_eq!(tile_weight_micros(None, Some(base)), 1, "no predecessor floors at 1");
-    assert_eq!(tile_weight_micros(Some(base), None), 1, "missing timestamp floors at 1");
+    assert_eq!(
+        tile_weight_micros(None, Some(base)),
+        1,
+        "no predecessor floors at 1"
+    );
+    assert_eq!(
+        tile_weight_micros(Some(base), None),
+        1,
+        "missing timestamp floors at 1"
+    );
     assert_eq!(
         tile_weight_micros(Some(base + Duration::from_millis(5)), Some(base)),
         1,
         "a backwards clock floors at 1, never underflows"
     );
-    assert_eq!(tile_weight_micros(Some(base), Some(base)), 1, "a zero gap still keeps the frame");
+    assert_eq!(
+        tile_weight_micros(Some(base), Some(base)),
+        1,
+        "a zero gap still keeps the frame"
+    );
 }
 
 /// The folded stacks weight tile frames by TIME: three tiles at 0 / 10 / 30 ms
@@ -61,11 +73,19 @@ fn folded_stacks_are_time_weighted_not_count_weighted() {
         timestamp: Some(at),
     };
     let events = vec![
-        EngineEvent::LevelStarted { level: 0, width: 512, height: 512, tile_count: 3 },
-        tile(0, t0),                              // first tile: floored to 1
-        tile(1, t0 + Duration::from_millis(10)),  // +10 ms
-        tile(2, t0 + Duration::from_millis(30)),  // +20 ms
-        EngineEvent::LevelCompleted { level: 0, tiles_produced: 3 },
+        EngineEvent::LevelStarted {
+            level: 0,
+            width: 512,
+            height: 512,
+            tile_count: 3,
+        },
+        tile(0, t0),                             // first tile: floored to 1
+        tile(1, t0 + Duration::from_millis(10)), // +10 ms
+        tile(2, t0 + Duration::from_millis(30)), // +20 ms
+        EngineEvent::LevelCompleted {
+            level: 0,
+            tiles_produced: 3,
+        },
     ];
 
     let stacks = events_to_folded_stacks(&events, "monolithic");
@@ -75,7 +95,10 @@ fn folded_stacks_are_time_weighted_not_count_weighted() {
         .iter()
         .map(|s| {
             let (stack, w) = s.rsplit_once(' ').expect("a folded line carries a weight");
-            (stack.to_string(), w.parse::<u64>().expect("the weight is an integer"))
+            (
+                stack.to_string(),
+                w.parse::<u64>().expect("the weight is an integer"),
+            )
         })
         .collect();
 

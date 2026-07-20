@@ -15,6 +15,7 @@ use libviprs::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod flame;
 pub mod harness;
 pub mod pin_check;
 pub mod provenance;
@@ -1603,9 +1604,48 @@ pub fn comparison_suite(
     results
 }
 
-/// Print a comparison table to stdout.
-pub fn print_comparison_table(results: &[RunMetrics]) {
-    println!(
+/// Units + direction legend shared by every human-readable comparison table so
+/// no metric's unit or better-direction is ever left to a guess (#25). The
+/// primary throughput metric is TILES per second — pyramid tiles
+/// ([`BENCH_TILE_SIZE`] px), never pixels.
+pub const COMPARISON_TABLE_LEGEND: &str = concat!(
+    "Units & direction (T = pyramid tiles, never pixels):\n",
+    "  Time (ms) / Tracked MB / RSS MB ............ lower is better\n",
+    "  T/s        = tiles written per second (throughput) ......... higher is better\n",
+    "  T/s/RSS-MB = throughput per peak-RSS MB (memory efficiency)  higher is better\n",
+    "  RSS-MB\u{00b7}s/tile = RSS-MB-seconds per tile (resource cost) ..... lower is better\n",
+    "Tracked MB is libviprs-internal (0 for libvips); RSS MB is the cross-engine peak.\n",
+    "Figures are warm medians (warm-ups discarded).\n",
+);
+
+/// Insert ASCII thousands separators into an integer: `349525` → `"349,525"`.
+/// Keeps large tile / throughput counts legible in the fixed-width text tables
+/// (#25).
+pub fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, &b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(b as char);
+    }
+    out
+}
+
+/// Render the engine comparison table — header, one row per run, and a
+/// units/direction legend — as a String.
+///
+/// Shared by the stdout [`print_comparison_table`] and the committed
+/// `report/comparison_table.txt` so the two never drift and both carry the
+/// legend that pins every metric's unit and better-direction (#25). Tile and
+/// throughput counts read with thousands separators.
+pub fn comparison_table(results: &[RunMetrics]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
         "{:<24} {:<12} {:>10} {:>12} {:>10} {:>8} {:>8} {:>10} {:>12}",
         "Label",
         "Engine",
@@ -1615,24 +1655,31 @@ pub fn print_comparison_table(results: &[RunMetrics]) {
         "Tiles",
         "T/s",
         "T/s/RSS-MB",
-        "RSS-MB\u{00b7}s/tile"
+        "RSS-MB\u{00b7}s/tile",
     );
-    println!("{}", "-".repeat(112));
-
+    let _ = writeln!(out, "{}", "-".repeat(112));
     for r in results {
-        println!(
-            "{:<24} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>8.0} {:>10.1} {:>12.4}",
+        let _ = writeln!(
+            out,
+            "{:<24} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>8} {:>10.1} {:>12.4}",
             r.label,
             r.engine,
             r.wall_time_ms(),
             r.tracked_memory_mb(),
             r.peak_rss_mb(),
-            r.tiles_produced,
-            r.tiles_per_second(),
+            thousands(r.tiles_produced),
+            thousands(r.tiles_per_second().round() as u64),
             r.tiles_per_second_per_mb(),
             r.resource_cost_per_tile(),
         );
     }
+    out.push_str(COMPARISON_TABLE_LEGEND);
+    out
+}
+
+/// Print the comparison table (with its units/direction legend) to stdout.
+pub fn print_comparison_table(results: &[RunMetrics]) {
+    print!("{}", comparison_table(results));
 }
 
 /// Group results by config key (width × height × concurrency).
@@ -1823,12 +1870,14 @@ pub fn executive_verdict(results: &[RunMetrics]) -> String {
     let mut out = String::new();
     out.push_str("=== Executive verdict (per configuration) ===\n");
     out.push_str(
-        "Ratios are vs libvips in the SAME snapshot. wall/RSS: <1 beats libvips; \
-         eff: >1 beats libvips.\n\n",
+        "wall (ms) & RSS (MB): lower is better. eff = throughput per peak-RSS MB \
+         (tiles/s/RSS-MB): higher is better.\n\
+         Ratios are vs libvips in the SAME snapshot: wall/RSS <1 beats libvips; eff >1 \
+         beats libvips.\n\n",
     );
     out.push_str(&format!(
         "{:<16} {:<12} {:>12} {:>12} {:>12} {:>12} {:>12}\n",
-        "Config", "Engine", "wall ms", "RSS MB", "eff", "wall/vips", "RSS/vips",
+        "Config", "Engine", "wall ms", "RSS MB", "eff T/s/MB", "wall/vips", "RSS/vips",
     ));
     out.push_str(&format!("{}\n", "-".repeat(92)));
 
@@ -1921,13 +1970,13 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
         for (i, r) in group.iter().enumerate() {
             let label = if i == 0 { &config } else { "" };
             println!(
-                "{:<16} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>10.0} {:>10.1} {:>12.4}",
+                "{:<16} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>10} {:>10.1} {:>12.4}",
                 label,
                 r.engine,
                 r.wall_time_ms(),
                 r.tracked_memory_mb(),
                 r.peak_rss_mb(),
-                r.tiles_per_second(),
+                thousands(r.tiles_per_second().round() as u64),
                 r.tiles_per_second_per_mb(),
                 r.resource_cost_per_tile(),
             );

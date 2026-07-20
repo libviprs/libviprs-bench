@@ -22,9 +22,9 @@ use std::path::Path;
 use libviprs_bench::harness::{self, Engine};
 use libviprs_bench::provenance::{OracleMatch, Provenance};
 use libviprs_bench::{
-    BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, DEFAULT_CONCURRENCY, DEFAULT_SIZES, core_git_sha,
-    core_version, create_snapshot, executive_verdict, load_history, print_comparison_table,
-    print_savings_summary, save_history, vips_available,
+    BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, DEFAULT_CONCURRENCY, DEFAULT_SIZES, comparison_table,
+    core_git_sha, core_version, create_snapshot, executive_verdict, load_history,
+    print_comparison_table, print_savings_summary, save_history, vips_available,
 };
 
 fn main() {
@@ -78,10 +78,30 @@ fn main() {
     println!("    bench harness: {}", env!("CARGO_PKG_VERSION"));
     println!("    environment:  {}", prov.fingerprint());
     println!("    cpu: {} ({} cpus)", prov.host.cpu_model, prov.host.ncpu);
+    println!("    host load (1/5/15m): {}", prov.load_average_line());
     println!(
         "    libvips oracle: measured {} / pinned {}",
         prov.libvips_version, prov.pinned_libvips_version
     );
+    // Contended-host / thermal guards: a run measured while the box was busy or
+    // thermally throttled is slower for reasons unrelated to the code under test,
+    // so its wall-time numbers are not comparable to an idle-host run — say so
+    // loudly on stderr. A missing load/thermal sample never trips these.
+    if prov.host_looked_contended() {
+        eprintln!(
+            "WARNING: 1-minute host load {} >= {} CPUs — this run was measured under \
+             contention; its wall-time numbers are inflated by scheduling pressure, not \
+             the code under test.",
+            prov.load_average_line(),
+            prov.host.ncpu
+        );
+    }
+    if prov.thermally_throttled() {
+        eprintln!(
+            "WARNING: CPU thermal-throttle counter is non-zero — the cores may have been \
+             clock-capped during this run; its timing numbers may understate true throughput."
+        );
+    }
     // Mismatched-oracle guard (#33): if this run measured a different libvips
     // than the environment was pinned to build, its numbers are not comparable
     // to a pinned-oracle run — say so loudly on stderr. Only fires on a genuine
@@ -188,48 +208,32 @@ fn main() {
     println!();
     println!("JSON results written to {}", json_path.display());
 
-    // Write text report
+    // Write text report. The metadata header records what the numbers are and
+    // the conditions they were measured under (environment fingerprint, host
+    // load, cold-vs-warm iteration policy), then the shared `comparison_table`
+    // renders the same table stdout printed — with its units/direction legend —
+    // so the committed artifact is self-describing and can never drift from the
+    // console output.
     let txt_path = report_dir.join("comparison_table.txt");
     let mut txt = String::new();
     txt.push_str(&format!(
         "libviprs engine comparison benchmark (monolithic / streaming / mapreduce)\n\
          measured libviprs core: {} ({})\n\
          bench harness: {}\n\
+         environment: {}\n\
+         host load (1/5/15m): {}\n\
          Tile size: {tile_size}, streaming/mapreduce budget floor: {streaming_budget} bytes \
-         (auto-scaled per width; per-row effective budget in benchmark_results.json)\n\n",
+         (auto-scaled per width; per-row effective budget in benchmark_results.json)\n\
+         Iterations: {iters} timed + {warmup} warm-up per cell (child-isolated); the warm-up \
+         run is discarded, so every figure below is a warm (steady-state) median.\n\n",
         core_version(),
         core_git_sha(),
         env!("CARGO_PKG_VERSION"),
+        prov.fingerprint(),
+        prov.load_average_line(),
     ));
 
-    txt.push_str(&format!(
-        "{:<24} {:<12} {:>10} {:>12} {:>10} {:>8} {:>8} {:>10} {:>12}\n",
-        "Label",
-        "Engine",
-        "Time (ms)",
-        "Tracked MB",
-        "RSS MB",
-        "Tiles",
-        "T/s",
-        "T/s/RSS-MB",
-        "RSS-MB\u{00b7}s/tile"
-    ));
-    txt.push_str(&format!("{}\n", "-".repeat(112)));
-
-    for r in &results {
-        txt.push_str(&format!(
-            "{:<24} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>8.0} {:>10.1} {:>12.4}\n",
-            r.label,
-            r.engine,
-            r.wall_time_ms(),
-            r.tracked_memory_mb(),
-            r.peak_rss_mb(),
-            r.tiles_produced,
-            r.tiles_per_second(),
-            r.tiles_per_second_per_mb(),
-            r.resource_cost_per_tile(),
-        ));
-    }
+    txt.push_str(&comparison_table(&results));
     fs::write(&txt_path, &txt).unwrap();
     println!("Text report written to {}", txt_path.display());
 

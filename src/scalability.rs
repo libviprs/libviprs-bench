@@ -5,13 +5,15 @@
 //! fixture is not committed, so the workload is a stand-in sized to that
 //! page's 1.42:1 aspect, NOT a rasterized blueprint. Runs all four engines
 //! (libvips, monolithic, streaming, MapReduce) at each size and at matched
-//! thread budgets (1 and num_cpus), producing SVG line charts — one set per
-//! thread budget — showing how wall time, peak RSS, and efficiency scale
-//! with image area.
+//! thread budgets (1 and num_cpus), measuring how wall time, peak RSS, and
+//! efficiency scale with image area.
 //!
 //! Run: cargo run --release --bin scalability
 //!
-//! Output: report/scalability_*.svg + report/scalability_results.json
+//! Output: report/scalability_results.json. This binary emits JSON only; the
+//! `scalability_*.svg` line charts render from that JSON via
+//! `tools/charts/render.mjs` (run-bench.sh invokes it after this writes the
+//! JSON) — the plotters dependency is gone (issue #42).
 
 // The chart plumbing threads fixed-arity metric tuples and borrowed series
 // slices through a few local closures; naming each as a `type` would add
@@ -31,7 +33,7 @@ use libviprs::{
 };
 use libviprs_bench::provenance::{OracleMatch, Provenance};
 use libviprs_bench::{
-    bench_libvips, gradient_raster, streaming_budget_for, vips_available, write_temp_png,
+    bench_libvips, gradient_raster, streaming_budget_for, thousands, vips_available, write_temp_png,
 };
 
 /// Peak RSS of the current process in bytes. Mirrors the RSS basis the
@@ -525,6 +527,7 @@ fn main() {
     // numbers are not comparable to a pinned-oracle run — warn loudly. Only
     // fires on a genuine parsed mismatch, never on a host run without libvips.
     let prov = Provenance::capture();
+    println!("Host load (1/5/15m): {}", prov.load_average_line());
     if let OracleMatch::Mismatch { measured, pinned } = prov.libvips_oracle_match() {
         eprintln!(
             "WARNING: measured libvips {}.{} != pinned oracle {}.{} — this \
@@ -532,6 +535,22 @@ fn main() {
              was pinned to build (issue #33); its numbers are NOT comparable \
              to a pinned-oracle run.",
             measured.0, measured.1, pinned.0, pinned.1
+        );
+    }
+    // A contended or thermally throttled host inflates these wall-time numbers
+    // for reasons unrelated to the engines under test — flag it loudly.
+    if prov.host_looked_contended() {
+        eprintln!(
+            "WARNING: 1-minute host load {} >= {} CPUs — this scalability run was measured \
+             under contention; its wall-time numbers are inflated by scheduling pressure.",
+            prov.load_average_line(),
+            prov.host.ncpu
+        );
+    }
+    if prov.thermally_throttled() {
+        eprintln!(
+            "WARNING: CPU thermal-throttle counter is non-zero — the cores may have been \
+             clock-capped during this run."
         );
     }
     println!();
@@ -743,11 +762,20 @@ fn main() {
             p.wall_time_ms,
             p.tracked_memory_mb,
             p.peak_rss_mb,
-            p.tiles_produced,
+            thousands(p.tiles_produced),
             p.tiles_per_second_per_mb,
             p.resource_cost,
         );
     }
+    // Units & direction (T = pyramid tiles, never pixels):
+    println!(
+        "  Time (ms) / Tracked MB / RSS MB: lower is better. \
+         T/s/RSS-MB = tiles/s per peak-RSS MB (memory efficiency): higher is better."
+    );
+    println!(
+        "  RSS-MB\u{00b7}s/tile = RSS-MB-seconds per tile (resource cost): lower is better. \
+         Tracked MB is libviprs-internal (0 for libvips); RSS MB is the cross-engine peak."
+    );
 
     // --- Memory bottleneck analysis ---
     println!();
@@ -878,11 +906,11 @@ fn main() {
     }
 
     println!();
-    println!(
-        "Charts written to {}/scalability_*.svg",
-        report_dir.display()
-    );
     println!("JSON written to {}", json_path.display());
+    println!(
+        "Scalability charts (scalability_*.svg) render from that JSON via \
+         tools/charts/render.mjs (run-bench.sh invokes it; this binary emits JSON only)."
+    );
 }
 
 #[cfg(test)]

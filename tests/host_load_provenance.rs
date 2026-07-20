@@ -75,8 +75,12 @@ fn legacy_provenance_without_load_or_thermal_deserializes() {
         }
     }"#;
 
-    let prov: Provenance = serde_json::from_str(legacy).expect("legacy provenance must still parse");
-    assert_eq!(prov.load_average, None, "absent load average defaults to None");
+    let prov: Provenance =
+        serde_json::from_str(legacy).expect("legacy provenance must still parse");
+    assert_eq!(
+        prov.load_average, None,
+        "absent load average defaults to None"
+    );
     assert_eq!(
         prov.thermal_throttle_count, None,
         "absent thermal indicator defaults to None"

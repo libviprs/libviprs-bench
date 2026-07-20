@@ -46,7 +46,12 @@ pub const PINNED_LIBVIPS_SHA256: &str =
     "2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037";
 
 /// Host + toolchain fingerprint for one benchmark snapshot.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// `PartialEq` but not `Eq`: the [`load_average`](Provenance::load_average) axis
+/// carries `f64`s (which are only `PartialEq`). Nothing compares a `Provenance`
+/// for `Eq` — grouping is by the string [`fingerprint`](Provenance::fingerprint),
+/// never by whole-struct equality.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Provenance {
     /// libvips runtime version actually measured (e.g. `"8.18.4"`), or
     /// `"unknown"`. Queried from the linked library / `vips` CLI at capture.
@@ -72,6 +77,46 @@ pub struct Provenance {
     /// time. Empty when unknown.
     pub build_flags: String,
     pub host: HostInfo,
+    /// Host load average (1/5/15-minute) sampled at capture time, or `None`
+    /// when it is not cheaply available on the platform. A run measured while
+    /// the box was busy is slower for reasons unrelated to the code under test,
+    /// so recording the load lets a reader discount (or discard) a contended
+    /// measurement rather than mistake it for a regression. Deliberately kept
+    /// *out* of [`Provenance::fingerprint`] — like the pinned-oracle axis, it is
+    /// a per-run *condition*, not part of the environment identity that groups
+    /// comparable runs. Defaults to `None` for history written before this axis
+    /// existed (via `#[serde(default)]`).
+    #[serde(default)]
+    pub load_average: Option<LoadAverage>,
+    /// Best-effort CPU thermal-throttle indicator sampled at capture time: the
+    /// cumulative core throttle-event count read from Linux sysfs
+    /// (`.../cpu0/thermal_throttle/core_throttle_count`), or `None` when it is
+    /// not cheaply available (macOS, or a container without that sysfs node).
+    /// `Some(0)` means the counter is readable and the CPU has not throttled;
+    /// `Some(n > 0)` flags a box that has thermally throttled — its clocks may
+    /// have been capped during the run. Like [`load_average`](Self::load_average)
+    /// it is a per-run condition, kept out of the fingerprint. Defaults to
+    /// `None` for legacy history (via `#[serde(default)]`).
+    #[serde(default)]
+    pub thermal_throttle_count: Option<u64>,
+}
+
+/// Host load average — the 1/5/15-minute run-queue length averages — sampled at
+/// benchmark capture time.
+///
+/// A load average near or above [`HostInfo::ncpu`] means the box was saturated
+/// during the run, so its wall-time numbers are contended and not comparable to
+/// an idle-host measurement. Read from `/proc/loadavg` on Linux and `getloadavg`
+/// on macOS by [`Provenance::capture`]. `PartialEq` (not `Eq`) because the
+/// components are `f64`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct LoadAverage {
+    /// 1-minute load average.
+    pub one: f64,
+    /// 5-minute load average.
+    pub five: f64,
+    /// 15-minute load average.
+    pub fifteen: f64,
 }
 
 /// Host machine identity.
@@ -113,6 +158,8 @@ impl Default for Provenance {
                 os: "unknown".to_string(),
                 in_container: false,
             },
+            load_average: None,
+            thermal_throttle_count: None,
         }
     }
 }
@@ -168,12 +215,20 @@ impl Provenance {
                 os: std::env::consts::OS.to_string(),
                 in_container: detect_container(),
             },
+            load_average: load_average(),
+            thermal_throttle_count: thermal_throttle_count(),
         }
     }
 
     /// A stable, human-readable fingerprint string. Two snapshots with the
     /// same fingerprint were measured in comparable environments; a delta
     /// across differing fingerprints is not apples-to-apples.
+    ///
+    /// The dynamic per-run *conditions* — [`load_average`](Self::load_average)
+    /// and [`thermal_throttle_count`](Self::thermal_throttle_count) — are
+    /// deliberately excluded: a busy or throttled run must still group with an
+    /// idle one on the same box so the contention is visible as an outlier
+    /// rather than splitting the environment into two buckets.
     pub fn fingerprint(&self) -> String {
         format!(
             "vips{}/rustc{}/{}/{}-{}x{}cpu/{}",
@@ -218,6 +273,37 @@ impl Provenance {
     /// ([`OracleMatch::Indeterminate`], e.g. `"unknown"`) side.
     pub fn libvips_matches_pinned(&self) -> bool {
         matches!(self.libvips_oracle_match(), OracleMatch::Match)
+    }
+
+    /// Whether the host looked contended during the run: the 1-minute load
+    /// average met or exceeded the CPU count, so ready threads were queued
+    /// behind a busy core and the wall-time numbers are inflated by scheduling
+    /// pressure rather than the code under test. `false` when no load average
+    /// was captured or the CPU count is unknown — a missing signal never cries
+    /// wolf. Consumers ([`report`], [`scalability`]) surface a warning on `true`.
+    pub fn host_looked_contended(&self) -> bool {
+        match self.load_average {
+            Some(la) if self.host.ncpu > 0 => la.one >= self.host.ncpu as f64,
+            _ => false,
+        }
+    }
+
+    /// Whether the CPU has thermally throttled (a non-zero
+    /// [`thermal_throttle_count`](Self::thermal_throttle_count)), so its clocks
+    /// may have been capped during the run. `false` when the indicator is
+    /// unavailable or reads zero.
+    pub fn thermally_throttled(&self) -> bool {
+        matches!(self.thermal_throttle_count, Some(n) if n > 0)
+    }
+
+    /// One-line host-load summary for banners: `"1.23 / 1.05 / 0.98"` (the
+    /// 1/5/15-minute averages), or `"unavailable"` when no load average was
+    /// captured on this platform.
+    pub fn load_average_line(&self) -> String {
+        match self.load_average {
+            Some(la) => format!("{:.2} / {:.2} / {:.2}", la.one, la.five, la.fifteen),
+            None => "unavailable".to_string(),
+        }
     }
 }
 
@@ -311,6 +397,67 @@ fn cpu_model() -> String {
         }
     }
     "unknown".to_string()
+}
+
+/// Sample the host 1/5/15-minute load average at capture time.
+///
+/// Reads `/proc/loadavg` on Linux (always present in the benchmark container)
+/// and calls `getloadavg` on macOS (the host path); mirrors the same
+/// per-platform split [`cpu_model`] uses. `None` on any other platform or when
+/// the source is unreadable, so a missing sample is honestly absent rather than
+/// a fabricated zero.
+fn load_average() -> Option<LoadAverage> {
+    // Exactly one cfg block compiles; each is the function's tail expression.
+    #[cfg(target_os = "linux")]
+    {
+        // `/proc/loadavg`: "0.52 0.58 0.59 1/1234 5678" — the first three
+        // whitespace-separated fields are the 1/5/15-minute averages.
+        let text = std::fs::read_to_string("/proc/loadavg").ok()?;
+        let mut parts = text.split_whitespace();
+        let one = parts.next()?.parse::<f64>().ok()?;
+        let five = parts.next()?.parse::<f64>().ok()?;
+        let fifteen = parts.next()?.parse::<f64>().ok()?;
+        Some(LoadAverage { one, five, fifteen })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `getloadavg` fills up to `nelem` averages (1/5/15-min) and returns the
+        // count written, or -1 on failure. Not exposed by the `libc` crate for
+        // glibc Linux, which is why Linux takes the `/proc/loadavg` path above.
+        let mut loads = [0f64; 3];
+        let n = unsafe { libc::getloadavg(loads.as_mut_ptr(), 3) };
+        (n == 3).then_some(LoadAverage {
+            one: loads[0],
+            five: loads[1],
+            fifteen: loads[2],
+        })
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// Best-effort CPU thermal-throttle indicator: the cumulative core
+/// throttle-event count from Linux sysfs, or `None` when not cheaply available.
+///
+/// Reads `/sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count`
+/// (a single cheap file read). A non-zero value means core 0 has entered a
+/// thermal-throttle state at least once since boot, so its clocks may have been
+/// capped during the run. `None` on macOS (no equivalent cheap counter — it
+/// would need IOKit/SMC) and on Linux hosts/containers without that sysfs node.
+fn thermal_throttle_count() -> Option<u64> {
+    // Exactly one cfg block compiles; each is the function's tail expression.
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/sys/devices/system/cpu/cpu0/thermal_throttle/core_throttle_count")
+            .ok()
+            .and_then(|text| text.trim().parse::<u64>().ok())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
 }
 
 /// Best-effort container detection: cgroup hints on Linux, or the

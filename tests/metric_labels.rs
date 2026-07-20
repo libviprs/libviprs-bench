@@ -14,7 +14,13 @@ use libviprs_bench::{RunMetrics, RunStats, comparison_table, executive_verdict};
 /// thousands separator in the table.
 fn sample() -> Vec<RunMetrics> {
     vec![
-        run("2048x2048_c0_monolithic", "monolithic", 1_250.0, 349_525, 512.0),
+        run(
+            "2048x2048_c0_monolithic",
+            "monolithic",
+            1_250.0,
+            349_525,
+            512.0,
+        ),
         run("2048x2048_c0_vips", "libvips", 900.0, 349_525, 300.0),
     ]
 }
@@ -85,7 +91,10 @@ fn comparison_table_states_units_and_direction() {
     );
 
     // The resource-cost and efficiency units appear.
-    assert!(table.contains("RSS-MB\u{00b7}s/tile"), "resource-cost unit present");
+    assert!(
+        table.contains("RSS-MB\u{00b7}s/tile"),
+        "resource-cost unit present"
+    );
     assert!(table.contains("T/s/RSS-MB"), "efficiency unit present");
 }
 
@@ -104,8 +113,14 @@ fn comparison_table_groups_thousands() {
 #[test]
 fn executive_verdict_states_units_and_direction() {
     let verdict = executive_verdict(&sample());
-    assert!(verdict.contains("lower is better"), "wall/RSS direction stated");
-    assert!(verdict.contains("higher is better"), "efficiency direction stated");
+    assert!(
+        verdict.contains("lower is better"),
+        "wall/RSS direction stated"
+    );
+    assert!(
+        verdict.contains("higher is better"),
+        "efficiency direction stated"
+    );
     assert!(
         verdict.to_lowercase().contains("tiles/s"),
         "the efficiency unit is named (tiles/s per RSS-MB)"
