@@ -420,6 +420,31 @@ pub fn bench_monolithic(
     }
 }
 
+/// Size a streaming / mapreduce memory budget so the worst-case tile-aligned
+/// strip (`width × 2·tile_size × bpp`) always fits under the strict
+/// [`BudgetPolicy::Error`] these engines run with.
+///
+/// The streaming and mapreduce engines reject a run up front with
+/// `BudgetExceeded` when even one minimum aligned strip (`2 × tile_size` rows at
+/// canvas width) cannot fit the budget, so a flat budget that is fine for small
+/// canvases (the report's [`BENCH_STREAMING_BUDGET`]) starves every image from
+/// 1024 px up. `requested` is treated as a floor and raised only when a wider
+/// canvas needs more, mirroring the `scalability` binary's own
+/// `streaming_budget_for` and the pdfium path in `bench_streaming_pdf`. The `2×`
+/// over the minimum aligned strip leaves headroom for the per-level accumulator
+/// chain.
+///
+/// Saturating arithmetic throughout: an adversarial `width` / `tile_size`
+/// saturates the budget large — which the engine then rejects cleanly rather
+/// than being handed a wrapped-small budget — instead of overflowing (a debug
+/// panic / release wraparound).
+pub fn streaming_budget_for(requested: u64, width: u32, tile_size: u32, bpp: u64) -> u64 {
+    let min_strip_bytes = (width as u64)
+        .saturating_mul(2u64.saturating_mul(tile_size as u64))
+        .saturating_mul(bpp);
+    requested.max(min_strip_bytes.saturating_mul(2))
+}
+
 /// Run the streaming engine and collect metrics.
 pub fn bench_streaming(
     src: &Raster,
@@ -428,6 +453,15 @@ pub fn bench_streaming(
     memory_budget_bytes: u64,
     label: &str,
 ) -> RunMetrics {
+    // Size the budget to admit the worst-case tile-aligned strip so the strict
+    // `BudgetPolicy::Error` never trips on a large canvas; the flat report
+    // budget alone starves every image from 1024 px up (issue #38).
+    let budget = streaming_budget_for(
+        memory_budget_bytes,
+        src.width(),
+        plan.tile_size,
+        src.format().bytes_per_pixel() as u64,
+    );
     let out_dir = fs_sink_dir(label);
     let sink = engine_fs_sink(&out_dir, plan);
     let observer = Arc::new(CollectingObserver::new());
@@ -437,7 +471,7 @@ pub fn bench_streaming(
     let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
         .with_engine(EngineKind::Streaming)
         .with_config(engine_config)
-        .with_memory_budget(memory_budget_bytes)
+        .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
         .with_observer_arc(observer.clone())
         .run()
@@ -472,7 +506,7 @@ pub fn bench_streaming(
         batches: 0,
         inflight_strips: 0,
         concurrency,
-        memory_budget_bytes,
+        memory_budget_bytes: budget,
     }
 }
 
@@ -484,6 +518,17 @@ pub fn bench_mapreduce(
     memory_budget_bytes: u64,
     label: &str,
 ) -> RunMetrics {
+    // Size the budget to admit the worst-case tile-aligned strip so the strict
+    // `BudgetPolicy::Error` never trips on a large canvas; the flat report
+    // budget alone starves every image from 1024 px up (issue #38). The sized
+    // budget is what the engine runs with, so the strip-height and in-flight
+    // accounting below is computed against it too.
+    let budget = streaming_budget_for(
+        memory_budget_bytes,
+        src.width(),
+        plan.tile_size,
+        src.format().bytes_per_pixel() as u64,
+    );
     let out_dir = fs_sink_dir(label);
     let sink = engine_fs_sink(&out_dir, plan);
     let observer = Arc::new(CollectingObserver::new());
@@ -497,7 +542,7 @@ pub fn bench_mapreduce(
     let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
         .with_engine(EngineKind::MapReduce)
         .with_config(engine_config)
-        .with_memory_budget(memory_budget_bytes)
+        .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
         .with_observer_arc(observer.clone())
         .run()
@@ -516,8 +561,8 @@ pub fn bench_mapreduce(
         .iter()
         .filter(|e| matches!(e, EngineEvent::BatchStarted { .. }))
         .count() as u32;
-    let strip_height = libviprs::compute_strip_height(plan, src.format(), memory_budget_bytes)
-        .unwrap_or(2 * plan.tile_size);
+    let strip_height =
+        libviprs::compute_strip_height(plan, src.format(), budget).unwrap_or(2 * plan.tile_size);
     // Mirror the engine's own channel-backlog charge so the reported
     // in-flight strip count matches what the MapReduce engine actually
     // budgets for (libviprs `streaming_mapreduce`): the parallel emitter
@@ -535,7 +580,7 @@ pub fn bench_mapreduce(
         src.format(),
         strip_height,
         channel_bytes,
-        memory_budget_bytes,
+        budget,
     );
 
     RunMetrics {
@@ -557,7 +602,7 @@ pub fn bench_mapreduce(
         batches,
         inflight_strips: inflight,
         concurrency: tile_concurrency,
-        memory_budget_bytes,
+        memory_budget_bytes: budget,
     }
 }
 
@@ -665,15 +710,15 @@ pub fn bench_streaming_pdf(
     let plan = planner.plan();
 
     // Admit the worst-case tile-aligned strip so `BudgetPolicy::Error` never
-    // trips on the wide RGBA pdfium strips. Saturating arithmetic so an
-    // adversarial page width or `tile_size` saturates the budget large (which
-    // the engine then rejects cleanly) instead of wrapping small in release or
-    // panicking in debug.
-    let bpp = source.format().bytes_per_pixel() as u64;
-    let min_strip_bytes = (width as u64)
-        .saturating_mul(2u64.saturating_mul(tile_size as u64))
-        .saturating_mul(bpp);
-    let budget = memory_budget_bytes.max(min_strip_bytes.saturating_mul(2));
+    // trips on the wide RGBA pdfium strips (4-bpp here, wider than the 3-bpp
+    // gradient at the same width). Shared with the raster `bench_streaming` /
+    // `bench_mapreduce` path via `streaming_budget_for` (saturating).
+    let budget = streaming_budget_for(
+        memory_budget_bytes,
+        width,
+        tile_size,
+        source.format().bytes_per_pixel() as u64,
+    );
 
     let out_dir = fs_sink_dir(label);
     let sink = engine_fs_sink(&out_dir, &plan);
@@ -2090,5 +2135,66 @@ mod history_tests {
         assert_eq!(snap.version, core_version());
         assert_eq!(snap.git_sha, core_git_sha());
         assert!(!snap.version.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+
+    /// From 1024 px up the worst-case tile-aligned strip
+    /// (`width × 2·tile_size × bpp`) exceeds the report's flat 1 MB budget, so
+    /// [`streaming_budget_for`] must raise it to admit that strip (with the 2×
+    /// accumulator headroom) rather than let `BudgetPolicy::Error` trip.
+    #[test]
+    fn sized_budget_admits_worst_case_strip_at_large_width() {
+        let requested = BENCH_STREAMING_BUDGET; // 1 MB, the report default
+        let tile = BENCH_TILE_SIZE; // 256
+        let bpp: u64 = 3; // RGB8 gradient
+        let width: u32 = 1024;
+        let worst_case = width as u64 * 2 * tile as u64 * bpp;
+        // Premise: the flat budget really is too small at this width.
+        assert!(
+            worst_case > requested,
+            "test premise: 1024px worst-case strip must exceed the flat budget"
+        );
+        let budget = streaming_budget_for(requested, width, tile, bpp);
+        assert!(
+            budget >= worst_case,
+            "sized budget {budget} must admit the worst-case strip {worst_case}"
+        );
+        // Exactly the 2× headroom over the minimum aligned strip.
+        assert_eq!(budget, worst_case * 2);
+    }
+
+    /// A small canvas whose worst-case strip already fits keeps the caller's
+    /// requested budget as the floor — the budget is raised, never lowered.
+    #[test]
+    fn small_canvas_keeps_requested_floor() {
+        let requested = BENCH_STREAMING_BUDGET;
+        // 256px RGB8 at tile 256: worst-case = 256·512·3 = 393_216; 2× =
+        // 786_432, still under the 1 MB floor.
+        let budget = streaming_budget_for(requested, 256, BENCH_TILE_SIZE, 3);
+        assert_eq!(
+            budget, requested,
+            "floor must win when the strip already fits"
+        );
+        assert!(budget >= 256u64 * 2 * BENCH_TILE_SIZE as u64 * 3);
+    }
+
+    /// Adversarial dimensions saturate the budget large (which the engine then
+    /// rejects cleanly) rather than overflowing to a wrapped-small value.
+    #[test]
+    fn adversarial_dimensions_saturate_not_wrap() {
+        let budget = streaming_budget_for(BENCH_STREAMING_BUDGET, u32::MAX, u32::MAX, 4);
+        assert_eq!(
+            budget,
+            u64::MAX,
+            "adversarial size must saturate the budget"
+        );
+        assert!(
+            budget >= BENCH_STREAMING_BUDGET,
+            "a saturated budget is never below the requested floor"
+        );
     }
 }
