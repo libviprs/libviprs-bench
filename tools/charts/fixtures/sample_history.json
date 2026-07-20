@@ -1,0 +1,416 @@
+[
+  {
+    "schema_version": 2,
+    "provenance": {
+      "libvips_version": "8.15.1",
+      "rustc_version": "1.89.0",
+      "build_profile": "release",
+      "build_flags": "lto=thin,codegen-units=1",
+      "host": {
+        "cpu_model": "Apple M2 Pro",
+        "ncpu": 10,
+        "arch": "aarch64",
+        "os": "macos",
+        "in_container": false
+      }
+    },
+    "version": "0.3.0",
+    "git_sha": "a1b2c3d",
+    "timestamp": "2026-04-24T08:35:57Z",
+    "tile_size": 256,
+    "memory_budget_bytes": 4000000,
+    "runs": [
+      {
+        "label": "1024x1024_c0_monolithic",
+        "width": 1024,
+        "height": 1024,
+        "engine": "monolithic",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 20000000
+        },
+        "tracked_memory_bytes": 4194304,
+        "peak_rss_bytes": 52428800,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      },
+      {
+        "label": "1024x1024_c0_streaming",
+        "width": 1024,
+        "height": 1024,
+        "engine": "streaming",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 24000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 31457280,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 4,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "1024x1024_c0_libvips",
+        "width": 1024,
+        "height": 1024,
+        "engine": "libvips",
+        "measurement_path": "ffi",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 40000000
+        },
+        "tracked_memory_bytes": 0,
+        "peak_rss_bytes": 83886080,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      }
+    ]
+  },
+  {
+    "schema_version": 2,
+    "provenance": {
+      "libvips_version": "8.15.1",
+      "rustc_version": "1.89.0",
+      "build_profile": "release",
+      "build_flags": "lto=thin,codegen-units=1",
+      "host": {
+        "cpu_model": "Apple M2 Pro",
+        "ncpu": 10,
+        "arch": "aarch64",
+        "os": "macos",
+        "in_container": false
+      }
+    },
+    "version": "0.3.1",
+    "git_sha": "b2c3d4e",
+    "timestamp": "2026-05-01T10:00:00Z",
+    "tile_size": 256,
+    "memory_budget_bytes": 4000000,
+    "runs": [
+      {
+        "label": "1024x1024_c0_monolithic",
+        "width": 1024,
+        "height": 1024,
+        "engine": "monolithic",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 19000000
+        },
+        "tracked_memory_bytes": 4194304,
+        "peak_rss_bytes": 52428800,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      },
+      {
+        "label": "1024x1024_c0_streaming",
+        "width": 1024,
+        "height": 1024,
+        "engine": "streaming",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 23000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 31457280,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 4,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "1024x1024_c0_mapreduce",
+        "width": 1024,
+        "height": 1024,
+        "engine": "mapreduce",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 30000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 36700160,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 4,
+        "batches": 2,
+        "inflight_strips": 1,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "1024x1024_c0_libvips",
+        "width": 1024,
+        "height": 1024,
+        "engine": "libvips",
+        "measurement_path": "ffi",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 39000000
+        },
+        "tracked_memory_bytes": 0,
+        "peak_rss_bytes": 83886080,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      }
+    ]
+  },
+  {
+    "schema_version": 2,
+    "provenance": {
+      "libvips_version": "8.15.1",
+      "rustc_version": "1.89.0",
+      "build_profile": "release",
+      "build_flags": "lto=thin,codegen-units=1",
+      "host": {
+        "cpu_model": "Apple M2 Pro",
+        "ncpu": 10,
+        "arch": "aarch64",
+        "os": "macos",
+        "in_container": false
+      }
+    },
+    "version": "0.3.2",
+    "git_sha": "c3d4e5f",
+    "timestamp": "2026-05-15T10:00:00Z",
+    "tile_size": 256,
+    "memory_budget_bytes": 4000000,
+    "runs": [
+      {
+        "label": "1024x1024_c0_monolithic",
+        "width": 1024,
+        "height": 1024,
+        "engine": "monolithic",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 18000000
+        },
+        "tracked_memory_bytes": 4194304,
+        "peak_rss_bytes": 52428800,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      },
+      {
+        "label": "1024x1024_c0_mapreduce",
+        "width": 1024,
+        "height": 1024,
+        "engine": "mapreduce",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 28000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 36700160,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 4,
+        "batches": 2,
+        "inflight_strips": 1,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "1024x1024_c0_libvips",
+        "width": 1024,
+        "height": 1024,
+        "engine": "libvips",
+        "measurement_path": "ffi",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 38000000
+        },
+        "tracked_memory_bytes": 0,
+        "peak_rss_bytes": 83886080,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      }
+    ]
+  },
+  {
+    "schema_version": 2,
+    "provenance": {
+      "libvips_version": "8.15.1",
+      "rustc_version": "1.89.0",
+      "build_profile": "release",
+      "build_flags": "lto=thin,codegen-units=1",
+      "host": {
+        "cpu_model": "Apple M2 Pro",
+        "ncpu": 10,
+        "arch": "aarch64",
+        "os": "macos",
+        "in_container": false
+      }
+    },
+    "version": "0.3.3",
+    "git_sha": "d4e5f60",
+    "timestamp": "2026-06-01T10:00:00Z",
+    "tile_size": 256,
+    "memory_budget_bytes": 4000000,
+    "runs": [
+      {
+        "label": "1024x1024_c0_monolithic",
+        "width": 1024,
+        "height": 1024,
+        "engine": "monolithic",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 17000000
+        },
+        "tracked_memory_bytes": 4194304,
+        "peak_rss_bytes": 52428800,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      },
+      {
+        "label": "1024x1024_c0_streaming",
+        "width": 1024,
+        "height": 1024,
+        "engine": "streaming",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 21000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 31457280,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 4,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "1024x1024_c0_mapreduce",
+        "width": 1024,
+        "height": 1024,
+        "engine": "mapreduce",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 26000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 36700160,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 4,
+        "batches": 2,
+        "inflight_strips": 1,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "1024x1024_c0_libvips",
+        "width": 1024,
+        "height": 1024,
+        "engine": "libvips",
+        "measurement_path": "ffi",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 37000000
+        },
+        "tracked_memory_bytes": 0,
+        "peak_rss_bytes": 83886080,
+        "stats": null,
+        "per_level_tiles": [],
+        "tiles_produced": 21,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      }
+    ]
+  }
+]
