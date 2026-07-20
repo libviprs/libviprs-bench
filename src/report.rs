@@ -136,32 +136,35 @@ fn main() {
 
     // Output-equivalence: pixel-level PSNR spot-check vs libvips. The geometry
     // gate (tile count + per-level grid) runs inside the suite; this surfaces
-    // the pixel-fidelity score so a fast-but-visually-wrong engine is visible
-    // rather than silently passing on tile count alone (issue #23 / #32).
+    // each engine's own pixel-fidelity score so a fast-but-visually-wrong
+    // engine is visible rather than silently passing on tile count alone
+    // (issue #23 / #32). Each (engine, size, concurrency) carries its OWN
+    // score, so every scored row is printed on its own line.
     println!();
     println!("=== Output-equivalence: mid-pyramid tile PSNR vs libvips ===");
-    let mut seen = std::collections::BTreeSet::new();
     let mut any = false;
     for r in &results {
         let Some(psnr) = r.equivalence_psnr_db else {
             continue;
         };
-        let key = format!("{}x{} c{}", r.width, r.height, r.concurrency);
-        if seen.insert(key.clone()) {
-            any = true;
-            let verdict = if psnr >= harness::MIN_TILE_PSNR_DB {
-                "OK"
-            } else {
-                "FAIL"
-            };
-            println!("  {key:<16} {psnr:>7.1} dB  [{verdict}]");
-        }
+        any = true;
+        let verdict = if psnr >= harness::MIN_TILE_PSNR_DB {
+            "OK"
+        } else {
+            "FAIL"
+        };
+        let key = format!("{}x{} c{} {}", r.width, r.height, r.concurrency, r.engine);
+        println!("  {key:<28} {psnr:>7.1} dB  [{verdict}]");
     }
     if any {
         println!(
-            "  threshold: {:.0} dB (near-lossless)",
+            "  threshold: {:.0} dB (near-lossless), advisory only",
             harness::MIN_TILE_PSNR_DB
         );
+    } else if vips_available() {
+        // libvips ran but no size produced a comparable multi-tile mid level
+        // (e.g. a smoke run over tiny images) — distinct from libvips absent.
+        println!("  (no comparable mid level for the configured sizes — pixel spot-check skipped)");
     } else {
         println!("  (libvips unavailable — pixel spot-check skipped)");
     }

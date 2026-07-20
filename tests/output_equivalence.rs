@@ -26,8 +26,10 @@
 
 use std::path::{Path, PathBuf};
 
-use libviprs::{Layout, PixelFormat, PyramidPlanner, Raster};
-use libviprs_bench::harness::{MIN_TILE_PSNR_DB, PSNR_CLAMP_DB, psnr, spot_check_tile_psnr, ssim};
+use libviprs::{EngineKind, Layout, PixelFormat, PyramidPlanner, Raster};
+use libviprs_bench::harness::{
+    MIN_TILE_PSNR_DB, PSNR_CLAMP_DB, global_ssim, psnr, spot_check_tile_psnr,
+};
 use libviprs_bench::{vips_available, write_libviprs_pyramid, write_libvips_pyramid};
 
 /// Committed fixture: a 1024x1024 RGB image (two colour ramps + a coarse 32px
@@ -77,10 +79,10 @@ fn psnr_size_mismatch_is_a_definitive_failure() {
 #[test]
 fn ssim_identical_is_one_and_inversion_drops_it() {
     let a: Vec<u8> = (0u32..256).map(|v| v as u8).collect();
-    assert!((ssim(&a, &a) - 1.0).abs() < 1e-9);
+    assert!((global_ssim(&a, &a) - 1.0).abs() < 1e-9);
     let inverted: Vec<u8> = a.iter().map(|b| 255 - b).collect();
     assert!(
-        ssim(&a, &inverted) < 1.0,
+        global_ssim(&a, &inverted) < 1.0,
         "an inverted buffer must score below a perfect SSIM"
     );
 }
@@ -123,8 +125,17 @@ fn build_pyramids(tag: &str) -> Pyramids {
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
 
-    // libviprs (monolithic) pyramid.
-    let candidate_files = write_libviprs_pyramid(&raster, &plan, &root.join("lv"));
+    // libviprs (monolithic) pyramid. Budget is irrelevant to the monolithic
+    // engine but required by the shared signature.
+    let candidate_files = write_libviprs_pyramid(
+        &raster,
+        &plan,
+        EngineKind::Monolithic,
+        0,
+        1_000_000,
+        &root.join("lv"),
+    )
+    .expect("libviprs monolithic pyramid builds");
 
     // libvips dzsave from the same pixels: write the decoded raster to a PNG
     // so both engines start from an identical source.
