@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod harness;
 pub mod provenance;
+pub mod version_matrix;
 
 /// Current on-disk schema version for [`BenchmarkSnapshot`] /
 /// [`RunMetrics`]. Bump whenever a field is renamed or its meaning
@@ -1181,8 +1182,33 @@ pub fn save_history(path: &std::path::Path, history: &[BenchmarkSnapshot]) {
     std::fs::write(path, json).unwrap();
 }
 
-/// Create a `BenchmarkSnapshot` from current run metrics.
+/// Create a `BenchmarkSnapshot` from current run metrics, tagged with the
+/// core version/SHA this harness was built against (`build.rs` stamps).
 pub fn create_snapshot(
+    runs: Vec<RunMetrics>,
+    tile_size: u32,
+    memory_budget_bytes: u64,
+) -> BenchmarkSnapshot {
+    create_snapshot_for(
+        core_version(),
+        core_git_sha(),
+        runs,
+        tile_size,
+        memory_budget_bytes,
+    )
+}
+
+/// Create a `BenchmarkSnapshot` tagged with an *explicit* measured core
+/// version + short SHA, rather than this process's compile-time stamps.
+///
+/// The version-matrix runner ([`version_matrix`]) needs this: it drives a
+/// *separately built* harness per tag, so the version/SHA a snapshot should
+/// carry is the one it resolved from that tag's worktree, not the version this
+/// driver binary was itself compiled against. The environment fingerprint is
+/// still captured live from the current host/toolchain.
+pub fn create_snapshot_for(
+    version: &str,
+    git_sha: &str,
     runs: Vec<RunMetrics>,
     tile_size: u32,
     memory_budget_bytes: u64,
@@ -1190,8 +1216,8 @@ pub fn create_snapshot(
     BenchmarkSnapshot {
         schema_version: CURRENT_SCHEMA_VERSION,
         provenance: provenance::Provenance::capture(),
-        version: core_version().to_string(),
-        git_sha: core_git_sha().to_string(),
+        version: version.to_string(),
+        git_sha: git_sha.to_string(),
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         tile_size,
         memory_budget_bytes,

@@ -82,13 +82,14 @@ fn checkout_resolves_head_sha_into_a_temp_worktree_and_cleans_up() {
     let repo = core_repo_dir();
     // Premise guard: the sibling core really is a git checkout.
     assert!(
-        repo.join(".git").exists() || Command::new("git")
-            .arg("-C")
-            .arg(&repo)
-            .args(["rev-parse", "--git-dir"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false),
+        repo.join(".git").exists()
+            || Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["rev-parse", "--git-dir"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false),
         "core repo {} must be a git checkout for the version matrix",
         repo.display()
     );
@@ -173,7 +174,10 @@ fn build_harness_reuse_fast_path_yields_a_runnable_exe() {
     let built = build_harness(&wt, &target, &HarnessBuild::Reuse(prebuilt.clone()))
         .expect("reuse build must succeed");
 
-    assert_eq!(built.exe, prebuilt, "reuse mode must hand back the given exe");
+    assert_eq!(
+        built.exe, prebuilt,
+        "reuse mode must hand back the given exe"
+    );
     assert!(built.exe.exists(), "the reused harness binary must exist");
 }
 
@@ -313,20 +317,26 @@ fn run_matrix_reuse_appends_one_snapshot_per_version() {
     let _ = std::fs::remove_file(&history);
 
     let repo = core_repo_dir();
-    let mut cfg = version_matrix::MatrixConfig::default();
     // Tiny + single-shot so the ignored run is quick; reuse the prebuilt bin
     // instead of a per-tag rebuild.
-    cfg.sizes = vec![(64, 64)];
-    cfg.concurrency = vec![0];
-    cfg.iters = 1;
-    cfg.warmup = 0;
-    cfg.build = HarnessBuild::Reuse(PathBuf::from(env!("CARGO_BIN_EXE_report")));
+    let cfg = version_matrix::MatrixConfig {
+        sizes: vec![(64, 64)],
+        concurrency: vec![0],
+        iters: 1,
+        warmup: 0,
+        build: HarnessBuild::Reuse(PathBuf::from(env!("CARGO_BIN_EXE_report"))),
+        ..Default::default()
+    };
 
     let outcomes = version_matrix::run_matrix(&repo, &["HEAD".to_string()], &cfg, &history);
     assert_eq!(outcomes.len(), 1);
 
     let hist = load_history(&history).expect("history loads");
-    assert_eq!(hist.len(), 1, "one appended snapshot for the single version");
+    assert_eq!(
+        hist.len(),
+        1,
+        "one appended snapshot for the single version"
+    );
     assert!(!hist[0].version.is_empty(), "snapshot is version-tagged");
     assert_eq!(hist[0].git_sha, git_short_sha(&repo, "HEAD"));
     assert!(!hist[0].runs.is_empty(), "the suite produced runs");
