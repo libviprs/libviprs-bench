@@ -250,6 +250,71 @@ fn to_point(
     }
 }
 
+/// Path to the committed real-content PDF fixture (issue #30), resolved against
+/// the crate manifest so it works regardless of the working directory.
+#[cfg(feature = "pdfium")]
+const PDF_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/cc_licenses_mapping.pdf"
+);
+
+/// Render DPI that scales the committed PDF fixture to approximately
+/// `target_width` pixels wide.
+///
+/// The fixture's page is ~1190 pt wide (A3 landscape) — i.e. ~1190 px at 72
+/// DPI — so we scale linearly from that. This lands the rasterized-PDF series
+/// at the same image sizes as the synthetic-gradient sweep, keeping the two
+/// workloads directly comparable on the shared megapixel x-axis (issue #31).
+#[cfg(feature = "pdfium")]
+fn pdf_dpi_for_width(target_width: u32) -> u32 {
+    const FIXTURE_WIDTH_PX_AT_72_DPI: f64 = 1190.0;
+    let dpi = 72.0 * target_width as f64 / FIXTURE_WIDTH_PX_AT_72_DPI;
+    (dpi.round() as u32).max(1)
+}
+
+/// Run the rasterized-PDF streaming workload for one sweep size and return its
+/// scalability point (engine series `"streaming-pdf"`), or `None` if the pdfium
+/// source could not be rendered (e.g. libpdfium unavailable) — the benchmark
+/// then simply omits the real-content series for that point rather than
+/// aborting the whole run.
+///
+/// The point is plotted at the PDF's *actual* rendered dimensions (from the
+/// returned metrics), so its megapixel x-position is honest even when pdfium
+/// rounds the page a pixel differently from the gradient target.
+#[cfg(feature = "pdfium")]
+fn run_pdf_streaming(
+    target_width: u32,
+    concurrency: usize,
+    tile_size: u32,
+) -> Option<ScalabilityPoint> {
+    let dpi = pdf_dpi_for_width(target_width);
+    let label = format!("pdf_{target_width}_c{concurrency}");
+    match libviprs_bench::bench_streaming_pdf(
+        std::path::Path::new(PDF_FIXTURE),
+        1,
+        dpi,
+        tile_size,
+        concurrency,
+        streaming_budget_for(target_width, tile_size),
+        &label,
+    ) {
+        Ok(m) => Some(to_point(
+            m.width,
+            m.height,
+            "streaming-pdf",
+            concurrency,
+            m.wall_time,
+            m.tracked_memory_bytes,
+            m.peak_rss_bytes,
+            m.tiles_produced,
+        )),
+        Err(e) => {
+            eprintln!("  [pdf] skipped {target_width}px @ {dpi} dpi: {e}");
+            None
+        }
+    }
+}
+
 fn draw_scalability_chart(
     path: &std::path::Path,
     title: &str,
@@ -386,6 +451,9 @@ fn render_charts_for_conc(
     let mono_color = RGBColor(66, 133, 244);
     let stream_color = RGBColor(52, 168, 83);
     let mr_color = RGBColor(234, 67, 53);
+    // Orange — the real-content rasterized-PDF series, kept visually distinct
+    // from the four synthetic-gradient engine lines (issue #31).
+    let pdf_color = RGBColor(255, 152, 0);
 
     let extract_series = |engine: &str| -> Vec<(f64, f64, f64, f64, f64, f64)> {
         all_points
@@ -408,6 +476,15 @@ fn render_charts_for_conc(
     let mono_data = extract_series("monolithic");
     let stream_data = extract_series("streaming");
     let mr_data = extract_series("mapreduce");
+    // Real-content series (issue #31). Empty on a default build (no
+    // `streaming-pdf` points), in which case the chart is byte-for-byte what it
+    // was before and the titles keep saying "synthetic gradient".
+    let pdf_data = extract_series("streaming-pdf");
+    let workload = if pdf_data.is_empty() {
+        "synthetic gradient"
+    } else {
+        "gradient + rasterized PDF"
+    };
 
     // Helper to pull one metric (by tuple field index) from each engine's
     // (megapixels, m1, m2, m3, m4, m5) tuples.
@@ -420,27 +497,30 @@ fn render_charts_for_conc(
     // Per-chart definition: (filename, title, y-label, tuple-index for the
     // metric on each engine's series). Looping over this avoids repeating
     // the build-up boilerplate five times.
-    // NOTE: the workload is a SYNTHETIC gradient raster (see
-    // `gradient_raster`), sized to the 1.42:1 aspect of the California
-    // South page — the actual PDF fixture is not committed. Titles say so
-    // rather than implying a real rasterized blueprint was benchmarked
-    // (issue #161).
+    // NOTE: the four engine series (libvips/monolithic/streaming/mapreduce)
+    // are a SYNTHETIC gradient raster (see `gradient_raster`), sized to the
+    // 1.42:1 aspect of the California South page. Under the `pdfium` feature a
+    // fifth `streaming-pdf` series is added: the committed real-content fixture
+    // (`fixtures/cc_licenses_mapping.pdf`) rasterized via `PdfiumStripSource`
+    // (issues #30/#31). Titles name whichever workloads are actually present
+    // (`workload`) rather than implying a real blueprint when only the gradient
+    // ran (issue #161).
     let charts: [(String, String, &str, u8); 5] = [
         (
             format!("scalability_wall_time_c{concurrency}.svg"),
-            format!("Wall Time Scalability — synthetic gradient ({thread_cap})"),
+            format!("Wall Time Scalability — {workload} ({thread_cap})"),
             "Time (ms)",
             1,
         ),
         (
             format!("scalability_peak_memory_c{concurrency}.svg"),
-            format!("Peak RSS Scalability — synthetic gradient ({thread_cap})"),
+            format!("Peak RSS Scalability — {workload} ({thread_cap})"),
             "Peak RSS (MB)",
             2,
         ),
         (
             format!("scalability_throughput_c{concurrency}.svg"),
-            format!("Throughput Scalability — synthetic gradient ({thread_cap})"),
+            format!("Throughput Scalability — {workload} ({thread_cap})"),
             "Tiles/s",
             3,
         ),
@@ -485,6 +565,10 @@ fn render_charts_for_conc(
         series.push(("Monolithic", mono_color, pts_for(&mono_data)));
         series.push(("Streaming", stream_color, pts_for(&stream_data)));
         series.push(("MapReduce", mr_color, pts_for(&mr_data)));
+        // The real-content series only when it was measured (pdfium build).
+        if !pdf_data.is_empty() {
+            series.push(("Streaming (PDF)", pdf_color, pts_for(&pdf_data)));
+        }
 
         let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
             .iter()
@@ -611,8 +695,14 @@ fn main() {
 
     println!("=== Engine Scalability Benchmark ===");
     println!(
-        "Workload: SYNTHETIC gradient raster (not a rasterized PDF); aspect \
-         1.42:1 matches the California South page (4608x3240 pts)."
+        "Workload: SYNTHETIC gradient raster; aspect 1.42:1 matches the \
+         California South page (4608x3240 pts)."
+    );
+    #[cfg(feature = "pdfium")]
+    println!(
+        "Real-content series: rasterized PDF fixture \
+         (fixtures/cc_licenses_mapping.pdf) via PdfiumStripSource streaming, \
+         charted as 'streaming-pdf'."
     );
     println!(
         "Sizes: {} points from 512x360 to {}x{}",
@@ -771,6 +861,24 @@ fn main() {
                 run.rss_bytes,
                 run.tiles,
             ));
+
+            // Real-content counterpart (issue #31): rasterize the committed PDF
+            // fixture to ~this width via PdfiumStripSource (streaming) and
+            // pyramid it through the streaming engine, as the separate
+            // "streaming-pdf" series. Feature-gated, so the default build is
+            // unaffected.
+            #[cfg(feature = "pdfium")]
+            if let Some(p) = run_pdf_streaming(w, conc, TILE_SIZE) {
+                println!(
+                    "        pdf={:.0}ms/{:.1}MB(rss)  ({}x{} @ {}dpi)",
+                    p.wall_time_ms,
+                    p.peak_rss_mb,
+                    p.width,
+                    p.height,
+                    pdf_dpi_for_width(w),
+                );
+                all_points.push(p);
+            }
         }
     }
 

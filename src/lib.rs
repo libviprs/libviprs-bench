@@ -561,6 +561,106 @@ pub fn bench_mapreduce(
     }
 }
 
+/// Rasterize a PDF page straight into a DeepZoom pyramid via the streaming
+/// engine — the real-content counterpart to the synthetic [`gradient_raster`]
+/// streaming workload (issues #30 / #31).
+///
+/// Sources strips from a [`PdfiumStripSource`](libviprs::PdfiumStripSource) in
+/// [`Streaming`](libviprs::PdfiumRenderMode::Streaming) mode, so the full page
+/// is never materialised: peak memory stays bounded by the strip in flight,
+/// exactly the regime a rasterized full-page blueprint exercises. The page is
+/// rendered at `dpi`; the resulting raster dimensions (reported back in
+/// [`RunMetrics::width`] / [`height`](RunMetrics::height)) grow with `dpi`,
+/// which is how the scalability sweep drives one committed fixture to
+/// progressively larger sizes. The run is tagged with the `"streaming-pdf"`
+/// engine so it charts as a series distinct from the four gradient engines.
+///
+/// The DeepZoom plan is derived from the source's rendered dimensions, and the
+/// budget is raised if necessary so the worst-case tile-aligned strip
+/// (`width × 2·tile_size × bpp`, RGBA here) always fits under the strict
+/// [`BudgetPolicy::Error`] — pdfium's 4-bpp strips are wider than the 3-bpp
+/// gradient at the same width.
+///
+/// Returns an error string (rather than panicking like the raster
+/// [`bench_streaming`]) because PDF sources fail for legitimate *runtime*
+/// reasons — a missing `libpdfium`, an unreadable file — that a benchmark
+/// driver wants to skip over rather than abort on.
+#[cfg(feature = "pdfium")]
+#[allow(clippy::too_many_arguments)]
+pub fn bench_streaming_pdf(
+    pdf_path: &std::path::Path,
+    page: usize,
+    dpi: u32,
+    tile_size: u32,
+    concurrency: usize,
+    memory_budget_bytes: u64,
+    label: &str,
+) -> Result<RunMetrics, String> {
+    use libviprs::{PdfiumStripSource, StripSource};
+
+    let source = PdfiumStripSource::new_streaming(pdf_path, page, dpi)
+        .map_err(|e| format!("pdfium source construction failed: {e:?}"))?;
+    let width = source.width();
+    let height = source.height();
+
+    let planner = PyramidPlanner::new(width, height, tile_size, 0, Layout::DeepZoom)
+        .map_err(|e| format!("pyramid planner failed: {e:?}"))?;
+    let plan = planner.plan();
+
+    // Admit the worst-case tile-aligned strip so `BudgetPolicy::Error` never
+    // trips on the wide RGBA pdfium strips.
+    let bpp = source.format().bytes_per_pixel() as u64;
+    let min_strip_bytes = width as u64 * (2 * tile_size as u64) * bpp;
+    let budget = memory_budget_bytes.max(min_strip_bytes * 2);
+
+    let out_dir = fs_sink_dir(label);
+    let sink = engine_fs_sink(&out_dir, &plan);
+    let observer = Arc::new(CollectingObserver::new());
+    let engine_config = EngineConfig::default().with_concurrency(concurrency);
+
+    let start = Instant::now();
+    let result = EngineBuilder::new(source, plan.clone(), &sink)
+        .with_engine(EngineKind::Streaming)
+        .with_config(engine_config)
+        .with_memory_budget(budget)
+        .with_budget_policy(BudgetPolicy::Error)
+        .with_observer_arc(observer.clone())
+        .run()
+        .map_err(|e| format!("streaming engine run failed: {e:?}"))?;
+    let wall_time = start.elapsed();
+    let peak_rss_bytes = get_peak_rss();
+    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
+    let _ = std::fs::remove_dir_all(&out_dir);
+
+    let strips = observer
+        .events()
+        .iter()
+        .filter(|e| matches!(e, EngineEvent::StripRendered { .. }))
+        .count() as u32;
+
+    Ok(RunMetrics {
+        label: label.to_string(),
+        width,
+        height,
+        engine: "streaming-pdf".to_string(),
+        measurement_path: String::new(),
+        wall_time,
+        tracked_memory_bytes: result.peak_memory_bytes,
+        peak_rss_bytes,
+        stats: None,
+        per_level_tiles,
+        tiles_produced: result.tiles_produced,
+        levels_processed: result.levels_processed,
+        tiles_skipped: result.tiles_skipped,
+        strips,
+        batches: 0,
+        inflight_strips: 0,
+        concurrency,
+        memory_budget_bytes: budget,
+        equivalence_psnr_db: None,
+    })
+}
+
 /// Encode `src` as a lossless RGB8 PNG at `path`, creating parent directories.
 ///
 /// The reusable core behind [`write_temp_png`]; unlike it, this reports IO and

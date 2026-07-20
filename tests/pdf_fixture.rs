@@ -43,9 +43,9 @@ fn fixture_path() -> std::path::PathBuf {
 
 #[test]
 fn committed_fixture_matches_recorded_checksum() {
-    // Guards both that the fixture is committed (else `include_bytes!` fails to
-    // compile) and that its bytes still hash to the recorded digest.
-    assert!(!FIXTURE.is_empty(), "fixture must be committed and non-empty");
+    // The fixture being committed is itself guarded by `include_bytes!` (a
+    // missing file fails to compile); here we pin that its bytes still hash to
+    // the recorded digest.
     let digest = hex(&Sha256::digest(FIXTURE));
     assert_eq!(
         digest, FIXTURE_SHA256,
@@ -126,16 +126,9 @@ fn fixture_rasterizes_to_expected_dimensions_and_nonblank() {
 #[test]
 fn pdf_streaming_workload_produces_valid_pyramid() {
     // Tiny DPI keeps the raster small (~397 × 280) and the test fast.
-    let metrics = libviprs_bench::bench_streaming_pdf(
-        &fixture_path(),
-        1,
-        24,
-        256,
-        1,
-        4_000_000,
-        "pdf_smoke",
-    )
-    .expect("PDF streaming workload must run end-to-end");
+    let metrics =
+        libviprs_bench::bench_streaming_pdf(&fixture_path(), 1, 24, 256, 1, 4_000_000, "pdf_smoke")
+            .expect("PDF streaming workload must run end-to-end");
 
     assert_eq!(
         metrics.engine, "streaming-pdf",
