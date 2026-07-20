@@ -1,8 +1,9 @@
 // TDD spec for the grouped-bar COMPARISON renderers (#42) — the JS port of
 // causl-bench's renderMetricGroupedBars / renderWallTimeBars /
-// renderPeakMemoryBars / renderThroughputBars / renderResourceCostBars,
-// adapted to libviprs's engines (monolithic / streaming / mapreduce + the
-// libvips oracle) and the flat benchmark_results.json (Vec<RunMetrics>) shape.
+// renderPeakMemoryBars / renderTrackedMemoryBars / renderThroughputBars /
+// renderEfficiencyBars / renderResourceCostBars, adapted to libviprs's engines
+// (monolithic / streaming / mapreduce + the libvips oracle) and the flat
+// benchmark_results.json (Vec<RunMetrics>) shape.
 //
 // Finishing this JS migration lets the Rust plotters `generate_charts` — the
 // last plotters user — be deleted and the dependency dropped entirely.
@@ -20,6 +21,7 @@ import {
   renderMetricGroupedBars,
   renderWallTimeBars,
   renderPeakMemoryBars,
+  renderTrackedMemoryBars,
   renderThroughputBars,
   renderEfficiencyBars,
   renderResourceCostBars,
@@ -165,17 +167,79 @@ test('the metric wrappers carry the right titles/units', () => {
   const rows = metricRows();
   assert.match(renderWallTimeBars(rows), /Wall Time/);
   assert.match(renderPeakMemoryBars(rows), /Peak RSS/);
+  assert.match(renderTrackedMemoryBars(rows), /Engine-Tracked Working Set/);
   assert.match(renderThroughputBars(rows), /Throughput/);
+  // The throughput wrapper must name its unit (Tiles/s) in the title, since its
+  // bars carry no unit suffix (unlike ms/MB) and there is no y-axis label.
+  assert.match(renderThroughputBars(rows), /Tiles\/s/);
   assert.match(renderEfficiencyBars(rows), /Efficiency/);
   assert.match(renderResourceCostBars(rows), /Resource Cost/);
   // Each wrapper is a thin call over the shared generic → still valid SVG.
   for (const svg of [
     renderWallTimeBars(rows),
     renderPeakMemoryBars(rows),
+    renderTrackedMemoryBars(rows),
     renderThroughputBars(rows),
     renderEfficiencyBars(rows),
     renderResourceCostBars(rows),
   ]) {
     expectValidSvg(svg);
   }
+});
+
+test('the wrappers take (rows, opts) and forward opts (family convention)', () => {
+  // A caller can pin width through the wrapper (the retired signature took rows
+  // only and could never set it). A pinned, larger width changes the geometry.
+  const rows = metricRows();
+  const narrow = renderWallTimeBars(rows);
+  const wide = renderWallTimeBars(rows, { width: 1600 });
+  assert.match(wide, /viewBox="0 0 1600 /, 'opts.width forwarded through the wrapper');
+  assert.notEqual(narrow, wide, 'a forwarded opt actually changes the output');
+});
+
+test('many configs grow the canvas and keep every bar width positive (responsive width)', () => {
+  // The old fixed-880 canvas drove barW negative (invalid SVG `width="-x"`) past
+  // ~48 configs; content-sizing must keep every rect positive and widen instead.
+  const rows = [];
+  for (let i = 0; i < 60; i++) {
+    for (const engine of ENGINES) rows.push({ config: `cfg${i}`, engine, value: 10 + i });
+  }
+  const svg = renderMetricGroupedBars(rows, { title: 't', unitSuffix: '' });
+  expectValidSvg(svg);
+  const widths = [...svg.matchAll(/<rect[^>]*width="([^"]+)"/g)].map((m) => Number(m[1]));
+  assert.ok(widths.length > 0 && widths.every((w) => w > 0), 'every rect width is strictly positive');
+  const vb = svg.match(/viewBox="0 0 (\d+(?:\.\d+)?) /);
+  assert.ok(Number(vb[1]) > 880, `viewBox width grows past the 880 floor, got ${vb?.[1]}`);
+});
+
+test('an error half-width draws a 95% CI whisker; absent error draws none', () => {
+  const withErr = renderMetricGroupedBars([{ config: 'a', engine: 'libvips', value: 100, error: 10 }], {
+    title: 't',
+    unitSuffix: 'ms',
+  });
+  assert.match(withErr, /stroke="#333"/, 'a whisker line is drawn when error > 0');
+  const noErr = renderMetricGroupedBars([{ config: 'a', engine: 'libvips', value: 100 }], {
+    title: 't',
+    unitSuffix: 'ms',
+  });
+  assert.ok(!noErr.includes('stroke="#333"'), 'no whisker without an error half-width');
+});
+
+test('an ABSENT cell draws no value label (not a misleading "0")', () => {
+  // libvips only in config b → its config-a cell is truly absent.
+  const rows = [
+    { config: 'a', engine: 'monolithic', value: 10 },
+    { config: 'b', engine: 'monolithic', value: 20 },
+    { config: 'b', engine: 'libvips', value: 40 },
+  ];
+  const svg = renderMetricGroupedBars(rows, { title: 't', unitSuffix: 'ms' });
+  // A measured value labels (e.g. 10ms/20ms/40ms); the absent libvips@a slot,
+  // which would previously have shown ">0ms<", must carry no such label.
+  assert.ok(!svg.includes('>0ms<'), 'the absent cell shows no zero label');
+  // A genuine measured zero still labels honestly.
+  const withZero = renderMetricGroupedBars([{ config: 'a', engine: 'monolithic', value: 0 }], {
+    title: 't',
+    unitSuffix: 'ms',
+  });
+  assert.ok(withZero.includes('>0ms<'), 'a measured zero still labels "0ms"');
 });

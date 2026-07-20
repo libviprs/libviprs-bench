@@ -23,11 +23,15 @@
  *     into the large-image regime (#43, the opt-in replacement for the removed
  *     Rust `--crop`).
  *   - {@link renderMetricGroupedBars} (+ {@link renderWallTimeBars} /
- *     {@link renderPeakMemoryBars} / {@link renderThroughputBars} /
- *     {@link renderEfficiencyBars} / {@link renderResourceCostBars}) from
- *     causl's `renderMetricGroupedBars` family: one column group per benchmark
- *     config, one bar per engine, driven from benchmark_results.json — the port
- *     that retires the Rust plotters `generate_charts` (#42).
+ *     {@link renderPeakMemoryBars} / {@link renderTrackedMemoryBars} /
+ *     {@link renderThroughputBars} / {@link renderEfficiencyBars} /
+ *     {@link renderResourceCostBars}) from causl's `renderMetricGroupedBars`
+ *     family: one column group per benchmark config, one bar per engine, driven
+ *     from benchmark_results.json — the port that retires the Rust plotters
+ *     `generate_charts` (#42). All SIX charts the Rust emitter produced are
+ *     ported (wall time, peak RSS, engine-tracked working set, throughput,
+ *     efficiency, resource cost); wall time and peak RSS carry the 95%-CI
+ *     whiskers the Rust charts drew, from `RunStats.wall_ms_ci95 / rss_mb_ci95`.
  *   - the shared helpers: {@link COLORS}, {@link ENGINE_ORDER},
  *     {@link formatNumber}, {@link svgPlaceholder}, and the SVG scaffolding /
  *     font conventions, so both libviprs charts read like the causl-bench
@@ -569,39 +573,53 @@ export function renderScalabilityChart(points, opts = {}) {
 /* #42 — grouped-bar comparison charts (the plotters port).                   */
 /*                                                                            */
 /* The JS port of causl-bench's renderMetricGroupedBars + its per-metric      */
-/* wrappers (renderWallTimeBars / renderPeakMemoryBars / renderThroughputBars */
-/* / renderResourceCostBars), adapted to libviprs: each CONFIG               */
-/* (`{w}x{h}_c{conc}`) is a column group and each group holds one bar per     */
-/* engine in canonical ENGINE_ORDER. These replace the Rust plotters         */
-/* `generate_charts` chart_*.svg emitters; render.mjs feeds them from         */
-/* benchmark_results.json (Vec<RunMetrics>).                                  */
+/* wrappers (renderWallTimeBars / renderPeakMemoryBars / renderTrackedMemoryBars */
+/* / renderThroughputBars / renderEfficiencyBars / renderResourceCostBars),   */
+/* adapted to libviprs: each CONFIG (`{w}x{h}_c{conc}`) is a column group and  */
+/* each group holds one bar per engine in canonical ENGINE_ORDER. These       */
+/* replace the Rust plotters `generate_charts` chart_*.svg emitters; render.mjs */
+/* feeds them from benchmark_results.json (Vec<RunMetrics>). The canvas is     */
+/* content-sized (grows with config × engine count, as the old plotters        */
+/* `chart_w = 160 + n*(max_bars*35+50)` did) so many-config sweeps stay legible */
+/* instead of squishing bars to nothing; wall-time / peak-RSS bars carry the   */
+/* 95%-CI whiskers the Rust charts drew.                                       */
 /* -------------------------------------------------------------------------- */
 
 /**
  * Grouped-bar chart of one metric across every benchmark config — one column
- * group per config, one bar per engine. `rows` are `{ config, engine, value }`
- * records; the caller (render.mjs) feeds them in the config order it wants
- * along the x-axis, and the groups preserve that first-appearance order.
+ * group per config, one bar per engine. `rows` are
+ * `{ config, engine, value, error? }` records; the caller (render.mjs) feeds
+ * them in the config order it wants along the x-axis, and the groups preserve
+ * that first-appearance order. An optional `error` is a symmetric half-width
+ * (e.g. 95% CI) rendered as a whisker over the bar — the JS equivalent of the
+ * Rust chart's CI whiskers (fed only for wall time / peak RSS, `0`/absent for
+ * the ratio metrics, exactly as the Rust emitter did).
  *
  * The bar slots and the legend cover the engines actually present in the data,
  * in canonical {@link ENGINE_ORDER} (plus any non-canonical engine, drawn with
- * a fallback colour), so the engine set is stable across every group and a
- * missing `(config, engine)` cell renders as a zero-height bar. Deterministic:
+ * a fallback colour), so the engine set is stable across every group. A cell
+ * that is truly ABSENT (no row for that `config, engine`) keeps its aligned
+ * zero-height slot but draws NO value label, so "not benchmarked" never reads
+ * as a misleading "0" (a measured zero still labels "0"). Deterministic:
  * canonical iteration, all formatting through the shared helpers, no
  * timestamps / rng.
  *
- * @param {ReadonlyArray<{config:string, engine:string, value:number}>} rows
+ * The canvas is content-sized: `width` grows with config × engine count (like
+ * the retired Rust `chart_w = 160 + n*(max_bars*35+50)`) so a large sweep can
+ * never squeeze bars to a negative width the way a fixed canvas did past ~48
+ * configs. A caller may still pin `opts.width`.
+ *
+ * @param {ReadonlyArray<{config:string, engine:string, value:number, error?:number}>} rows
  * @param {{title?:string, unitSuffix?:string, width?:number, height?:number}} opts
  * @returns {string} deterministic SVG
  */
 export function renderMetricGroupedBars(rows, opts = {}) {
-  const width = opts.width ?? 880;
   const height = opts.height ?? 320;
   const padding = 56;
   const legendH = 26;
   const title = opts.title ?? '';
   const unitSuffix = opts.unitSuffix ?? '';
-  if (rows.length === 0) return svgPlaceholder(width, height, title || 'comparison');
+  if (rows.length === 0) return svgPlaceholder(opts.width ?? 880, height, title || 'comparison');
 
   // Config groups in first-appearance order (render.mjs feeds them numerically
   // sorted). `ordered` keeps the FULL canonical order + extras so the palette
@@ -617,31 +635,86 @@ export function renderMetricGroupedBars(rows, opts = {}) {
   }
   const ordered = orderedEngines(rows);
   const engines = ordered.filter((engine) => rows.some((r) => r.engine === engine));
+  // Keep the whole row so `.has()` distinguishes an ABSENT cell from a measured
+  // zero, and the optional `error` half-width rides along for the whisker.
   const byKey = new Map();
-  for (const r of rows) byKey.set(`${r.config}|${r.engine}`, r.value);
+  for (const r of rows) byKey.set(`${r.config}|${r.engine}`, r);
 
-  // Scale to the largest finite bar; a missing / NaN cell contributes no height.
-  const maxV = maxOf(rows.map((r) => r.value).filter(Number.isFinite), 0) || 1;
-  const groupW = (width - 2 * padding) / configs.length;
-  const barW = (groupW - 16) / engines.length;
+  // Content-sized canvas: reserve a nominal per-engine slot inside each group so
+  // groupW never falls below the point where bars go thin/negative. Below the
+  // 880px floor the groups simply spread across the default width.
+  const SLOT = 26; // nominal px per engine bar-slot within a group
+  const GROUP_INNER_PAD = 24; // px reserved at the group's left+right edges
+  const BAR_GAP = 6; // px between adjacent bars in a group
+  const minGroupW = engines.length * SLOT + GROUP_INNER_PAD;
+  const width = opts.width ?? Math.max(880, 2 * padding + configs.length * minGroupW);
+  const groupW = (width - 2 * padding) / configs.length; // >= minGroupW by construction
+  // Bar width from the available in-group span, clamped so it is never absurdly
+  // wide (few configs) nor collapses to <= 0 (a pinned, too-small width).
+  const rawBarW = (groupW - GROUP_INNER_PAD - (engines.length - 1) * BAR_GAP) / engines.length;
+  const barW = Math.max(8, Math.min(40, rawBarW));
+  // Below this bar width the font-9 value labels would collide, so suppress them
+  // (the content-sized default keeps barW >= 20, so this only bites a caller who
+  // pins an undersized width).
+  const showLabels = barW >= 14;
+  const clusterW = engines.length * barW + (engines.length - 1) * BAR_GAP;
+
+  // Scale to the largest finite bar TOP (value + its whisker) so a tall CI cap
+  // never clips out of the plot; a missing / NaN cell contributes no height.
+  const maxV =
+    maxOf(
+      rows
+        .filter((r) => Number.isFinite(r.value))
+        .map((r) => r.value + (Number.isFinite(r.error) && r.error > 0 ? r.error : 0)),
+      0,
+    ) || 1;
   const plotH = height - 2 * padding - legendH;
-  const yFor = (v) => (Number.isFinite(v) && v > 0 ? (v / maxV) * plotH : 0);
+  const baseY = height - padding - legendH; // the bar footing / x-baseline
+  const pxFor = (v) => (Number.isFinite(v) && v > 0 ? (v / maxV) * plotH : 0);
+
+  // A faint baseline at the bar footing gives the floating bars a magnitude
+  // anchor (the Rust chart had a full y-axis + mesh; this keeps the flat
+  // causl-bench aesthetic but stops the bars from floating unreferenced).
+  const baseline = `<line x1="${fmtCoord(padding)}" y1="${fmtCoord(baseY)}" x2="${fmtCoord(width - padding)}" y2="${fmtCoord(baseY)}" stroke="#ddd" stroke-width="1"/>`;
 
   const groups = configs
     .map((config, gi) => {
       const gx = padding + gi * groupW;
+      const startX = gx + (groupW - clusterW) / 2; // centre the cluster in the group
       const bars = engines
         .map((engine, ei) => {
-          const v = byKey.get(`${config}|${engine}`) ?? 0;
-          const h = yFor(v);
-          const x = gx + 8 + ei * barW;
-          const y = height - padding - legendH - h;
-          const label = `${formatNumber(v)}${escapeXml(unitSuffix)}`;
-          return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(y)}" width="${fmtCoord(barW)}" height="${fmtCoord(h)}" fill="${colorFor(engine, ordered)}"/><text x="${fmtCoord(x + barW / 2)}" y="${fmtCoord(y - 3)}" text-anchor="middle" font-size="9" fill="#444">${label}</text></g>`;
+          const row = byKey.get(`${config}|${engine}`);
+          const present = row !== undefined;
+          const v = present ? row.value : Number.NaN;
+          const h = pxFor(v);
+          const x = startX + ei * (barW + BAR_GAP);
+          const y = baseY - h;
+          const err = present && Number.isFinite(row.error) && row.error > 0 ? row.error : 0;
+          // 95% CI whisker (only when a real error rides on a plotted bar).
+          let whisker = '';
+          let topY = y;
+          if (err > 0 && Number.isFinite(v) && v > 0) {
+            const yHi = baseY - pxFor(v + err);
+            const yLo = baseY - pxFor(Math.max(0, v - err));
+            const cx = x + barW / 2;
+            const cap = Math.max(2, barW * 0.25);
+            whisker =
+              `<line x1="${fmtCoord(cx)}" y1="${fmtCoord(yHi)}" x2="${fmtCoord(cx)}" y2="${fmtCoord(yLo)}" stroke="#333" stroke-width="1"/>` +
+              `<line x1="${fmtCoord(cx - cap)}" y1="${fmtCoord(yHi)}" x2="${fmtCoord(cx + cap)}" y2="${fmtCoord(yHi)}" stroke="#333" stroke-width="1"/>` +
+              `<line x1="${fmtCoord(cx - cap)}" y1="${fmtCoord(yLo)}" x2="${fmtCoord(cx + cap)}" y2="${fmtCoord(yLo)}" stroke="#333" stroke-width="1"/>`;
+            topY = Math.min(topY, yHi);
+          }
+          // Absent cell → no label (empty slot). Present cell → value label
+          // above the bar/whisker when the bar is wide enough to carry it.
+          const label =
+            present && showLabels
+              ? `<text x="${fmtCoord(x + barW / 2)}" y="${fmtCoord(topY - 3)}" text-anchor="middle" font-size="9" fill="#444">${formatNumber(v)}${escapeXml(unitSuffix)}</text>`
+              : '';
+          return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(y)}" width="${fmtCoord(barW)}" height="${fmtCoord(h)}" fill="${colorFor(engine, ordered)}"/>${whisker}${label}</g>`;
         })
         .join('');
       const sx = gx + groupW / 2;
-      const sy = height - padding - legendH + 14;
+      const sy = baseY + 14;
       return `<g>${bars}<text x="${fmtCoord(sx)}" y="${fmtCoord(sy)}" text-anchor="middle" font-size="11" fill="#222" font-weight="500">${escapeXml(config)}</text></g>`;
     })
     .join('');
@@ -654,36 +727,66 @@ export function renderMetricGroupedBars(rows, opts = {}) {
     })
     .join('');
 
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" font-family="ui-sans-serif"><text x="${fmtCoord(width / 2)}" y="22" text-anchor="middle" font-size="13" font-weight="600">${escapeXml(title)}</text>${groups}${legend}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" font-family="ui-sans-serif"><text x="${fmtCoord(width / 2)}" y="22" text-anchor="middle" font-size="13" font-weight="600">${escapeXml(title)}</text>${baseline}${groups}${legend}</svg>`;
 }
 
-/** Wall time per config (ms, median). Lower is better. */
-export function renderWallTimeBars(rows) {
-  return renderMetricGroupedBars(rows, { title: 'Wall Time (lower is better)', unitSuffix: 'ms' });
+/*
+ * Per-metric wrappers. Each takes `(rows, opts)` — the `(data, opts)` convention
+ * the rest of the renderer family follows — so a caller can still set
+ * width/height while the metric title + unit stay fixed. render.mjs feeds them
+ * `{config, engine, value, error?}` rows built from benchmark_results.json.
+ */
+
+/** Wall time per config (ms, median). Lower is better. Whiskers = 95% CI. */
+export function renderWallTimeBars(rows, opts = {}) {
+  return renderMetricGroupedBars(rows, {
+    title: 'Wall Time (lower is better; whiskers = 95% CI)',
+    unitSuffix: 'ms',
+    ...opts,
+  });
 }
 
-/** Peak RSS per config (MB) — the cross-engine-comparable memory basis. Lower is better. */
-export function renderPeakMemoryBars(rows) {
-  return renderMetricGroupedBars(rows, { title: 'Peak RSS (lower is better)', unitSuffix: 'MB' });
+/** Peak RSS per config (MB) — the cross-engine-comparable memory basis. Lower is better. Whiskers = 95% CI. */
+export function renderPeakMemoryBars(rows, opts = {}) {
+  return renderMetricGroupedBars(rows, {
+    title: 'Peak RSS (lower is better; whiskers = 95% CI)',
+    unitSuffix: 'MB',
+    ...opts,
+  });
+}
+
+/** Engine-tracked working set per config (MB) — a libviprs-only per-run figure (libvips reports 0). Lower is better. */
+export function renderTrackedMemoryBars(rows, opts = {}) {
+  return renderMetricGroupedBars(rows, {
+    title: 'Engine-Tracked Working Set — libviprs engines (lower is better)',
+    unitSuffix: 'MB',
+    ...opts,
+  });
 }
 
 /** Raw throughput per config (tiles/second). Higher is better. */
-export function renderThroughputBars(rows) {
-  return renderMetricGroupedBars(rows, { title: 'Raw Throughput (higher is better)', unitSuffix: '' });
+export function renderThroughputBars(rows, opts = {}) {
+  return renderMetricGroupedBars(rows, {
+    title: 'Raw Throughput — Tiles/s (higher is better)',
+    unitSuffix: '',
+    ...opts,
+  });
 }
 
 /** Memory efficiency per config (tiles/second per RSS-MB). Higher is better. */
-export function renderEfficiencyBars(rows) {
+export function renderEfficiencyBars(rows, opts = {}) {
   return renderMetricGroupedBars(rows, {
     title: 'Memory Efficiency — Tiles/s per RSS-MB (higher is better)',
     unitSuffix: '',
+    ...opts,
   });
 }
 
 /** Resource cost per config (RSS-MB·s per tile). Lower is better. */
-export function renderResourceCostBars(rows) {
+export function renderResourceCostBars(rows, opts = {}) {
   return renderMetricGroupedBars(rows, {
     title: 'Resource Cost — RSS-MB·s per Tile (lower is better)',
     unitSuffix: '',
+    ...opts,
   });
 }

@@ -36,6 +36,7 @@ import {
   renderScalabilityChart,
   renderWallTimeBars,
   renderPeakMemoryBars,
+  renderTrackedMemoryBars,
   renderThroughputBars,
   renderEfficiencyBars,
   renderResourceCostBars,
@@ -57,19 +58,35 @@ function durationMs(d) {
 
 const BYTES_PER_MB = 1024 * 1024;
 
-/* RunMetrics → metric value, mirroring the Rust `RunMetrics` methods so the
- * grouped-bar comparison charts read benchmark_results.json exactly as the
- * removed plotters `generate_charts` did (wall time ms, peak RSS MB, tiles/s,
- * tiles/s per RSS-MB, RSS-MB·s per tile). RSS is the cross-engine-comparable
- * memory basis; efficiency / resource-cost are 0 when it is unavailable. */
+/* RunMetrics → metric value. These MIRROR the Rust `RunMetrics` methods in
+ * src/lib.rs (impl RunMetrics, ~L281-344) one-for-one — wall_time_ms,
+ * peak_rss_mb, tracked_memory_mb, tiles_per_second, tiles_per_second_per_mb,
+ * resource_cost_per_tile — so the grouped-bar comparison charts read
+ * benchmark_results.json to the SAME numbers the removed plotters
+ * `generate_charts` drew and the text comparison_table.txt still prints. Keep
+ * the two in lockstep: a change to a Rust method here must change its twin
+ * (golden.test.mjs asserts the derived values against hand-computed oracles).
+ * RSS is the cross-engine-comparable memory basis; efficiency / resource-cost
+ * are 0 when it is unavailable, matching the Rust methods' `mb > 0` guard. */
 function runWallSecs(run) {
   return durationMs(run.wall_time) / 1000;
 }
 function runWallTimeMs(run) {
   return durationMs(run.wall_time);
 }
+// `peak_rss_bytes` is `#[serde(default)] = 0`, where 0 means UNKNOWN. Unlike the
+// HISTORY peak-memory extractor (which maps 0 → NaN to break a misleading
+// flat-zero trend line), the comparison path returns 0 here to MIRROR the Rust
+// `peak_rss_mb()` (which returns 0.0, feeding a 0-height bar and 0 efficiency /
+// cost) so the chart numbers match the text table. A fresh benchmark_results.json
+// — the only input this path consumes — always carries a real RSS, so the
+// sentinel does not arise in practice; the divergence from the history extractor
+// is deliberate (Rust parity over the history path's line-break heuristic).
 function runPeakRssMb(run) {
   return (run.peak_rss_bytes ?? 0) / BYTES_PER_MB;
+}
+function runTrackedMemoryMb(run) {
+  return (run.tracked_memory_bytes ?? 0) / BYTES_PER_MB;
 }
 function runTilesPerSecond(run) {
   const s = runWallSecs(run);
@@ -173,35 +190,45 @@ export function buildHistoryCharts(snapshots) {
 
 /**
  * Grouped-bar COMPARISON SVGs from a benchmark_results snapshot (a flat
- * `Vec<RunMetrics>`): one chart per metric — wall time, peak RSS, throughput,
- * memory efficiency, resource cost — each a column group per config with a bar
- * per engine. This is the JS replacement for the Rust plotters
- * `generate_charts` chart_*.svg emitters (#42); the metric extractors mirror
- * the Rust `RunMetrics` methods so the numbers match the retired charts.
+ * `Vec<RunMetrics>`): one chart per metric — wall time, peak RSS, engine-tracked
+ * working set, throughput, memory efficiency, resource cost — each a column
+ * group per config with a bar per engine. This is the JS replacement for the
+ * Rust plotters `generate_charts` chart_*.svg emitters (#42), reaching full
+ * parity with the SIX charts it drew; the metric extractors mirror the Rust
+ * `RunMetrics` methods so the numbers match the retired charts. Wall time and
+ * peak RSS also carry the 95%-CI whiskers the Rust charts drew, sourced from
+ * `RunStats.wall_ms_ci95 / rss_mb_ci95` (the ratio metrics have no CI, as in
+ * the Rust emitter).
  */
 export function buildComparisonCharts(results) {
   const out = [];
   if (!Array.isArray(results) || results.length === 0) return out;
+  // `errorOf` is the 95%-CI half-width for the two metrics the Rust charts
+  // whiskered; the ratio metrics leave it undefined (no whisker).
   const metrics = [
-    { suffix: 'wall_time', render: renderWallTimeBars, valueOf: runWallTimeMs },
-    { suffix: 'peak_memory', render: renderPeakMemoryBars, valueOf: runPeakRssMb },
+    { suffix: 'wall_time', render: renderWallTimeBars, valueOf: runWallTimeMs, errorOf: (r) => r.stats?.wall_ms_ci95 },
+    { suffix: 'peak_memory', render: renderPeakMemoryBars, valueOf: runPeakRssMb, errorOf: (r) => r.stats?.rss_mb_ci95 },
+    { suffix: 'tracked_memory', render: renderTrackedMemoryBars, valueOf: runTrackedMemoryMb },
     { suffix: 'throughput', render: renderThroughputBars, valueOf: runTilesPerSecond },
     { suffix: 'efficiency', render: renderEfficiencyBars, valueOf: runTilesPerSecondPerMb },
     { suffix: 'resource_cost', render: renderResourceCostBars, valueOf: runResourceCostPerTile },
   ];
   // Config groups run along the x-axis in the shared numeric config order.
+  // Bucket the runs by config ONCE (not once per metric) so the row assembly is
+  // a single pass over each config's members instead of re-scanning all runs.
   const configs = configsOfRuns(results);
+  const byConfig = new Map(configs.map((c) => [c.key, []]));
+  for (const run of results) {
+    byConfig.get(`${run.width}x${run.height}_c${run.concurrency}`)?.push(run);
+  }
   for (const metric of metrics) {
     const rows = [];
     for (const config of configs) {
-      for (const run of results) {
-        if (
-          run.width === config.width &&
-          run.height === config.height &&
-          run.concurrency === config.concurrency
-        ) {
-          rows.push({ config: config.key, engine: run.engine, value: metric.valueOf(run) });
-        }
+      for (const run of byConfig.get(config.key)) {
+        const row = { config: config.key, engine: run.engine, value: metric.valueOf(run) };
+        const err = metric.errorOf?.(run);
+        if (Number.isFinite(err) && err > 0) row.error = err;
+        rows.push(row);
       }
     }
     out.push({ filename: `chart_${metric.suffix}.svg`, svg: metric.render(rows) });
@@ -278,7 +305,9 @@ function readJson(path) {
  * "legitimately no charts yet" (a single snapshot has no trend).
  */
 export function historyShapeOk(data) {
-  if (!Array.isArray(data) || data.length === 0) return true;
+  if (data == null) return true; // absent — not a shape signal
+  if (!Array.isArray(data)) return false; // present but not the JSON array serde emits → drift
+  if (data.length === 0) return true; // empty — not a shape signal
   const run = data.find((s) => Array.isArray(s?.runs) && s.runs.length > 0)?.runs?.[0];
   if (!run) return true; // snapshots without runs — not a field-shape signal
   return 'engine' in run && ('wall_time' in run || 'peak_rss_bytes' in run) && 'width' in run;
@@ -286,7 +315,9 @@ export function historyShapeOk(data) {
 
 /** As {@link historyShapeOk}, for the scalability `ScalabilityPoint` shape. */
 export function scalabilityShapeOk(data) {
-  if (!Array.isArray(data) || data.length === 0) return true;
+  if (data == null) return true; // absent — not a shape signal
+  if (!Array.isArray(data)) return false; // present but not a JSON array → drift
+  if (data.length === 0) return true; // empty — not a shape signal
   const p = data[0];
   return !!p && 'engine' in p && 'megapixels' in p && 'wall_time_ms' in p;
 }
@@ -300,7 +331,9 @@ export function scalabilityShapeOk(data) {
  * drift guard (the producer half lives in tests/chart_shape_drift.rs).
  */
 export function resultsShapeOk(data) {
-  if (!Array.isArray(data) || data.length === 0) return true;
+  if (data == null) return true; // absent — not a shape signal
+  if (!Array.isArray(data)) return false; // present but not the JSON array serde emits → drift
+  if (data.length === 0) return true; // empty — not a shape signal
   const r = data[0];
   if (!r || typeof r !== 'object') return false;
   const wt = r.wall_time;
@@ -319,17 +352,29 @@ export function resultsShapeOk(data) {
 }
 
 /**
+ * The three input JSON paths + the report dir, defaulted off `reportDir`. One
+ * place so `renderAll()` and `main()` can never disagree on a default filename
+ * (they consumed the same three joins independently before).
+ */
+function resolveInputPaths(opts = {}) {
+  const reportDir = opts.reportDir ?? DEFAULT_REPORT_DIR;
+  return {
+    reportDir,
+    historyPath: opts.historyPath ?? join(reportDir, 'benchmark_history.json'),
+    resultsPath: opts.resultsPath ?? join(reportDir, 'benchmark_results.json'),
+    scalabilityPath: opts.scalabilityPath ?? join(reportDir, 'scalability_results.json'),
+  };
+}
+
+/**
  * Read whichever JSON files are present and write their SVGs to `outDir`.
  * Returns the absolute paths written, sorted.
  *
  * @param {{reportDir?:string, outDir?:string, historyPath?:string, resultsPath?:string, scalabilityPath?:string, linear?:boolean, zoom?:number}} opts
  */
 export function renderAll(opts = {}) {
-  const reportDir = opts.reportDir ?? DEFAULT_REPORT_DIR;
+  const { reportDir, historyPath, resultsPath, scalabilityPath } = resolveInputPaths(opts);
   const outDir = opts.outDir ?? reportDir;
-  const historyPath = opts.historyPath ?? join(reportDir, 'benchmark_history.json');
-  const resultsPath = opts.resultsPath ?? join(reportDir, 'benchmark_results.json');
-  const scalabilityPath = opts.scalabilityPath ?? join(reportDir, 'scalability_results.json');
 
   const scalability = readJson(scalabilityPath) ?? [];
   const linear = opts.linear ?? false;
@@ -339,7 +384,11 @@ export function renderAll(opts = {}) {
     ...buildScalabilityCharts(scalability, { linear }),
   ];
   // #43: an opt-in --zoom adds large-image `_zoom` scalability variants ON TOP
-  // of the default full-range charts (which stay the default view).
+  // of the default full-range charts (which stay the default view). The
+  // user-facing `--zoom`/`opts.zoom` verb maps here to the more precise `xMin`
+  // axis floor (minimum megapixels) that buildScalabilityCharts /
+  // renderScalabilityChart speak — one concept, deliberately renamed at this
+  // boundary from the CLI's action word to the axis parameter it drives.
   if (Number.isFinite(opts.zoom)) {
     charts.push(...buildScalabilityCharts(scalability, { linear, xMin: opts.zoom }));
   }
@@ -429,30 +478,16 @@ function parseArgs(argv) {
 
 function main() {
   const opts = parseArgs(process.argv.slice(2));
-  const reportDir = opts.reportDir ?? DEFAULT_REPORT_DIR;
-  const historyPath = opts.historyPath ?? join(reportDir, 'benchmark_history.json');
-  const resultsPath = opts.resultsPath ?? join(reportDir, 'benchmark_results.json');
-  const scalabilityPath = opts.scalabilityPath ?? join(reportDir, 'scalability_results.json');
+  const { historyPath, resultsPath, scalabilityPath } = resolveInputPaths(opts);
 
-  const written = renderAll(opts);
-  if (written.length > 0) {
-    for (const p of written) process.stdout.write(`wrote ${p}\n`);
-    process.stdout.write(`render.mjs: ${written.length} chart(s) written.\n`);
-    return;
-  }
-
-  // Nothing written. Tell three cases apart:
-  //   (1) no input files          → benign, nothing to do
-  //   (2) inputs present, but a record shape we don't recognise → LOUD:
-  //       likely producer/consumer field-shape drift; exit non-zero so
-  //       run-bench.sh surfaces it.
-  //   (3) inputs present + well-shaped but too little data (e.g. a single
-  //       snapshot has no trend) → informational, exit 0.
-  const present = [historyPath, resultsPath, scalabilityPath].filter((p) => existsSync(p));
-  if (present.length === 0) {
-    process.stdout.write('render.mjs: no benchmark JSON found — nothing to render.\n');
-    return;
-  }
+  // Shape-drift gate — runs on EVERY present input, BEFORE any chart is written.
+  // This is deliberately not gated on "0 charts produced": a PARTIAL field
+  // rename (e.g. peak_rss_bytes dropped while wall_time survives) still renders
+  // some charts, so a 0-chart gate would never fire and the peak_memory /
+  // efficiency / resource_cost charts would silently draw all-zero bars. Any
+  // present, parseable input whose record shape the extractors don't recognise
+  // is producer/consumer drift: fail loud (exit non-zero) so run-bench.sh
+  // surfaces it, and skip rendering the misleading zero charts entirely.
   const drift = [];
   if (existsSync(historyPath) && !historyShapeOk(readJson(historyPath))) drift.push(historyPath);
   if (existsSync(resultsPath) && !resultsShapeOk(readJson(resultsPath))) drift.push(resultsPath);
@@ -461,10 +496,28 @@ function main() {
   }
   if (drift.length > 0) {
     process.stderr.write(
-      `render.mjs: parsed input but produced 0 charts — field-shape mismatch between ` +
-        `the Rust harness JSON and the chart extractors? Check: ${drift.join(', ')}\n`,
+      `render.mjs: input present but its record shape does not match the chart extractors — ` +
+        `producer/consumer field-shape drift between the Rust harness JSON and render.mjs. ` +
+        `Not rendering (would silently chart n/a/zero). Check: ${drift.join(', ')}\n`,
     );
     process.exit(1);
+  }
+
+  const written = renderAll(opts);
+  if (written.length > 0) {
+    for (const p of written) process.stdout.write(`wrote ${p}\n`);
+    process.stdout.write(`render.mjs: ${written.length} chart(s) written.\n`);
+    return;
+  }
+
+  // Nothing written and no drift. Tell the two benign cases apart:
+  //   (1) no input files → nothing to do;
+  //   (2) inputs present + well-shaped but too little data (e.g. a single
+  //       snapshot has no trend) → informational, exit 0.
+  const present = [historyPath, resultsPath, scalabilityPath].filter((p) => existsSync(p));
+  if (present.length === 0) {
+    process.stdout.write('render.mjs: no benchmark JSON found — nothing to render.\n');
+    return;
   }
   process.stdout.write(
     'render.mjs: inputs present but produced no charts ' +

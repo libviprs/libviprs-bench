@@ -91,13 +91,24 @@ fn sample_run_metrics() -> RunMetrics {
 }
 
 /// Depth-first walk of `dir`, invoking `f(path, contents)` for every `*.rs`.
+///
+/// Recurses on real subdirectories only: a symlink is never followed (checked
+/// via the dir entry's own `file_type`, which — unlike `Path::is_dir` — does
+/// NOT traverse the link), so a symlink cycle under `src/` cannot send this
+/// into unbounded recursion / a stack overflow.
 fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_symlink() {
+            continue; // never traverse a link — guards against symlink cycles
+        }
         let path = entry.path();
-        if path.is_dir() {
+        if file_type.is_dir() {
             walk_rs(&path, f);
         } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             if let Ok(text) = std::fs::read_to_string(&path) {
@@ -105,6 +116,30 @@ fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
             }
         }
     }
+}
+
+/// The lines of `Cargo.toml`'s `[dependencies]` table (up to the next `[…]`
+/// section header). Used to assert the NORMAL dependency set — distinct from
+/// `[dev-dependencies]` — so a guard can see what the shipped binaries link.
+fn normal_dependency_lines() -> Vec<String> {
+    let manifest =
+        std::fs::read_to_string(crate_root().join("Cargo.toml")).expect("read Cargo.toml");
+    let mut in_section = false;
+    let mut lines = Vec::new();
+    for raw in manifest.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            // A new table header ends the [dependencies] table. Match exactly so
+            // `[dev-dependencies]` / `[build-dependencies]` / `[dependencies.x]`
+            // are NOT counted as the normal table.
+            in_section = line == "[dependencies]";
+            continue;
+        }
+        if in_section && !line.is_empty() && !line.starts_with('#') {
+            lines.push(line.to_string());
+        }
+    }
+    lines
 }
 
 #[test]
@@ -127,6 +162,36 @@ fn plotters_is_fully_removed_from_src() {
         offenders.is_empty(),
         "plotters must be fully removed from src/ once the JS chart migration is finished; \
          found a code reference in {offenders:?}"
+    );
+}
+
+#[test]
+fn plotters_stays_out_of_the_normal_build_graph() {
+    // The src-only grep above cannot see the *Cargo.toml* vector that actually
+    // decides whether the shipped binaries compile plotters. `criterion`'s
+    // `html_reports` feature pulls plotters in transitively, so criterion listed
+    // as a NORMAL dependency would put plotters back into `cargo build --bin
+    // report` even with zero `src/` references — the exact gap #42 must close.
+    //
+    // Guard the property at its real source: neither `plotters` (a direct dep)
+    // nor `criterion` (its transitive vector) may appear in the `[dependencies]`
+    // table. Both belong in `[dev-dependencies]` only, where plotters is scoped
+    // to the criterion micro-benchmark and never reaches the report binaries.
+    let deps = normal_dependency_lines();
+    let name_of = |line: &str| line.split(['=', ' ']).next().unwrap_or("").to_string();
+    let offenders: Vec<String> = deps
+        .iter()
+        .filter(|line| {
+            let n = name_of(line);
+            n == "plotters" || n == "criterion"
+        })
+        .cloned()
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "neither `plotters` nor its transitive vector `criterion` may be a NORMAL dependency \
+         (they would drag plotters into `cargo build --bin report`, undoing #42). Move them to \
+         [dev-dependencies]. Offending [dependencies] lines: {offenders:?}"
     );
 }
 

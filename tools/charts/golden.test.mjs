@@ -19,10 +19,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, mkdtempSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, existsSync, cpSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 import {
   renderAll,
@@ -39,12 +40,13 @@ const G_RESULTS = join(FIX, 'golden_results.json');
 const G_SCAL = join(FIX, 'golden_scalability.json');
 
 // The complete SVG set the golden JSON must produce:
-//   2 history-trend + 5 grouped-bar + 10 scalability (5 metrics × c1/c4).
+//   2 history-trend + 6 grouped-bar + 10 scalability (5 metrics × c1/c4).
 const EXPECTED = [
   'chart_history_2048x2048_c0_time.svg',
   'chart_history_2048x2048_c0_memory.svg',
   'chart_wall_time.svg',
   'chart_peak_memory.svg',
+  'chart_tracked_memory.svg',
   'chart_throughput.svg',
   'chart_efficiency.svg',
   'chart_resource_cost.svg',
@@ -109,7 +111,45 @@ test('render.mjs actually consumes the RunMetrics value fields (proof of reads)'
   assert.ok(mem.includes('200MB'), 'peak RSS is derived from peak_rss_bytes and charted');
 });
 
-test('buildComparisonCharts emits exactly the five grouped-bar charts', () => {
+// Value oracle for the DERIVED extractors (throughput / efficiency / resource
+// cost / tracked memory). The raw pass-throughs (wall/RSS) are covered above;
+// these lock the non-trivial arithmetic in render.mjs against hand-computed
+// expectations so a change to a Rust `RunMetrics` method that isn't mirrored in
+// render.mjs (or vice versa) shows up as a wrong LABEL, not just a wrong shape.
+// Monolithic golden row: wall 0.085s, peak_rss 200MB, tracked 16MiB, 85 tiles.
+//   throughput   = 85 / 0.085                 = 1000 tiles/s
+//   efficiency   = 1000 / 200                 = 5 tiles/s per RSS-MB
+//   resource_cost= (200 * 0.085) / 85         = 0.2 RSS-MB·s per tile
+//   tracked_mem  = 16777216 / 1MiB            = 16 MB
+test('the golden round-trip pins the DERIVED metric values (arithmetic oracle)', () => {
+  const outDir = freshOut();
+  renderAll({ resultsPath: G_RESULTS, outDir });
+  const label = (file, text) =>
+    assert.ok(
+      readFileSync(join(outDir, file), 'utf8').includes(`>${text}<`),
+      `${file} carries the computed label ${text}`,
+    );
+  label('chart_throughput.svg', '1000'); // 85 / 0.085
+  label('chart_efficiency.svg', '5'); //     1000 / 200
+  label('chart_resource_cost.svg', '0.2'); //(200 * 0.085) / 85
+  label('chart_tracked_memory.svg', '16MB'); // 16 MiB
+});
+
+test('wall-time / peak-RSS charts carry the 95%-CI whisker; ratio charts do not', () => {
+  const outDir = freshOut();
+  renderAll({ resultsPath: G_RESULTS, outDir });
+  // RunStats.wall_ms_ci95 / rss_mb_ci95 are non-zero in the golden → a whisker
+  // (a #333 stroke line) must appear on wall time and peak RSS…
+  for (const file of ['chart_wall_time.svg', 'chart_peak_memory.svg']) {
+    assert.match(readFileSync(join(outDir, file), 'utf8'), /stroke="#333"/, `${file} has CI whiskers`);
+  }
+  // …but the ratio metrics have no CI, so no whisker.
+  for (const file of ['chart_throughput.svg', 'chart_efficiency.svg', 'chart_resource_cost.svg']) {
+    assert.ok(!readFileSync(join(outDir, file), 'utf8').includes('stroke="#333"'), `${file} has no whisker`);
+  }
+});
+
+test('buildComparisonCharts emits exactly the six grouped-bar charts', () => {
   const charts = buildComparisonCharts(loadResults());
   const names = charts.map((c) => c.filename).sort();
   assert.deepEqual(names, [
@@ -117,6 +157,7 @@ test('buildComparisonCharts emits exactly the five grouped-bar charts', () => {
     'chart_peak_memory.svg',
     'chart_resource_cost.svg',
     'chart_throughput.svg',
+    'chart_tracked_memory.svg',
     'chart_wall_time.svg',
   ]);
   // One config group (2048x2048_c0) with a bar per engine.
@@ -161,4 +202,35 @@ test('a renamed/removed RunMetrics field trips the shape guard (drift caught)', 
   secsDrift[0].wall_time.seconds = secsDrift[0].wall_time.secs;
   delete secsDrift[0].wall_time.secs;
   assert.equal(resultsShapeOk(secsDrift), false, 'renaming the nested Duration secs trips the guard');
+});
+
+const RENDER = join(HERE, 'render.mjs');
+
+// The RUNTIME guard (render.mjs main()), not just the resultsShapeOk unit. The
+// old main() checked shapes only when zero charts were produced, so a PARTIAL
+// drift (peak_rss_bytes renamed while wall_time survives) still rendered some
+// charts and exited 0 — the guard never fired on real input. These drive the
+// CLI end-to-end to prove it now fails loud on drift and stays quiet on valid data.
+test('render.mjs main() exits non-zero on partial producer/consumer drift (runtime guard fires)', () => {
+  const dir = freshOut();
+  const drifted = loadResults();
+  drifted[0].rss_bytes = drifted[0].peak_rss_bytes; // rename peak_rss_bytes → drift
+  delete drifted[0].peak_rss_bytes;
+  writeFileSync(join(dir, 'benchmark_results.json'), JSON.stringify(drifted));
+  const res = spawnSync(process.execPath, [RENDER, '--report-dir', dir], { encoding: 'utf8' });
+  assert.equal(res.status, 1, 'a drifted results.json makes render.mjs exit non-zero');
+  assert.match(res.stderr, /drift/i, 'the drift is reported on stderr');
+  // The misleading zero charts are NOT written.
+  assert.ok(!existsSync(join(dir, 'chart_peak_memory.svg')), 'no chart written on drift');
+});
+
+test('render.mjs main() renders the well-shaped golden without tripping the gate (exit 0)', () => {
+  const dir = freshOut();
+  cpSync(G_RESULTS, join(dir, 'benchmark_results.json'));
+  cpSync(G_HISTORY, join(dir, 'benchmark_history.json'));
+  cpSync(G_SCAL, join(dir, 'scalability_results.json'));
+  const res = spawnSync(process.execPath, [RENDER, '--report-dir', dir], { encoding: 'utf8' });
+  assert.equal(res.status, 0, 'the valid golden exits 0');
+  assert.match(res.stdout, /chart\(s\) written/, 'charts are written');
+  assert.ok(existsSync(join(dir, 'chart_tracked_memory.svg')), 'the sixth grouped-bar chart is written');
 });
