@@ -116,27 +116,39 @@ fn sink_dir(label: &str) -> std::path::PathBuf {
     dir
 }
 
-fn run_monolithic(src: &Raster, tile_size: u32, concurrency: usize) -> EngineRun {
+fn run_monolithic(src: &Raster, tile_size: u32, concurrency: usize) -> Option<EngineRun> {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
     let out_dir = sink_dir("mono");
     let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
     let start = Instant::now();
-    let result = EngineBuilder::new(src, plan, &sink)
+    let run_result = EngineBuilder::new(src, plan, &sink)
         .with_engine(EngineKind::Monolithic)
         .with_config(EngineConfig::default().with_concurrency(concurrency))
-        .run()
-        .unwrap();
+        .run();
     let dur = start.elapsed();
     let rss_bytes = process_peak_rss();
+    // Reclaim the temp dir on every exit — including the error path — so a
+    // genuine engine fault degrades this point to a skipped series instead of
+    // aborting the whole sweep and leaking a dir under $TMPDIR (issue #46).
     let _ = std::fs::remove_dir_all(&out_dir);
-    EngineRun {
+    let result = match run_result {
+        Ok(r) => r,
+        Err(e) => {
+            libviprs_bench::warn_engine_skip(
+                &format!("scalability monolithic {}x{}", src.width(), src.height()),
+                &e,
+            );
+            return None;
+        }
+    };
+    Some(EngineRun {
         dur,
         tracked_bytes: result.peak_memory_bytes,
         rss_bytes,
         tiles: result.tiles_produced,
-    }
+    })
 }
 
 fn run_streaming(
@@ -167,10 +179,9 @@ fn run_streaming(
     let result = match run_result {
         Ok(r) => r,
         Err(e) => {
-            eprintln!(
-                "scalability streaming {}x{} failed, skipping (issue #46): {e}",
-                src.width(),
-                src.height()
+            libviprs_bench::warn_engine_skip(
+                &format!("scalability streaming {}x{}", src.width(), src.height()),
+                &e,
             );
             return None;
         }
@@ -211,10 +222,9 @@ fn run_mapreduce(
     let result = match run_result {
         Ok(r) => r,
         Err(e) => {
-            eprintln!(
-                "scalability mapreduce {}x{} failed, skipping (issue #46): {e}",
-                src.width(),
-                src.height()
+            libviprs_bench::warn_engine_skip(
+                &format!("scalability mapreduce {}x{}", src.width(), src.height()),
+                &e,
             );
             return None;
         }
@@ -603,23 +613,27 @@ fn main() {
                 let _ = fs::remove_file(&png_path);
             }
 
-            // Monolithic
-            let run = run_monolithic(&src, TILE_SIZE, conc);
-            print!(
-                "mono={:.0}ms/{:.1}MB(trk)  ",
-                run.dur.as_secs_f64() * 1000.0,
-                run.tracked_bytes as f64 / (1024.0 * 1024.0),
-            );
-            all_points.push(to_point(
-                w,
-                h,
-                "monolithic",
-                conc,
-                run.dur,
-                run.tracked_bytes,
-                run.rss_bytes,
-                run.tiles,
-            ));
+            // Monolithic — a genuine engine fault degrades to a skipped series
+            // (the reason is logged to stderr) rather than aborting the sweep.
+            if let Some(run) = run_monolithic(&src, TILE_SIZE, conc) {
+                print!(
+                    "mono={:.0}ms/{:.1}MB(trk)  ",
+                    run.dur.as_secs_f64() * 1000.0,
+                    run.tracked_bytes as f64 / (1024.0 * 1024.0),
+                );
+                all_points.push(to_point(
+                    w,
+                    h,
+                    "monolithic",
+                    conc,
+                    run.dur,
+                    run.tracked_bytes,
+                    run.rss_bytes,
+                    run.tiles,
+                ));
+            } else {
+                print!("mono=skipped  ");
+            }
 
             // Streaming + MapReduce share a budget chosen per-width so the
             // tile-aligned minimum strip always fits.

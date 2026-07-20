@@ -78,28 +78,13 @@ impl Engine {
     }
 }
 
-/// Degrade a fail-soft streaming / mapreduce cell to a skipped row: on a genuine
-/// engine fault (the strict `BudgetPolicy::Error` these engines run under, a
-/// sink IO error, the plan/source dimension guard, …) record no metrics and
-/// warn, so the parent driver drops just that cell instead of the child
-/// panicking and taking the whole engine series down with it (issue #46).
-fn warn_on_skip(label: &str, res: Result<RunMetrics, libviprs::EngineError>) -> Option<RunMetrics> {
-    match res {
-        Ok(m) => Some(m),
-        Err(e) => {
-            eprintln!("cell {label} failed, skipping (issue #46): {e}");
-            None
-        }
-    }
-}
-
 /// Run exactly one cell in *this* process and return its metrics.
 ///
 /// This is the child body behind `--single`. Each engine is exercised once
 /// (single shot); the parent handles warm-up, repetition, and aggregation.
-/// A streaming / mapreduce engine fault degrades to `None` (a skipped cell)
-/// rather than panicking, so one unmeasurable cell never aborts the report
-/// (issue #46).
+/// Any engine fault degrades to `None` (a skipped cell) via the shared
+/// [`skip_on_engine_fault`](crate::skip_on_engine_fault) rather than panicking,
+/// so one unmeasurable cell never aborts the report (issue #46).
 pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
     use libviprs::{Layout, PyramidPlanner};
 
@@ -141,13 +126,11 @@ pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
                     .ok()?;
             let plan = planner.plan();
             match other {
-                Engine::Monolithic => Some(crate::bench_monolithic(
-                    &src,
-                    &plan,
-                    spec.concurrency,
+                Engine::Monolithic => crate::skip_on_engine_fault(
                     &label,
-                )),
-                Engine::Streaming => warn_on_skip(
+                    crate::bench_monolithic(&src, &plan, spec.concurrency, &label),
+                ),
+                Engine::Streaming => crate::skip_on_engine_fault(
                     &label,
                     crate::bench_streaming(
                         &src,
@@ -157,7 +140,7 @@ pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
                         &label,
                     ),
                 ),
-                Engine::MapReduce => warn_on_skip(
+                Engine::MapReduce => crate::skip_on_engine_fault(
                     &label,
                     crate::bench_mapreduce(
                         &src,

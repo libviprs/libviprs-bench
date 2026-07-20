@@ -14,7 +14,9 @@
 //! up front with [`EngineError::PlanSourceMismatch`](libviprs::EngineError)
 //! (validated at `run()` entry) — and pin that the bench cell:
 //!   * does NOT unwind — so the report/sweep driver degrades it to a skipped
-//!     row instead of aborting the whole engine series; and
+//!     row instead of aborting the whole engine series;
+//!   * SURFACES the fault as `Err` — not a spurious `Ok` that would push a
+//!     garbage row into the report; and
 //!   * leaves NO temp output dir behind — the reclaim runs on the error path.
 //!
 //! They need no libvips (pure-Rust libviprs engines), so they run
@@ -27,8 +29,8 @@ use std::path::PathBuf;
 
 use libviprs::streaming::BudgetPolicy;
 use libviprs::{
-    EngineBuilder, EngineConfig, EngineKind, Layout, MemorySink, PyramidPlan, PyramidPlanner,
-    Raster, RasterStripSource,
+    EngineBuilder, EngineConfig, EngineError, EngineKind, Layout, MemorySink, PyramidPlan,
+    PyramidPlanner, Raster, RasterStripSource,
 };
 use libviprs_bench::{
     BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, bench_mapreduce, bench_streaming, gradient_raster,
@@ -68,10 +70,21 @@ fn streaming_cell_fault_does_not_panic_or_leak() {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         bench_streaming(&src, &plan, 0, BENCH_STREAMING_BUDGET, label)
     }));
+    // Must not unwind (the `catch_unwind` is `Ok`) AND must surface the fault as
+    // `Err` — not swallow it into a spurious `Ok` that would push a garbage row
+    // into the report. Pinning the `PlanSourceMismatch` variant ties the guard
+    // to the real fault this fixture provokes.
+    let returned = match outcome {
+        Ok(returned) => returned,
+        Err(_) => panic!(
+            "bench_streaming unwound on an engine fault instead of returning \
+             (issue #46: the whole report/sweep would abort)"
+        ),
+    };
     assert!(
-        outcome.is_ok(),
-        "bench_streaming unwound on an engine fault instead of returning \
-         (issue #46: the whole report/sweep would abort)"
+        matches!(returned, Err(EngineError::PlanSourceMismatch { .. })),
+        "bench_streaming must RETURN the fault as Err(PlanSourceMismatch), not \
+         swallow it into Ok (issue #46); got {returned:?}"
     );
 
     // #46: and the temp output dir must be reclaimed on the error path.
@@ -92,10 +105,17 @@ fn mapreduce_cell_fault_does_not_panic_or_leak() {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         bench_mapreduce(&src, &plan, 0, BENCH_STREAMING_BUDGET, label)
     }));
+    let returned = match outcome {
+        Ok(returned) => returned,
+        Err(_) => panic!(
+            "bench_mapreduce unwound on an engine fault instead of returning \
+             (issue #46: the whole report/sweep would abort)"
+        ),
+    };
     assert!(
-        outcome.is_ok(),
-        "bench_mapreduce unwound on an engine fault instead of returning \
-         (issue #46: the whole report/sweep would abort)"
+        matches!(returned, Err(EngineError::PlanSourceMismatch { .. })),
+        "bench_mapreduce must RETURN the fault as Err(PlanSourceMismatch), not \
+         swallow it into Ok (issue #46); got {returned:?}"
     );
     assert!(
         !out_dir.exists(),
@@ -108,31 +128,40 @@ fn mapreduce_cell_fault_does_not_panic_or_leak() {
 // #47: the re-derived budget-admission formula, pinned to core reality.
 // ---------------------------------------------------------------------------
 
-/// Whether the REAL streaming engine admits a run at `budget` — the observable
+/// Run the REAL `kind` engine at `budget` against `plan`/`src` under the strict
+/// [`BudgetPolicy::Error`], returning the engine's own result — the observable
 /// image of the core's up-front pre-flight gate. Uses an in-memory sink so the
-/// probe touches no filesystem.
-fn streaming_admits(plan: &PyramidPlan, src: &Raster, budget: u64) -> bool {
+/// probe touches no filesystem, and `concurrency 0` (the [`EngineConfig`]
+/// default) so no channel-backlog charge clouds the pure strip-budget gate.
+fn engine_admission(
+    kind: EngineKind,
+    plan: &PyramidPlan,
+    src: &Raster,
+    budget: u64,
+) -> Result<(), EngineError> {
     let sink = MemorySink::new();
     EngineBuilder::new(RasterStripSource::new(src), plan.clone(), &sink)
-        .with_engine(EngineKind::Streaming)
+        .with_engine(kind)
         .with_config(EngineConfig::default())
         .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
         .run()
-        .is_ok()
+        .map(|_| ())
 }
 
 /// #47 is resolved WON'T-FIX: [`streaming_budget_for`] keeps re-deriving the
 /// streaming / mapreduce engines' pre-flight admission invariant
-/// (`canvas_width × 2·tile_size × bpp`) because the core exposes no public
-/// inverse to adopt and coupling the deliberately-raw, saturation-guarded,
-/// plan-less-callable helper to a `&PyramidPlan` is out of proportion to the
-/// coupling (see the helper's docs). This pin gives the duplication teeth by
-/// tying it to the engine's ACTUAL behaviour rather than a same-shaped formula:
-/// the real engine must REJECT a budget one byte below the invariant and ADMIT
-/// one exactly at it. If the core ever changes its admission rule, this goes
-/// red — the signal to revisit the "won't-fix". The mapreduce engine gates on
-/// the identical invariant, so pinning streaming pins the shared formula.
+/// (`canvas_width × 2·tile_size × bpp` — each engine's `worst_case_strip_bytes`)
+/// because the core exposes no public accessor to adopt and coupling the
+/// deliberately-raw, saturation-guarded, plan-less-callable helper to a
+/// `&PyramidPlan` is out of proportion to the coupling (see the helper's docs).
+/// This pin gives the duplication teeth by tying it to the engines' ACTUAL
+/// behaviour rather than a same-shaped formula: BOTH engines must REJECT a
+/// budget one byte below the invariant — specifically with `BudgetExceeded`, so
+/// an unrelated failure can't let the pin pass for the wrong reason — and ADMIT
+/// one exactly at it. The core keeps two INDEPENDENT copies of the gate
+/// (`streaming` and `streaming_mapreduce`), so driving BOTH means a drift in
+/// either turns this red — the signal to revisit the "won't-fix".
 #[test]
 fn streaming_budget_min_strip_agrees_with_core_preflight() {
     let src = gradient_raster(1024, 1024);
@@ -144,24 +173,35 @@ fn streaming_budget_min_strip_agrees_with_core_preflight() {
     // The invariant the bench re-derives in `streaming_budget_for`.
     let min_strip = plan.canvas_width as u64 * 2 * plan.tile_size as u64 * bpp as u64;
 
-    // Reality check: the real engine rejects one byte below the invariant and
-    // admits exactly at it, so the bench's re-derived threshold IS the core's
-    // pre-flight gate — not merely a same-shaped formula (issue #47).
-    assert!(
-        !streaming_admits(&plan, &src, min_strip - 1),
-        "core must reject a budget one byte below its worst-case-strip pre-flight gate"
-    );
-    assert!(
-        streaming_admits(&plan, &src, min_strip),
-        "core must admit a budget exactly at its worst-case-strip pre-flight gate"
-    );
+    // Reality check, for BOTH engines (each gates on its own copy of the
+    // invariant): the real engine rejects one byte below the gate — with
+    // `BudgetExceeded` specifically — and admits exactly at it, so the bench's
+    // re-derived threshold IS the core's pre-flight gate, not merely a
+    // same-shaped formula (issue #47).
+    for kind in [EngineKind::Streaming, EngineKind::MapReduce] {
+        assert!(
+            matches!(
+                engine_admission(kind, &plan, &src, min_strip - 1),
+                Err(EngineError::BudgetExceeded { .. })
+            ),
+            "{kind:?}: core must reject a budget one byte below its \
+             worst-case-strip pre-flight gate with BudgetExceeded"
+        );
+        assert!(
+            engine_admission(kind, &plan, &src, min_strip).is_ok(),
+            "{kind:?}: core must admit a budget exactly at its worst-case-strip \
+             pre-flight gate"
+        );
+    }
 
-    // And the shared sizing helper sizes strictly above that gate (the fixed 2×
-    // margin), so every streaming-family bench path clears pre-flight with slack.
+    // The shared sizing helper sizes to a fixed 2× margin above that gate. This
+    // documents the margin the bench applies — it is NOT an independent pin of
+    // the core (the admission pairs above are); it changes only if the helper's
+    // own formula changes.
     let sized = streaming_budget_for(0, plan.canvas_width, plan.tile_size, bpp);
-    assert_eq!(sized, min_strip * 2, "the fixed 2× pre-flight margin");
-    assert!(
-        sized >= min_strip,
-        "the sized budget must admit the gate strip"
+    assert_eq!(
+        sized,
+        min_strip * 2,
+        "documents the fixed 2× pre-flight margin"
     );
 }

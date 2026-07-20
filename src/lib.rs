@@ -363,18 +363,77 @@ pub fn gradient_raster(w: u32, h: u32) -> Raster {
     Raster::new(w, h, PixelFormat::Rgb8, data).unwrap()
 }
 
+/// A libviprs engine's temp tile-output directory that reclaims itself on drop.
+///
+/// Leak-freedom (issue #46) is enforced by the type, not by hand: every
+/// `bench_*` path that fails after creating its output dir — whether the engine
+/// returns `Err` (surfaced via `?`), the function returns early, OR the engine
+/// unwinds — drops this guard, and the drop removes the directory. This
+/// subsumes the earlier per-function `remove_dir_all` hand-placed just before
+/// each `?`, which covered only the returned-`Err` channel and would have leaked
+/// on an unwind.
+struct TempOutDir(std::path::PathBuf);
+
+impl TempOutDir {
+    /// The directory path. Engines root their `pyramid/` tiles under it, and the
+    /// success path counts those tiles (via [`per_level_png_tiles`]) while the
+    /// guard is still alive.
+    fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempOutDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Create a fresh, unique temp directory for a libviprs engine's on-disk tile
-/// output. Both the libviprs engines and libvips `dzsave` write their tiles as
-/// real files under `TMPDIR/libviprs-bench/…`, so neither side gets an in-RAM
-/// sink advantage (issue #153). The directory is removed by the caller once
-/// the tiles have been counted.
-fn fs_sink_dir(label: &str) -> std::path::PathBuf {
+/// output, returned as a self-reclaiming [`TempOutDir`] guard. Both the libviprs
+/// engines and libvips `dzsave` write their tiles as real files under
+/// `TMPDIR/libviprs-bench/…`, so neither side gets an in-RAM sink advantage
+/// (issue #153). The directory is removed when the returned guard drops.
+fn fs_sink_dir(label: &str) -> TempOutDir {
     let dir = std::env::temp_dir()
         .join("libviprs-bench")
         .join(format!("engine_{}_{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    // A writable `$TMPDIR` is a precondition for running any benchmark at all,
+    // so this is an accepted environmental panic — the right loud failure if the
+    // temp root is unwritable. The label is unique per cell and cells run
+    // serially, so there is no same-process collision to guard against.
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    TempOutDir(dir)
+}
+
+/// One voice for every fail-soft "engine fault → skip this cell/point" warning
+/// across the drivers — the child harness, the in-process [`comparison_suite`],
+/// and the `scalability` sweep — so the sites can't drift in wording. `context`
+/// names the engine and the cell/point (e.g. `"cell 4096x4096_c0_stream"` or
+/// `"scalability mapreduce 4096x4096"`). The issue reference stays in the code
+/// comments, not in this operator-facing line (issue #46 review).
+pub fn warn_engine_skip(context: &str, err: &libviprs::EngineError) {
+    eprintln!("{context} failed, skipping: {err}");
+}
+
+/// Degrade a fail-soft engine cell to a skipped row: on a genuine engine fault
+/// (the strict `BudgetPolicy::Error` the streaming / mapreduce engines run
+/// under, a sink IO error, the entry-time plan/source dimension guard, …) record
+/// no metrics and warn via [`warn_engine_skip`], so a driver drops just that one
+/// cell instead of aborting the whole engine series (issue #46). Shared by the
+/// child harness ([`harness::run_single_cell`]) and [`comparison_suite`].
+pub(crate) fn skip_on_engine_fault(
+    label: &str,
+    res: Result<RunMetrics, libviprs::EngineError>,
+) -> Option<RunMetrics> {
+    match res {
+        Ok(m) => Some(m),
+        Err(e) => {
+            warn_engine_skip(&format!("cell {label}"), &e);
+            None
+        }
+    }
 }
 
 /// Build the on-disk PNG sink used by every libviprs engine, rooted under a
@@ -384,31 +443,41 @@ fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
     FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(BENCH_TILE_FORMAT)
 }
 
-/// Run the monolithic engine and collect metrics.
+/// Run the monolithic engine and collect metrics, or return the engine error.
+///
+/// Symmetric with [`bench_streaming`] / [`bench_mapreduce`]: returns `Err`
+/// (propagating the engine's [`EngineError`](libviprs::EngineError) via `?`)
+/// rather than panicking on an engine fault. The monolithic engine has no
+/// budget policy, but it can still fail on a sink IO error or the entry-time
+/// plan/source dimension guard, so hardening it symmetrically means one
+/// unmeasurable cell degrades to a skipped row instead of aborting the whole
+/// report/sweep, and its self-reclaiming [`TempOutDir`] never leaks a directory
+/// under `$TMPDIR` (issue #46).
 pub fn bench_monolithic(
     src: &Raster,
     plan: &PyramidPlan,
     concurrency: usize,
     label: &str,
-) -> RunMetrics {
+) -> Result<RunMetrics, libviprs::EngineError> {
     let out_dir = fs_sink_dir(label);
-    let sink = engine_fs_sink(&out_dir, plan);
+    let sink = engine_fs_sink(out_dir.path(), plan);
     let observer = Arc::new(CollectingObserver::new());
     let config = EngineConfig::default().with_concurrency(concurrency);
 
     let start = Instant::now();
-    let result = EngineBuilder::new(src, plan.clone(), &sink)
+    let run_result = EngineBuilder::new(src, plan.clone(), &sink)
         .with_engine(EngineKind::Monolithic)
         .with_config(config)
         .with_observer_arc(observer.clone())
-        .run()
-        .unwrap();
+        .run();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
-    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    // On a fault `?` returns here and `out_dir` drops, reclaiming the temp dir;
+    // the success-path tile count below runs while the guard is still alive.
+    let result = run_result?;
+    let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
 
-    RunMetrics {
+    Ok(RunMetrics {
         label: label.to_string(),
         width: src.width(),
         height: src.height(),
@@ -428,7 +497,7 @@ pub fn bench_monolithic(
         inflight_strips: 0,
         concurrency,
         memory_budget_bytes: 0,
-    }
+    })
 }
 
 /// Size a streaming / mapreduce memory budget so the worst-case tile-aligned
@@ -466,25 +535,31 @@ pub fn bench_monolithic(
 /// [`PyramidPlan`] reaches magnitudes that would overflow (the planner's
 /// `checked_canvas_bounds` rejects them), so the saturation is purely defensive.
 ///
-/// **On the duplicated admission formula (issue #47).** This helper re-derives
-/// the streaming / mapreduce engines' pre-flight invariant
-/// (`canvas_width × 2·tile_size × bpp`), which the core does not expose as a
-/// public primitive: it exposes the *forward*
-/// [`compute_strip_height`](libviprs::compute_strip_height) and the
-/// full-working-set [`estimate_streaming_memory`](libviprs::estimate_streaming_memory),
-/// but NOT the *inverse* — the minimum budget that survives pre-flight.
-/// Adopting a core primitive was evaluated and declined as out of proportion to
-/// the coupling: it would either change the sized budget's value (the
-/// full-working-set estimate is a different, strictly larger quantity, which
-/// would also refund the lower levels this benchmark deliberately leaves
-/// unfunded) or require a new core API AND recoupling this intentionally *raw*
-/// `(canvas_width, tile_size, bpp)` signature to a `&PyramidPlan` — a signature
-/// the plan-less call sites (the `scalability` chart annotations) and the
-/// saturating-overflow guard rely on and no real plan could exercise. Instead
-/// the coupling is pinned to the engines' ACTUAL admission behaviour by a test
-/// (`tests/budget_hardening.rs::streaming_budget_min_strip_agrees_with_core_preflight`):
-/// the real engine must reject one byte below this minimum and admit at it, so
-/// if the core ever changes its admission rule the pin goes red.
+/// **On the duplicated admission formula (issue #47).** The un-doubled minimum
+/// this helper computes (`canvas_width × 2·tile_size × bpp`) is *exactly* the
+/// streaming / mapreduce engines' pre-flight `worst_case_strip_bytes` — the
+/// quantity each engine gates admission on before `BudgetExceeded`. The core
+/// computes it inline and identically in BOTH engines' gates
+/// (`streaming::worst_case_strip_bytes` at the streaming pre-flight and its
+/// twin in `streaming_mapreduce`) but does **not** expose it as a public
+/// function, so there is no core primitive to adopt today.
+///
+/// Adopting one was declined for this bench as out of proportion to the
+/// coupling — but NOT because it would change the sized value (it would not: a
+/// core accessor returning `worst_case_strip_bytes` would leave this helper's
+/// `floor.max(2×)` policy, and thus the sized budget, byte-for-byte unchanged).
+/// The real reasons are narrower: (1) exposing it is a change to the core
+/// crate, out of scope for a bench-only PR; and (2) the natural core signature
+/// is `(&PyramidPlan, PixelFormat)`, whereas this helper is deliberately *raw*
+/// `(canvas_width, tile_size, bpp)` so the plan-less call sites (the
+/// `scalability` chart annotations) and the saturating-overflow guard can use
+/// it — adopting a plan-based core fn would force recoupling to a `&PyramidPlan`
+/// no real plan could exercise. Instead the coupling is pinned to the engines'
+/// ACTUAL admission behaviour by a test
+/// (`tests/budget_hardening.rs::streaming_budget_min_strip_agrees_with_core_preflight`),
+/// which drives BOTH engines: each must reject one byte below this minimum (with
+/// `BudgetExceeded` specifically) and admit at it — so a drift in EITHER of the
+/// core's two independent gate copies turns the pin red.
 #[must_use]
 pub fn streaming_budget_for(floor: u64, canvas_width: u32, tile_size: u32, bpp: u32) -> u64 {
     let min_strip_bytes = (canvas_width as u64)
@@ -497,33 +572,46 @@ pub fn streaming_budget_for(floor: u64, canvas_width: u32, tile_size: u32, bpp: 
 ///
 /// Returns `Err` — propagating the engine's own
 /// [`EngineError`](libviprs::EngineError) via `?` — rather than panicking when
-/// the run fails for a non-budget reason (a sink IO error, a source error, or
-/// the entry-time plan/source dimension guard), so a single unmeasurable cell
-/// degrades to a skipped row instead of aborting the whole report/sweep (issue
-/// #46). The budget itself is sized up per canvas by [`streaming_budget_for`]
-/// so the strict [`BudgetPolicy::Error`] never trips on a large canvas (issue
-/// #38). The temp output dir is reclaimed on EVERY exit — including the error
-/// path — mirroring [`bench_streaming_pdf`], so a post-creation fault never
-/// leaks a directory under `$TMPDIR`.
+/// the run fails, so a single unmeasurable cell degrades to a skipped row
+/// instead of aborting the whole report/sweep (issue #46). The temp output dir
+/// is a self-reclaiming [`TempOutDir`], so a post-creation fault — returned OR
+/// unwound — never leaks a directory under `$TMPDIR`.
+///
+/// `budget_floor_bytes` is a *floor*, not the effective budget: it is sized up
+/// per canvas by [`streaming_budget_for`] so the strict [`BudgetPolicy::Error`]
+/// never trips on a large canvas (issue #38), and that sized value — not the
+/// floor — is what the engine runs with and what
+/// [`RunMetrics::memory_budget_bytes`] reports.
+///
+/// Every returned `EngineError` variant is handled the same by the drivers —
+/// logged and skipped — unlike the PDF sibling [`bench_streaming_pdf`], which
+/// splits an environmental skip from a must-surface regression. That asymmetry
+/// is deliberate: in the real gradient drivers the plan is always built from the
+/// source's own dimensions (so `PlanSourceMismatch` is unreachable) and the
+/// budget is pre-sized to clear pre-flight (so `BudgetExceeded` cannot trip),
+/// leaving only genuinely environmental faults (a sink IO error) that are
+/// legitimately skippable — so, unlike the PDF path, there is no distinct
+/// always-skip case to separate out (issue #22 review, issue #46).
 pub fn bench_streaming(
     src: &Raster,
     plan: &PyramidPlan,
     concurrency: usize,
-    memory_budget_bytes: u64,
+    budget_floor_bytes: u64,
     label: &str,
 ) -> Result<RunMetrics, libviprs::EngineError> {
-    // Size the budget to admit the worst-case tile-aligned strip so the strict
-    // `BudgetPolicy::Error` never trips on a large canvas; the flat report
-    // budget alone starves every image from 1024 px up (issue #38). Size from
-    // `plan.canvas_width` — the exact width the engine's pre-flight gates on.
+    // Size the budget UP from the floor to admit the worst-case tile-aligned
+    // strip so the strict `BudgetPolicy::Error` never trips on a large canvas;
+    // the flat report floor alone starves every image from 1024 px up (issue
+    // #38). Size from `plan.canvas_width` — the exact width the engine's
+    // pre-flight gates on.
     let budget = streaming_budget_for(
-        memory_budget_bytes,
+        budget_floor_bytes,
         plan.canvas_width,
         plan.tile_size,
         src.format().bytes_per_pixel() as u32,
     );
     let out_dir = fs_sink_dir(label);
-    let sink = engine_fs_sink(&out_dir, plan);
+    let sink = engine_fs_sink(out_dir.path(), plan);
     let observer = Arc::new(CollectingObserver::new());
     let engine_config = EngineConfig::default().with_concurrency(concurrency);
     let strip_src = RasterStripSource::new(src);
@@ -537,13 +625,10 @@ pub fn bench_streaming(
         .run();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
-    // Reclaim the temp dir on EVERY exit — including the error path below — so a
-    // post-creation engine failure never leaks a directory under $TMPDIR (issue
-    // #46, mirroring `bench_streaming_pdf`). Walking a partial/empty dir here is
-    // harmless; the value is only consumed on the success path.
-    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    // On a fault `?` returns here and `out_dir` drops, reclaiming the temp dir;
+    // the success-path tile count below runs while the guard is still alive.
     let result = run_result?;
+    let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
 
     let strips = observer
         .events()
@@ -578,30 +663,33 @@ pub fn bench_streaming(
 ///
 /// The MapReduce counterpart to [`bench_streaming`]: returns `Err` (propagating
 /// the engine's [`EngineError`](libviprs::EngineError) via `?`) rather than
-/// panicking on a non-budget engine fault, and reclaims the temp output dir on
-/// every exit — including the error path — so a failed cell degrades to a
-/// skipped row and never leaks a directory under `$TMPDIR` (issue #46).
+/// panicking on an engine fault, and its self-reclaiming [`TempOutDir`] never
+/// leaks a directory under `$TMPDIR` on any exit — returned or unwound — so a
+/// failed cell degrades to a skipped row (issue #46). Like [`bench_streaming`],
+/// `budget_floor_bytes` is a *floor* that [`streaming_budget_for`] sizes up per
+/// canvas; the sized value is what the engine runs with (and what the
+/// strip-height / in-flight accounting below is computed against).
 pub fn bench_mapreduce(
     src: &Raster,
     plan: &PyramidPlan,
     tile_concurrency: usize,
-    memory_budget_bytes: u64,
+    budget_floor_bytes: u64,
     label: &str,
 ) -> Result<RunMetrics, libviprs::EngineError> {
-    // Size the budget to admit the worst-case tile-aligned strip so the strict
-    // `BudgetPolicy::Error` never trips on a large canvas; the flat report
-    // budget alone starves every image from 1024 px up (issue #38). Size from
-    // `plan.canvas_width` — the exact width the engine's pre-flight gates on.
-    // The sized budget is what the engine runs with, so the strip-height and
-    // in-flight accounting below is computed against it too.
+    // Size the budget UP from the floor to admit the worst-case tile-aligned
+    // strip so the strict `BudgetPolicy::Error` never trips on a large canvas;
+    // the flat report floor alone starves every image from 1024 px up (issue
+    // #38). Size from `plan.canvas_width` — the exact width the engine's
+    // pre-flight gates on. The sized budget is what the engine runs with, so the
+    // strip-height and in-flight accounting below is computed against it too.
     let budget = streaming_budget_for(
-        memory_budget_bytes,
+        budget_floor_bytes,
         plan.canvas_width,
         plan.tile_size,
         src.format().bytes_per_pixel() as u32,
     );
     let out_dir = fs_sink_dir(label);
-    let sink = engine_fs_sink(&out_dir, plan);
+    let sink = engine_fs_sink(out_dir.path(), plan);
     let observer = Arc::new(CollectingObserver::new());
     let buffer_size = 64usize;
     let engine_config = EngineConfig::default()
@@ -619,13 +707,10 @@ pub fn bench_mapreduce(
         .run();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
-    // Reclaim the temp dir on EVERY exit — including the error path below — so a
-    // post-creation engine failure never leaks a directory under $TMPDIR (issue
-    // #46, mirroring `bench_streaming_pdf`). Walking a partial/empty dir here is
-    // harmless; the value is only consumed on the success path.
-    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    // On a fault `?` returns here and `out_dir` drops, reclaiming the temp dir;
+    // the success-path tile count below runs while the guard is still alive.
     let result = run_result?;
+    let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
 
     let events = observer.events();
     let strips = events
@@ -756,12 +841,17 @@ impl std::error::Error for PdfBenchError {
 /// [`BudgetPolicy::Error`] — pdfium's 4-bpp strips are wider than the 3-bpp
 /// gradient at the same width.
 ///
-/// Returns a typed [`PdfBenchError`] (rather than panicking like the raster
-/// [`bench_streaming`]) so a driver can tell the ONE legitimately-skippable
-/// case — [`PdfBenchError::SourceUnavailable`], e.g. a missing or
-/// ABI-mismatched `libpdfium` — apart from a genuine planner/engine regression
-/// ([`PdfBenchError::Plan`] / [`PdfBenchError::Engine`]) that it must surface
-/// rather than silently drop from the deliverable (issue #22 review).
+/// Returns a *typed* [`PdfBenchError`] — unlike the raster [`bench_streaming`]'s
+/// single opaque [`EngineError`](libviprs::EngineError) — so a driver can tell
+/// the ONE legitimately-skippable case — [`PdfBenchError::SourceUnavailable`],
+/// e.g. a missing or ABI-mismatched `libpdfium` — apart from a genuine
+/// planner/engine regression ([`PdfBenchError::Plan`] / [`PdfBenchError::Engine`])
+/// that it must surface rather than silently drop from the deliverable. The
+/// raster path needs no such split because its only reachable fault in the real
+/// drivers is environmental (see [`bench_streaming`]) (issue #22 review).
+///
+/// Like the raster paths, `budget_floor_bytes` is a *floor* that
+/// [`streaming_budget_for`] sizes up per canvas.
 #[cfg(feature = "pdfium")]
 #[allow(clippy::too_many_arguments)]
 pub fn bench_streaming_pdf(
@@ -770,7 +860,7 @@ pub fn bench_streaming_pdf(
     dpi: u32,
     tile_size: u32,
     concurrency: usize,
-    memory_budget_bytes: u64,
+    budget_floor_bytes: u64,
     label: &str,
 ) -> Result<RunMetrics, PdfBenchError> {
     use libviprs::{PdfiumStripSource, StripSource};
@@ -790,14 +880,14 @@ pub fn bench_streaming_pdf(
     // `bench_mapreduce` path via `streaming_budget_for` (saturating), sized from
     // `plan.canvas_width` — the width the engine's pre-flight gates on.
     let budget = streaming_budget_for(
-        memory_budget_bytes,
+        budget_floor_bytes,
         plan.canvas_width,
         plan.tile_size,
         source.format().bytes_per_pixel() as u32,
     );
 
     let out_dir = fs_sink_dir(label);
-    let sink = engine_fs_sink(&out_dir, &plan);
+    let sink = engine_fs_sink(out_dir.path(), &plan);
     let observer = Arc::new(CollectingObserver::new());
     let engine_config = EngineConfig::default().with_concurrency(concurrency);
 
@@ -811,13 +901,11 @@ pub fn bench_streaming_pdf(
         .run();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
-    // Reclaim the temp dir on EVERY exit — including the error path below — so a
-    // post-creation engine failure never leaks a directory under $TMPDIR
-    // (issue #22 review). Walking a partial/empty dir here is harmless; the
-    // value is only consumed on the success path.
-    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
-    let _ = std::fs::remove_dir_all(&out_dir);
+    // On a fault `?` returns here and `out_dir` drops, reclaiming the temp dir
+    // (issue #22 review, issue #46); the success-path tile count below runs
+    // while the guard is still alive.
     let result = run_result.map_err(PdfBenchError::Engine)?;
+    let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
 
     let strips = observer
         .events()
@@ -909,7 +997,7 @@ pub fn write_libviprs_pyramid(
     plan: &PyramidPlan,
     engine: EngineKind,
     concurrency: usize,
-    budget_bytes: u64,
+    budget_floor_bytes: u64,
     dir: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
@@ -927,7 +1015,7 @@ pub fn write_libviprs_pyramid(
     // review). The monolithic engine ignores the budget.
     if matches!(engine, EngineKind::Streaming | EngineKind::MapReduce) {
         let budget = streaming_budget_for(
-            budget_bytes,
+            budget_floor_bytes,
             plan.canvas_width,
             plan.tile_size,
             src.format().bytes_per_pixel() as u32,
@@ -1415,11 +1503,14 @@ pub fn per_level_png_tiles(tiles_dir: &std::path::Path) -> Vec<u64> {
 }
 
 /// Run all four engines across a matrix of image sizes and concurrency levels.
+///
+/// `streaming_budget_floor_bytes` is the streaming / mapreduce budget *floor*;
+/// each cell sizes it up per canvas via [`streaming_budget_for`] (issue #38).
 pub fn comparison_suite(
     sizes: &[(u32, u32)],
     concurrency_levels: &[usize],
     tile_size: u32,
-    streaming_budget_bytes: u64,
+    streaming_budget_floor_bytes: u64,
 ) -> Vec<RunMetrics> {
     let mut results = Vec::new();
 
@@ -1445,32 +1536,38 @@ pub fn comparison_suite(
         for &conc in concurrency_levels {
             let label = format!("{w}x{h}_c{conc}");
 
-            let mono = bench_monolithic(&src, &plan, conc, &format!("{label}_mono"));
-            results.push(mono);
-
-            // Fail-soft: a streaming / mapreduce engine fault degrades that one
-            // cell to a skipped (warned) row rather than aborting the whole
-            // sweep, mirroring the child-process driver (issue #46).
-            match bench_streaming(
-                &src,
-                &plan,
-                conc,
-                streaming_budget_bytes,
-                &format!("{label}_stream"),
+            // Fail-soft: an engine fault degrades that one cell to a skipped
+            // (warned) row rather than aborting the whole sweep, mirroring the
+            // child-process driver, and routed through the shared
+            // `skip_on_engine_fault` so every driver logs in one voice (#46).
+            let mono_label = format!("{label}_mono");
+            if let Some(mono) = skip_on_engine_fault(
+                &mono_label,
+                bench_monolithic(&src, &plan, conc, &mono_label),
             ) {
-                Ok(stream) => results.push(stream),
-                Err(e) => eprintln!("streaming cell {label} failed, skipping (issue #46): {e}"),
+                results.push(mono);
             }
 
-            match bench_mapreduce(
-                &src,
-                &plan,
-                conc,
-                streaming_budget_bytes,
-                &format!("{label}_mr"),
+            let stream_label = format!("{label}_stream");
+            if let Some(stream) = skip_on_engine_fault(
+                &stream_label,
+                bench_streaming(
+                    &src,
+                    &plan,
+                    conc,
+                    streaming_budget_floor_bytes,
+                    &stream_label,
+                ),
             ) {
-                Ok(mr) => results.push(mr),
-                Err(e) => eprintln!("mapreduce cell {label} failed, skipping (issue #46): {e}"),
+                results.push(stream);
+            }
+
+            let mr_label = format!("{label}_mr");
+            if let Some(mr) = skip_on_engine_fault(
+                &mr_label,
+                bench_mapreduce(&src, &plan, conc, streaming_budget_floor_bytes, &mr_label),
+            ) {
+                results.push(mr);
             }
 
             // libvips: prefer in-process FFI when available, fall back to CLI.
