@@ -15,16 +15,13 @@
 //! regresses to an unpinned / apt-installed libvips — without needing Docker
 //! or libvips in the loop.
 
-use libviprs_bench::provenance::{PINNED_LIBVIPS_VERSION, Provenance, parse_libvips_major_minor};
+use libviprs_bench::provenance::{
+    OracleMatch, PINNED_LIBVIPS_SHA256, PINNED_LIBVIPS_VERSION, Provenance,
+    parse_libvips_major_minor,
+};
 
 const DOCKERFILE: &str = include_str!("../Dockerfile");
 const CARGO_TOML: &str = include_str!("../Cargo.toml");
-
-/// SHA-256 of `vips-8.18.4.tar.xz`, cross-checked against the upstream
-/// `vips-8.18.4.tar.xz.sha256sum` companion file and the GitHub release
-/// asset digest. If the pin is bumped, update this alongside the Dockerfile.
-const LIBVIPS_TARBALL_SHA256: &str =
-    "2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037";
 
 /// Test A — the recorded libvips version parses to the expected major.minor.
 ///
@@ -105,8 +102,9 @@ fn dockerfile_verifies_libvips_tarball_checksum() {
          with `sha256sum -c` (#33)"
     );
     assert!(
-        DOCKERFILE.contains(LIBVIPS_TARBALL_SHA256),
-        "Dockerfile is missing the pinned SHA-256 digest for \
+        DOCKERFILE.contains(PINNED_LIBVIPS_SHA256),
+        "Dockerfile is missing the pinned SHA-256 digest \
+         (`provenance::PINNED_LIBVIPS_SHA256`) for \
          vips-{PINNED_LIBVIPS_VERSION}.tar.xz (#33)"
     );
 }
@@ -178,6 +176,77 @@ fn provenance_flags_measured_vs_pinned_libvips_drift() {
     assert!(
         !prov.libvips_matches_pinned(),
         "an 8.14 measurement against an 8.18 pin must be flagged as drift"
+    );
+}
+
+/// The richer [`OracleMatch`] classification distinguishes a genuine
+/// mismatched oracle (both sides parse and differ) from an indeterminate
+/// capture (either side `"unknown"`), so a consumer can warn loudly on the
+/// former without crying wolf on the latter (#33).
+#[test]
+fn oracle_match_classifies_mismatch_vs_indeterminate() {
+    // Default fingerprint: both sides "unknown" → indeterminate, not a match.
+    let mut prov = Provenance::default();
+    assert_eq!(prov.libvips_oracle_match(), OracleMatch::Indeterminate);
+    assert!(!prov.libvips_matches_pinned());
+
+    prov.pinned_libvips_version = PINNED_LIBVIPS_VERSION.to_string();
+
+    // Only the measured side unknown (a host run with no libvips) → still
+    // indeterminate: the guard must not raise a false mismatch alarm.
+    assert_eq!(prov.libvips_oracle_match(), OracleMatch::Indeterminate);
+
+    // Same major.minor as the pin (patch may differ) → match.
+    prov.libvips_version = "8.18.2".to_string();
+    assert_eq!(prov.libvips_oracle_match(), OracleMatch::Match);
+    assert!(prov.libvips_matches_pinned());
+
+    // Debian's 8.14 against the 8.18 pin → a concrete mismatch carrying both
+    // parsed series, so a consumer can render the exact versions.
+    prov.libvips_version = "8.14.1".to_string();
+    assert_eq!(
+        prov.libvips_oracle_match(),
+        OracleMatch::Mismatch {
+            measured: (8, 14),
+            pinned: (8, 18),
+        }
+    );
+    assert!(!prov.libvips_matches_pinned());
+}
+
+/// The build must force-enable the hot-path codecs rather than leave them to
+/// meson's `auto` detection, so a missing codec `-dev` library hard-fails the
+/// build instead of silently yielding a codec-less oracle — a PNG-less libvips
+/// would quietly invalidate the DeepZoom PNG-tile hot path (#33).
+#[test]
+fn dockerfile_force_enables_hot_path_codecs() {
+    for opt in [
+        "-Dpng=enabled",
+        "-Djpeg=enabled",
+        "-Dtiff=enabled",
+        "-Dwebp=enabled",
+    ] {
+        assert!(
+            DOCKERFILE.contains(opt),
+            "Dockerfile must force-enable the codec with `{opt}` so a missing \
+             library fails the build instead of silently disabling the format (#33)"
+        );
+    }
+}
+
+/// The post-build check must assert the discoverable libvips is *exactly* the
+/// pinned version and fail the build otherwise — merely printing the version
+/// (the pre-review behaviour) would let a stray/wrong libvips ahead on PATH
+/// build green (#33).
+#[test]
+fn dockerfile_asserts_built_libvips_version_equals_pin() {
+    let instructions = dockerfile_instructions(DOCKERFILE);
+    assert!(
+        instructions.contains("pkg-config --modversion vips")
+            && instructions.contains("${LIBVIPS_VERSION}")
+            && instructions.contains("exit 1"),
+        "Dockerfile must compare `pkg-config --modversion vips` against \
+         ${{LIBVIPS_VERSION}} and `exit 1` on mismatch, not just print it (#33)"
     );
 }
 

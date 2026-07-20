@@ -15,17 +15,33 @@ use serde::{Deserialize, Serialize};
 /// The exact upstream libvips release the benchmark container is pinned to
 /// build from source and measure against.
 ///
-/// Single source of truth for the pinned oracle. The `Dockerfile` builds
-/// `vips-{PINNED_LIBVIPS_VERSION}.tar.xz` from upstream (checksum-verified),
-/// the `libvips-rs` binding in `Cargo.toml` tracks the same major.minor
-/// series, and [`Provenance::capture`] stamps it into every snapshot as
-/// [`Provenance::pinned_libvips_version`]. `tests/libvips_provenance.rs`
-/// fails the moment any of those three drift from this constant.
+/// Canonical declaration of the pinned oracle version, kept in lockstep with
+/// its other homes by `tests/libvips_provenance.rs`: the `Dockerfile` builds
+/// `vips-{PINNED_LIBVIPS_VERSION}.tar.xz` from upstream (checksum-verified
+/// against [`PINNED_LIBVIPS_SHA256`]), the `libvips-rs` binding in
+/// `Cargo.toml` tracks the same major.minor series, and
+/// [`Provenance::capture`] stamps it into every snapshot as
+/// [`Provenance::pinned_libvips_version`]. Those tests fail the moment any of
+/// those homes drift from this constant.
 ///
 /// Chosen to match the `libvips-rs` 8.18 bindings — replacing Debian
 /// bookworm's frozen ~8.14 `libvips-dev`, which trailed the bindings by
 /// years and made the C baseline an unfair, mismatched oracle (issue #33).
 pub const PINNED_LIBVIPS_VERSION: &str = "8.18.4";
+
+/// SHA-256 of `vips-{PINNED_LIBVIPS_VERSION}.tar.xz`, the digest the
+/// `Dockerfile` verifies the downloaded tarball against before it is built.
+///
+/// Lives next to the version it belongs to so a pin bump and its digest have
+/// a single home, the same lockstep treatment [`PINNED_LIBVIPS_VERSION`]
+/// already enjoys; `tests/libvips_provenance.rs` asserts the Dockerfile pins
+/// exactly this value. Cross-checked against the upstream
+/// `vips-{PINNED_LIBVIPS_VERSION}.tar.xz.sha256sum` companion file — refresh
+/// it in the same edit whenever [`PINNED_LIBVIPS_VERSION`] is bumped.
+/// Validating the digest against the *real* upstream tarball on a schedule is
+/// tracked as a follow-up (libviprs-bench #36).
+pub const PINNED_LIBVIPS_SHA256: &str =
+    "2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037";
 
 /// Host + toolchain fingerprint for one benchmark snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -99,6 +115,33 @@ impl Default for Provenance {
     }
 }
 
+/// Outcome of comparing the libvips actually measured against the pinned
+/// build target ([`PINNED_LIBVIPS_VERSION`]) at `major.minor`.
+///
+/// Distinguishes a genuine mismatched oracle — a containerized run that built
+/// or linked a different libvips than it was pinned to (issue #33) — from the
+/// merely *indeterminate* case where a version string could not be parsed
+/// (e.g. the `"unknown"` sentinel a host run without libvips records). The two
+/// warrant different handling: a mismatch is a loud warning that the run's
+/// numbers are not comparable to a pinned-oracle run; an indeterminate result
+/// is the ordinary "no libvips here" state and must not cry wolf.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleMatch {
+    /// Measured and pinned agree at `major.minor`.
+    Match,
+    /// Both sides parsed but differ — the mismatched oracle #33 guards against.
+    Mismatch {
+        /// `(major, minor)` actually measured.
+        measured: (u32, u32),
+        /// `(major, minor)` the environment was pinned to.
+        pinned: (u32, u32),
+    },
+    /// Either side is unparseable (e.g. `"unknown"`), so no verdict is
+    /// possible — treated as "not a match" by
+    /// [`Provenance::libvips_matches_pinned`].
+    Indeterminate,
+}
+
 impl Provenance {
     /// Capture the current environment.
     pub fn capture() -> Provenance {
@@ -146,21 +189,33 @@ impl Provenance {
         )
     }
 
-    /// Whether the libvips actually measured matches the pinned build target
+    /// Classify the libvips actually measured against the pinned build target
     /// ([`Provenance::pinned_libvips_version`]) at `major.minor`.
     ///
-    /// Equal by construction inside the pinned container; a `false` here on a
-    /// containerized run means the image built or linked a different libvips
-    /// than it was pinned to — the mismatched-oracle failure #33 closes.
-    /// `false` whenever either side is unparseable (e.g. `"unknown"`).
-    pub fn libvips_matches_pinned(&self) -> bool {
+    /// Equal by construction inside the pinned container; an
+    /// [`OracleMatch::Mismatch`] on a containerized run means the image built
+    /// or linked a different libvips than it was pinned to — the failure #33
+    /// closes. The `report`, `scalability`, and `cross_version` binaries call
+    /// this and surface a mismatch loudly (a mismatch alone is a warning, not
+    /// an [`OracleMatch::Indeterminate`] "unknown", so a plain host run with no
+    /// libvips never trips a false alarm).
+    pub fn libvips_oracle_match(&self) -> OracleMatch {
         match (
             parse_libvips_major_minor(&self.libvips_version),
             parse_libvips_major_minor(&self.pinned_libvips_version),
         ) {
-            (Some(measured), Some(pinned)) => measured == pinned,
-            _ => false,
+            (Some(measured), Some(pinned)) if measured == pinned => OracleMatch::Match,
+            (Some(measured), Some(pinned)) => OracleMatch::Mismatch { measured, pinned },
+            _ => OracleMatch::Indeterminate,
         }
+    }
+
+    /// Whether the measured libvips matches the pinned build target at
+    /// `major.minor`. A thin `bool` view of [`Provenance::libvips_oracle_match`]:
+    /// `false` for both a real [`OracleMatch::Mismatch`] and an unparseable
+    /// ([`OracleMatch::Indeterminate`], e.g. `"unknown"`) side.
+    pub fn libvips_matches_pinned(&self) -> bool {
+        matches!(self.libvips_oracle_match(), OracleMatch::Match)
     }
 }
 
@@ -170,7 +225,10 @@ impl Provenance {
 /// already-stripped form [`libvips_version`] stores (`"8.18.4"` / `"8.18"`).
 /// Returns `None` for anything without at least a numeric `major.minor`
 /// (e.g. the `"unknown"` sentinel), so a missing capture never compares
-/// equal to a real version.
+/// equal to a real version. A component carrying a non-digit suffix — a
+/// pre-release tag like `"8.18-rc1"` — also yields `None` by design: the
+/// pinned oracle is always a finished release, so a suffixed string is an
+/// unexpected capture, not a version worth comparing.
 pub fn parse_libvips_major_minor(version: &str) -> Option<(u32, u32)> {
     let trimmed = version.trim();
     let digits = trimmed.strip_prefix("vips-").unwrap_or(trimmed);

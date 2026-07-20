@@ -18,7 +18,9 @@
 # Pinned inputs. A benchmark is only reproducible if every layer is fixed:
 # a floating base image, an unpinned libvips, or a `latest` PDFium would
 # silently change the numbers between runs (issue #153). Bump these
-# deliberately, never implicitly.
+# deliberately, never implicitly. (One documented exception — the apt codec
+# `-dev` packages libvips links against are not snapshot-pinned; that scope is
+# spelled out in the builder stage and tracked in #35.)
 #   PDFIUM_RELEASE  — libviprs-dep release tag (checksum-verified builder)
 #   LIBVIPS_VERSION — upstream libvips source release, built from tarball
 #   LIBVIPS_SHA256  — SHA-256 of that tarball, verified before it is built
@@ -52,7 +54,7 @@ RUN case "${TARGETARCH}" in \
         arm64) PDFIUM_ARCH="linux-arm64"; PDFIUM_SHA256="3a8940ae414a54601f6bc0b25fb3d589025320ee91fff378e12708259da5702d" ;; \
         *)     echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
     esac && \
-    curl -fL -o /tmp/pdfium.tgz \
+    curl -fL --retry 3 --retry-delay 2 --retry-connrefused -o /tmp/pdfium.tgz \
         "https://github.com/libviprs/libviprs-dep/releases/download/${PDFIUM_RELEASE}/pdfium-${PDFIUM_ARCH}.tgz" && \
     echo "${PDFIUM_SHA256}  /tmp/pdfium.tgz" | sha256sum -c - && \
     mkdir -p /opt/pdfium && \
@@ -77,6 +79,16 @@ ARG LIBVIPS_SHA256
 # the image-format `-dev` libraries it links against. Only PNG is on the
 # benchmark's hot path (DeepZoom writes PNG tiles), but jpeg/tiff/webp are
 # included so the oracle is a realistic, full-featured libvips build.
+#
+# Reproducibility scope (issue #33, tracked in #35): libvips itself is pinned
+# by version + SHA-256 and the base images by tag, but these apt `-dev`
+# packages are NOT snapshot-pinned — `apt-get install` resolves them against
+# bookworm's live mirror, so an intra-bookworm point release (e.g. a libpng
+# security update) can shift under a rebuild. Accepted deliberately here:
+# point releases hold ABI and rarely move the encode hot path materially, and
+# the meson force-enable below fails the build if a codec disappears entirely.
+# Fully closing this (a dated snapshot.debian.org source or digest-pinned
+# base) is deferred to #35.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -100,15 +112,20 @@ RUN apt-get update && \
 # URL without a digest still trusts the remote end forever — the same rule the
 # PDFium stage follows), then built release-mode into /usr/local. `--libdir=lib`
 # keeps `vips.pc` under /usr/local/lib/pkgconfig where pkg-config finds it
-# without a multiarch subdir; meson auto-detects features from the `-dev`
-# libraries installed above.
-RUN curl -fL -o /tmp/vips.tar.xz \
+# without a multiarch subdir. The codec `-dev` libraries are force-enabled
+# (`-Dpng/jpeg/tiff/webp=enabled`) rather than left to meson's `auto`
+# detection, so a missing or broken codec lib hard-fails the build instead of
+# silently producing a libvips without it — a PNG-less oracle would quietly
+# invalidate the DeepZoom PNG-tile hot path (issue #33). `curl --retry`
+# absorbs a transient network blip on the now-multi-minute build.
+RUN curl -fL --retry 3 --retry-delay 2 --retry-connrefused -o /tmp/vips.tar.xz \
         "https://github.com/libvips/libvips/releases/download/v${LIBVIPS_VERSION}/vips-${LIBVIPS_VERSION}.tar.xz" && \
     echo "${LIBVIPS_SHA256}  /tmp/vips.tar.xz" | sha256sum -c - && \
     mkdir -p /tmp/vips-src && \
     tar xJf /tmp/vips.tar.xz -C /tmp/vips-src --strip-components=1 && \
     cd /tmp/vips-src && \
-    meson setup build --buildtype=release --prefix=/usr/local --libdir=lib && \
+    meson setup build --buildtype=release --prefix=/usr/local --libdir=lib \
+        -Dpng=enabled -Djpeg=enabled -Dtiff=enabled -Dwebp=enabled && \
     ninja -C build && \
     ninja -C build install && \
     ldconfig && \
@@ -121,8 +138,16 @@ ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 COPY --from=pdfium /opt/pdfium/lib/libpdfium.so /usr/local/lib/libpdfium.so
 RUN ldconfig
 
-# Verify the built libvips is the pinned version and is discoverable
-RUN vips --version && pkg-config --modversion vips
+# Verify the built libvips is *exactly* the pinned version and is discoverable
+# by pkg-config. Comparing the modversion against ${LIBVIPS_VERSION} (not just
+# printing it) fails the build if a stray or wrong-version libvips is ahead on
+# PATH / in the pkg-config path, rather than silently benchmarking it (#33).
+RUN vips --version && \
+    modversion="$(pkg-config --modversion vips)" && \
+    if [ "$modversion" != "${LIBVIPS_VERSION}" ]; then \
+        echo "built libvips modversion ${modversion} != pinned ${LIBVIPS_VERSION}" >&2; \
+        exit 1; \
+    fi
 
 WORKDIR /src
 

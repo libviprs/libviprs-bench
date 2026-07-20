@@ -28,6 +28,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use libviprs_bench::provenance::OracleMatch;
 use libviprs_bench::{BenchmarkSnapshot, RunMetrics};
 use polars::prelude::*;
 
@@ -47,6 +48,22 @@ fn main() {
     if history.is_empty() {
         eprintln!("History file is empty — nothing to compare.");
         std::process::exit(1);
+    }
+
+    // Flag any snapshot whose measured libvips diverged from the oracle it was
+    // pinned to build (issue #33). `fingerprint()` already sorts such a run
+    // into its own measured-version column, but call the mismatch out by name
+    // so a reader knows that column is an artifact of a mispinned build, not a
+    // real libvips under test.
+    for snap in &history {
+        if let OracleMatch::Mismatch { measured, pinned } = snap.provenance.libvips_oracle_match() {
+            eprintln!(
+                "WARNING: snapshot {} ({}) measured libvips {}.{} but was pinned \
+                 to {}.{} — mismatched oracle (issue #33); its column is not \
+                 comparable to pinned-oracle snapshots.",
+                snap.version, snap.timestamp, measured.0, measured.1, pinned.0, pinned.1
+            );
+        }
     }
 
     let mut df = build_dataframe(&history)
