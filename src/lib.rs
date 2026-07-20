@@ -15,6 +15,7 @@ use libviprs::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod flame;
 pub mod harness;
 pub mod pin_check;
 pub mod provenance;
@@ -1603,10 +1604,68 @@ pub fn comparison_suite(
     results
 }
 
-/// Print a comparison table to stdout.
-pub fn print_comparison_table(results: &[RunMetrics]) {
-    println!(
-        "{:<24} {:<12} {:>10} {:>12} {:>10} {:>8} {:>8} {:>10} {:>12}",
+/// Units + direction legend shared by every human-readable comparison table so
+/// no metric's unit or better-direction is ever left to a guess (#25). The
+/// primary throughput metric is TILES per second — pyramid tiles
+/// ([`BENCH_TILE_SIZE`] px), never pixels.
+///
+/// Deliberately does NOT assert the warm-median measurement policy: that is a
+/// property of the CALLER's measurement path, not of the data a renderer sees.
+/// [`comparison_table`] appends [`COMPARISON_TABLE_WARM_NOTE`] separately, and
+/// only when every row actually carries multi-iteration stats, so a caller that
+/// renders single-run or cold metrics never emits a false "warm medians" line
+/// (#25 review).
+pub const COMPARISON_TABLE_LEGEND: &str = concat!(
+    "Units & direction (T = pyramid tiles, never pixels):\n",
+    "  Time (ms) / Tracked MB / RSS MB ............ lower is better\n",
+    "  T/s        = tiles written per second (throughput) ......... higher is better\n",
+    "  T/s/RSS-MB = throughput per peak-RSS MB (memory efficiency)  higher is better\n",
+    "  RSS-MB\u{00b7}s/tile = RSS-MB-seconds per tile (resource cost) ..... lower is better\n",
+    "Tracked MB is libviprs-internal (0 for libvips); RSS MB is the cross-engine peak.\n",
+);
+
+/// The warm-median measurement-policy line, appended after
+/// [`COMPARISON_TABLE_LEGEND`] by [`comparison_table`] only when every rendered
+/// row carries multi-iteration stats (the warm harness path). Kept separate from
+/// the units legend so single-run / cold renders don't claim a warm median they
+/// don't have (#25 review).
+pub const COMPARISON_TABLE_WARM_NOTE: &str = "Figures are warm medians (warm-ups discarded).\n";
+
+/// Insert ASCII thousands separators into an integer: `349525` → `"349,525"`.
+/// Keeps large tile / throughput counts legible in the fixed-width text tables
+/// (#25). Named for what it does (format a `u64` with grouping separators)
+/// rather than the ambiguous bare `thousands`.
+pub fn format_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, &b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(b as char);
+    }
+    out
+}
+
+/// Render the engine comparison table — header, one row per run, and a
+/// units/direction legend — as a String.
+///
+/// Shared by the stdout [`print_comparison_table`] and the committed
+/// `report/comparison_table.txt` so the two never drift and both carry the
+/// legend that pins every metric's unit and better-direction (#25). Tile and
+/// throughput counts read with thousands separators.
+pub fn comparison_table(results: &[RunMetrics]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    // Tiles / T/s are width-11 (not 8): with thousands separators a 7-figure
+    // count formats to 9 chars ("1,048,576"), which a width-8 field would not
+    // pad but also would not truncate — overflowing and shifting every later
+    // column on that row. Width 11 fits grouped values through the millions
+    // (#25 review).
+    let _ = writeln!(
+        out,
+        "{:<24} {:<12} {:>10} {:>12} {:>10} {:>11} {:>11} {:>10} {:>12}",
         "Label",
         "Engine",
         "Time (ms)",
@@ -1615,24 +1674,39 @@ pub fn print_comparison_table(results: &[RunMetrics]) {
         "Tiles",
         "T/s",
         "T/s/RSS-MB",
-        "RSS-MB\u{00b7}s/tile"
+        "RSS-MB\u{00b7}s/tile",
     );
-    println!("{}", "-".repeat(112));
-
+    let _ = writeln!(out, "{}", "-".repeat(118));
     for r in results {
-        println!(
-            "{:<24} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>8.0} {:>10.1} {:>12.4}",
+        let _ = writeln!(
+            out,
+            "{:<24} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>11} {:>11} {:>10.1} {:>12.4}",
             r.label,
             r.engine,
             r.wall_time_ms(),
             r.tracked_memory_mb(),
             r.peak_rss_mb(),
-            r.tiles_produced,
-            r.tiles_per_second(),
+            format_thousands(r.tiles_produced),
+            format_thousands(r.tiles_per_second().round() as u64),
             r.tiles_per_second_per_mb(),
             r.resource_cost_per_tile(),
         );
     }
+    // The unit/direction legend is always valid, so always append it. The
+    // warm-median policy line is only true when every row carries
+    // multi-iteration stats (the warm harness path), so gate it on
+    // all-rows-have-stats — a future single-run/cold caller must not emit a
+    // false "warm medians" claim (#25 review).
+    out.push_str(COMPARISON_TABLE_LEGEND);
+    if results.iter().all(|r| r.stats.is_some()) {
+        out.push_str(COMPARISON_TABLE_WARM_NOTE);
+    }
+    out
+}
+
+/// Print the comparison table (with its units/direction legend) to stdout.
+pub fn print_comparison_table(results: &[RunMetrics]) {
+    print!("{}", comparison_table(results));
 }
 
 /// Group results by config key (width × height × concurrency).
@@ -1768,12 +1842,22 @@ pub fn save_history(path: &std::path::Path, history: &[BenchmarkSnapshot]) -> Re
 
 /// Create a `BenchmarkSnapshot` from current run metrics, tagged with the
 /// core version/SHA this harness was built against (`build.rs` stamps).
+///
+/// Takes the [`Provenance`](provenance::Provenance) as a parameter rather than
+/// capturing it here, so the caller controls the sampling instant: the dynamic
+/// load/thermal axes (#25) must be sampled at a well-defined moment (the
+/// `report` binary captures once, before any timed work, and passes that same
+/// value here) instead of re-captured fresh after a CPU-saturating run — which
+/// would record the tail of the benchmark's own load curve and disagree with the
+/// figure the run printed and wrote to `comparison_table.txt` (#25 review).
 pub fn create_snapshot(
+    provenance: provenance::Provenance,
     runs: Vec<RunMetrics>,
     tile_size: u32,
     memory_budget_bytes: u64,
 ) -> BenchmarkSnapshot {
     create_snapshot_for(
+        provenance,
         core_version(),
         core_git_sha(),
         runs,
@@ -1789,8 +1873,10 @@ pub fn create_snapshot(
 /// *separately built* harness per tag, so the version/SHA a snapshot should
 /// carry is the one it resolved from that tag's worktree, not the version this
 /// driver binary was itself compiled against. The environment fingerprint is
-/// still captured live from the current host/toolchain.
+/// captured live from the current host/toolchain by the caller and passed in as
+/// `provenance` (one capture per run — see [`create_snapshot`]).
 pub fn create_snapshot_for(
+    provenance: provenance::Provenance,
     version: &str,
     git_sha: &str,
     runs: Vec<RunMetrics>,
@@ -1799,7 +1885,7 @@ pub fn create_snapshot_for(
 ) -> BenchmarkSnapshot {
     BenchmarkSnapshot {
         schema_version: CURRENT_SCHEMA_VERSION,
-        provenance: provenance::Provenance::capture(),
+        provenance,
         version: version.to_string(),
         git_sha: git_sha.to_string(),
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -1823,14 +1909,18 @@ pub fn executive_verdict(results: &[RunMetrics]) -> String {
     let mut out = String::new();
     out.push_str("=== Executive verdict (per configuration) ===\n");
     out.push_str(
-        "Ratios are vs libvips in the SAME snapshot. wall/RSS: <1 beats libvips; \
-         eff: >1 beats libvips.\n\n",
+        "T = pyramid tiles (never pixels). wall (ms) & RSS (MB): lower is better. \
+         eff = throughput per peak-RSS MB (T/s/RSS-MB): higher is better.\n\
+         Ratios are vs libvips in the SAME snapshot: wall/RSS <1 beats libvips; eff >1 \
+         beats libvips.\n\n",
     );
+    // The efficiency column names its full RSS-MB basis ("eff T/s/RSS-MB"), not
+    // the ambiguous "T/s/MB", and is widened to 14 to fit it (#25 review).
     out.push_str(&format!(
-        "{:<16} {:<12} {:>12} {:>12} {:>12} {:>12} {:>12}\n",
-        "Config", "Engine", "wall ms", "RSS MB", "eff", "wall/vips", "RSS/vips",
+        "{:<16} {:<12} {:>12} {:>12} {:>14} {:>12} {:>12}\n",
+        "Config", "Engine", "wall ms", "RSS MB", "eff T/s/RSS-MB", "wall/vips", "RSS/vips",
     ));
-    out.push_str(&format!("{}\n", "-".repeat(92)));
+    out.push_str(&format!("{}\n", "-".repeat(94)));
 
     for group in &groups {
         let cfg = format!(
@@ -1874,7 +1964,7 @@ pub fn executive_verdict(results: &[RunMetrics]) -> String {
             };
             let _ = writeln!(
                 out,
-                "{:<16} {:<12} {:>12.1} {:>12.2} {:>12.1} {:>12} {:>12}",
+                "{:<16} {:<12} {:>12.1} {:>12.2} {:>14.1} {:>12} {:>12}",
                 cfg_col,
                 r.engine,
                 r.wall_time_ms(),
@@ -1901,7 +1991,7 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
 
     println!();
     println!(
-        "{:<16} {:<12} {:>10} {:>12} {:>10} {:>10} {:>10} {:>12}",
+        "{:<16} {:<12} {:>10} {:>12} {:>10} {:>11} {:>10} {:>12}",
         "Config",
         "Engine",
         "Time (ms)",
@@ -1911,7 +2001,7 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
         "T/s/RSS-MB",
         "RSS-MB\u{00b7}s/tile",
     );
-    println!("{}", "-".repeat(98));
+    println!("{}", "-".repeat(99));
 
     for group in &groups {
         let config = format!(
@@ -1921,13 +2011,13 @@ pub fn print_savings_summary(results: &[RunMetrics]) {
         for (i, r) in group.iter().enumerate() {
             let label = if i == 0 { &config } else { "" };
             println!(
-                "{:<16} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>10.0} {:>10.1} {:>12.4}",
+                "{:<16} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>11} {:>10.1} {:>12.4}",
                 label,
                 r.engine,
                 r.wall_time_ms(),
                 r.tracked_memory_mb(),
                 r.peak_rss_mb(),
-                r.tiles_per_second(),
+                format_thousands(r.tiles_per_second().round() as u64),
                 r.tiles_per_second_per_mb(),
                 r.resource_cost_per_tile(),
             );
@@ -1962,7 +2052,12 @@ mod history_tests {
     #[test]
     fn valid_history_round_trips() {
         let path = scratch_path("valid");
-        let history = vec![create_snapshot(Vec::new(), 256, 1_000_000)];
+        let history = vec![create_snapshot(
+            provenance::Provenance::default(),
+            Vec::new(),
+            256,
+            1_000_000,
+        )];
         save_history(&path, &history).expect("save must succeed");
 
         let loaded = load_history(&path).expect("valid file must parse");
@@ -2027,7 +2122,12 @@ mod history_tests {
 
     #[test]
     fn migrate_snapshot_is_idempotent_on_current_labels() {
-        let mut snap = create_snapshot(Vec::new(), 256, 1_000_000);
+        let mut snap = create_snapshot(
+            provenance::Provenance::default(),
+            Vec::new(),
+            256,
+            1_000_000,
+        );
         let before = snap.schema_version;
         migrate_snapshot(&mut snap);
         assert_eq!(snap.schema_version, before);
@@ -2040,7 +2140,12 @@ mod history_tests {
         // (from build.rs), not this bench harness's own CARGO_PKG_VERSION.
         // A regression to `env!("CARGO_PKG_VERSION")` would fail here
         // whenever core and bench versions differ (the real-world case).
-        let snap = create_snapshot(Vec::new(), 256, 1_000_000);
+        let snap = create_snapshot(
+            provenance::Provenance::default(),
+            Vec::new(),
+            256,
+            1_000_000,
+        );
         assert_eq!(snap.version, core_version());
         assert_eq!(snap.git_sha, core_git_sha());
         assert!(!snap.version.is_empty());

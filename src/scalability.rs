@@ -5,13 +5,15 @@
 //! fixture is not committed, so the workload is a stand-in sized to that
 //! page's 1.42:1 aspect, NOT a rasterized blueprint. Runs all four engines
 //! (libvips, monolithic, streaming, MapReduce) at each size and at matched
-//! thread budgets (1 and num_cpus), producing SVG line charts — one set per
-//! thread budget — showing how wall time, peak RSS, and efficiency scale
-//! with image area.
+//! thread budgets (1 and num_cpus), measuring how wall time, peak RSS, and
+//! efficiency scale with image area.
 //!
 //! Run: cargo run --release --bin scalability
 //!
-//! Output: report/scalability_*.svg + report/scalability_results.json
+//! Output: report/scalability_results.json. This binary emits JSON only; the
+//! `scalability_*.svg` line charts render from that JSON via
+//! `tools/charts/render.mjs` (run-bench.sh invokes it after this writes the
+//! JSON) — the plotters dependency is gone (issue #42).
 
 // The chart plumbing threads fixed-arity metric tuples and borrowed series
 // slices through a few local closures; naming each as a `type` would add
@@ -29,9 +31,10 @@ use libviprs::{
     EngineBuilder, EngineConfig, EngineKind, FsSink, Layout, PyramidPlanner, Raster,
     RasterStripSource, TileFormat,
 };
-use libviprs_bench::provenance::{OracleMatch, Provenance};
+use libviprs_bench::provenance::Provenance;
 use libviprs_bench::{
-    bench_libvips, gradient_raster, streaming_budget_for, vips_available, write_temp_png,
+    bench_libvips, format_thousands, gradient_raster, streaming_budget_for, vips_available,
+    write_temp_png,
 };
 
 /// Peak RSS of the current process in bytes. Mirrors the RSS basis the
@@ -520,19 +523,17 @@ fn main() {
     } else {
         println!("libvips CLI: not found, skipping");
     }
-    // Mismatched-oracle guard (#33) on the default container CMD: if this run
-    // measured a different libvips than the container was pinned to build, its
-    // numbers are not comparable to a pinned-oracle run — warn loudly. Only
-    // fires on a genuine parsed mismatch, never on a host run without libvips.
+    // Measurement-condition guards (contended host / thermal / mismatched
+    // oracle #33): a run measured under load, while thermally throttled, or
+    // against a different libvips than the container was pinned to build is not
+    // comparable to a clean pinned-oracle run — flag it loudly. The wording
+    // lives on `Provenance` so this binary and `report` share one source and can
+    // never drift (issue #25 review). Only genuine signals trip these; a host
+    // run without libvips does not.
     let prov = Provenance::capture();
-    if let OracleMatch::Mismatch { measured, pinned } = prov.libvips_oracle_match() {
-        eprintln!(
-            "WARNING: measured libvips {}.{} != pinned oracle {}.{} — this \
-             scalability run measured a different libvips than the container \
-             was pinned to build (issue #33); its numbers are NOT comparable \
-             to a pinned-oracle run.",
-            measured.0, measured.1, pinned.0, pinned.1
-        );
+    println!("Host load (1/5/15m): {}", prov.load_average_line());
+    for warning in prov.measurement_condition_warnings() {
+        eprintln!("{warning}");
     }
     println!();
 
@@ -724,7 +725,7 @@ fn main() {
     // Print summary table
     println!();
     println!(
-        "{:<14} {:<12} {:>10} {:>12} {:>10} {:>8} {:>12} {:>14}",
+        "{:<14} {:<12} {:>10} {:>12} {:>10} {:>11} {:>12} {:>14}",
         "Size",
         "Engine",
         "Time (ms)",
@@ -734,20 +735,30 @@ fn main() {
         "T/s/RSS-MB",
         "RSS-MB\u{00b7}s/tile",
     );
-    println!("{}", "-".repeat(92));
+    println!("{}", "-".repeat(97));
     for p in &all_points {
         println!(
-            "{:<14} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>8} {:>12.1} {:>14.4}",
+            "{:<14} {:<12} {:>10.1} {:>12.2} {:>10.2} {:>11} {:>12.1} {:>14.4}",
             format!("{}x{}", p.width, p.height),
             p.engine,
             p.wall_time_ms,
             p.tracked_memory_mb,
             p.peak_rss_mb,
-            p.tiles_produced,
+            format_thousands(p.tiles_produced),
             p.tiles_per_second_per_mb,
             p.resource_cost,
         );
     }
+    // Units & direction (T = pyramid tiles, never pixels) — phrased to match the
+    // shared `COMPARISON_TABLE_LEGEND` so the two human-facing tables agree.
+    println!(
+        "  Time (ms) / Tracked MB / RSS MB: lower is better. \
+         T/s/RSS-MB = throughput per peak-RSS MB (memory efficiency): higher is better."
+    );
+    println!(
+        "  RSS-MB\u{00b7}s/tile = RSS-MB-seconds per tile (resource cost): lower is better. \
+         Tracked MB is libviprs-internal (0 for libvips); RSS MB is the cross-engine peak."
+    );
 
     // --- Memory bottleneck analysis ---
     println!();
@@ -878,11 +889,11 @@ fn main() {
     }
 
     println!();
-    println!(
-        "Charts written to {}/scalability_*.svg",
-        report_dir.display()
-    );
     println!("JSON written to {}", json_path.display());
+    println!(
+        "Scalability charts (scalability_*.svg) render from that JSON via \
+         tools/charts/render.mjs (run-bench.sh invokes it; this binary emits JSON only)."
+    );
 }
 
 #[cfg(test)]

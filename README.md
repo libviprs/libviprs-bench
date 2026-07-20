@@ -44,7 +44,7 @@ The harness produces:
 | `benches/engine_comparison.rs` | Criterion micro-benchmarks for monolithic / streaming / MapReduce, plus a head-to-head group across image sizes. |
 | `src/scalability.rs` (`scalability` bin) | Scalability sweep from 0.2 MP to 47 MP, comparing all four engines on a 1.42:1 aspect ratio matching `43551_California_South.pdf`. |
 | `src/report.rs` (`report` bin) | Full comparison matrix across image sizes and concurrency levels, with versioned history. |
-| `src/flamegraph.rs` (`flamegraph` bin) | Event-based flame graphs for all three libviprs engines on a 4096x4096 image. |
+| `src/flamegraph.rs` (`flamegraph` bin) | Time-weighted flame graphs (frame width = µs) for all three libviprs engines on a 4096x4096 image. Per-tile widths are faithful for the serial monolithic engine; for the strip-based streaming/MapReduce engines read them at level/root granularity (per-tile widths are emission cadence). |
 
 ## Running benchmarks
 
@@ -143,22 +143,27 @@ Four benchmark groups, each parameterised on image size:
   [`--memory-budget`](https://libviprs.org/cli/#flag-memory-budget) /
   [`--concurrency`](https://libviprs.org/cli/#flag-concurrency) tradeoff.
 
-### `pdf_engine_bench` (`src/pdf_engine_bench.rs`)
+### `pdfium_strip_source_bench` (`src/pdfium_strip_source_bench.rs`, `pdfium` feature)
 
-Renders one PDF page through one engine and writes a JSON report. The CLI
-flags it accepts mirror the libviprs CLI:
+Compares the two `PdfiumStripSource` constructors — cached (`new`) versus
+streaming (`new_streaming`) — over a `(dpi, strip_count)` sweep on a PDF,
+emitting one newline-delimited JSON record per `(mode, dpi, strips)` triple. The
+numbers back the "vector-heavy PDFs scale ~linearly with N, raster-heavy
+approach 1×" doc comment on `PdfiumStripSource::new_streaming` with data instead
+of assertion. Gated behind the `pdfium` feature.
 
-| `pdf_engine_bench` flag | CLI equivalent                                              |
-|-------------------------|-------------------------------------------------------------|
-| `--engine mono\|stream` | engine selection (see CLI flag picker)                      |
-| `--budget-bytes`        | [`--memory-budget`](https://libviprs.org/cli/#flag-memory-budget) |
-| `--tile-size`           | [pyramid layout](https://libviprs.org/cli/#pyramid)         |
-| `--dpi`, `--page`, `--layout` | matched 1:1 in the CLI                                |
+| `pdfium_strip_source_bench` flag | Meaning                                                                  |
+|----------------------------------|--------------------------------------------------------------------------|
+| `--pdf <path>`                   | PDF to bench (default: the committed `fixtures/cc_licenses_mapping.pdf`)  |
+| `--page <N>`                     | 1-based page index                                                       |
+| `--dpis 72,150,300`              | comma-separated render DPIs to sweep                                      |
+| `--strip-counts 4,16,64`         | comma-separated strip counts to sweep                                    |
+| `--output <file.jsonl>`          | write JSONL here instead of stdout                                       |
 
-Streaming runs additionally honour an internal strip-buffer sizing knob
-analogous to [`--buffer-size`](https://libviprs.org/cli/#flag-buffer-size);
-the bench fixes it via `compute_strip_height` against the budget so the
-two engines see byte-identical input dimensions.
+```bash
+cargo run --release --features pdfium --bin pdfium_strip_source_bench -- \
+    --pdf /path/to/blueprint.pdf --dpis 72,150,300 --strip-counts 4,16,64
+```
 
 ## Docker
 
