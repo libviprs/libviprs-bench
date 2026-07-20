@@ -99,7 +99,8 @@ fn engines_share_sink_and_report_separate_memory_columns() {
         libviprs::PyramidPlanner::new(512, 512, 256, 0, libviprs::Layout::DeepZoom).unwrap();
     let plan = planner.plan();
 
-    let mono = libviprs_bench::bench_monolithic(&raster, &plan, 1, "fair_mono");
+    let mono = libviprs_bench::bench_monolithic(&raster, &plan, 1, "fair_mono")
+        .expect("monolithic run should succeed on a matched source/plan");
     let vips = libviprs_bench::bench_libvips_inprocess(&raster, 256, 1, "fair_vips")
         .expect("libvips in-process bench returned None");
 
