@@ -95,7 +95,11 @@ fn main() {
         );
     }
     println!();
-    println!("Tile size: {tile_size}, memory budget: {streaming_budget} bytes");
+    println!(
+        "Tile size: {tile_size}, streaming/mapreduce budget floor: {streaming_budget} bytes \
+         (auto-scaled per width to admit the worst-case tile-aligned strip, so cross-size rows \
+         are not under one identical budget — see each row's effective budget in the JSON)"
+    );
     println!("Iterations: {iters} timed + {warmup} warm-up per cell (child-isolated)");
     println!(
         "Image sizes: {:?}",
@@ -190,7 +194,8 @@ fn main() {
         "libviprs engine comparison benchmark (monolithic / streaming / mapreduce)\n\
          measured libviprs core: {} ({})\n\
          bench harness: {}\n\
-         Tile size: {tile_size}, memory budget: {streaming_budget} bytes\n\n",
+         Tile size: {tile_size}, streaming/mapreduce budget floor: {streaming_budget} bytes \
+         (auto-scaled per width; per-row effective budget in benchmark_results.json)\n\n",
         core_version(),
         core_git_sha(),
         env!("CARGO_PKG_VERSION"),

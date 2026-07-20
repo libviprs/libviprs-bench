@@ -20,7 +20,7 @@ use libviprs::{
     CollectingObserver, EngineBuilder, EngineConfig, EngineEvent, EngineKind, Layout, MemorySink,
     PyramidPlanner, RasterStripSource,
 };
-use libviprs_bench::gradient_raster;
+use libviprs_bench::{gradient_raster, streaming_budget_for};
 use std::sync::Arc;
 
 const WIDTH: u32 = 4096;
@@ -126,6 +126,13 @@ fn main() {
     let planner = PyramidPlanner::new(WIDTH, HEIGHT, TILE_SIZE, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
 
+    // Size the streaming/mapreduce budget to admit the worst-case tile-aligned
+    // strip at this 4096-wide canvas: a flat 1 MB trips `BudgetPolicy::Error`'s
+    // `BudgetExceeded` up front (worst-case strip = 4096·512·3 = 6.29 MB) and
+    // `.run().unwrap()` would panic — the exact failure mode issue #38 fixes.
+    // RGB8 gradient, so bpp = 3; shared with the report/scalability paths.
+    let budget = streaming_budget_for(1_000_000, plan.canvas_width, TILE_SIZE, 3);
+
     println!("Image: {WIDTH}x{HEIGHT}, tile_size={TILE_SIZE}");
     println!(
         "Plan: {} levels, {} tiles",
@@ -175,7 +182,7 @@ fn main() {
         let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
             .with_engine(EngineKind::Streaming)
             .with_config(EngineConfig::default())
-            .with_memory_budget(1_000_000)
+            .with_memory_budget(budget)
             .with_budget_policy(BudgetPolicy::Error)
             .with_observer_arc(observer.clone())
             .run()
@@ -216,7 +223,7 @@ fn main() {
         let result = EngineBuilder::new(strip_src, plan.clone(), &sink)
             .with_engine(EngineKind::MapReduce)
             .with_config(EngineConfig::default().with_concurrency(0))
-            .with_memory_budget(1_000_000)
+            .with_memory_budget(budget)
             .with_budget_policy(BudgetPolicy::Error)
             .with_observer_arc(observer.clone())
             .run()

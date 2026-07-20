@@ -167,6 +167,44 @@ fn corrupt_tile(files: &Path, level: u32, col: u32, row: u32) {
     image::ImageEncoder::write_image(enc, &inverted, w, h, image::ColorType::Rgb8.into()).unwrap();
 }
 
+/// The spot-check builds each libviprs engine's OWN candidate pyramid through
+/// [`write_libviprs_pyramid`] under the report's flat 1 MB budget floor. The
+/// 1024² fixture's worst-case tile-aligned strip (`1024 × 2·256 × 3 = 1.5 MB`)
+/// exceeds that floor, so before #38's sizing was applied inside
+/// `write_libviprs_pyramid` the streaming / mapreduce candidate build returned
+/// `BudgetExceeded` and every spot-check at >= 1024 px silently degraded to "no
+/// score". This guards that both budget-driven engines now build a real
+/// candidate under the raw floor. Needs no libvips (only the candidate side).
+#[test]
+fn budget_driven_candidate_pyramids_build_under_the_report_floor() {
+    let raster = fixture_raster();
+    let (w, h) = (raster.width(), raster.height());
+    assert!(
+        w >= 1024,
+        "fixture must be large enough to exceed the 1 MB floor"
+    );
+    let plan = PyramidPlanner::new(w, h, TILE, 0, Layout::DeepZoom)
+        .unwrap()
+        .plan();
+    let root = std::env::temp_dir().join(format!("libviprs_equiv_budget_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+
+    for (engine, tag) in [
+        (EngineKind::Streaming, "stream"),
+        (EngineKind::MapReduce, "mr"),
+    ] {
+        let base = write_libviprs_pyramid(&raster, &plan, engine, 0, 1_000_000, &root.join(tag))
+            .unwrap_or_else(|e| panic!("{tag} candidate must build under the 1 MB floor, got {e}"));
+        let level_dirs = std::fs::read_dir(&base)
+            .expect("candidate pyramid root exists")
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_dir())
+            .count();
+        assert!(level_dirs > 0, "{tag} candidate must emit pyramid levels");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn fixture_tiles_are_output_equivalent_by_psnr() {
     if !vips_available() {
