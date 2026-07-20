@@ -134,6 +134,38 @@ fn main() {
     // Print savings summary
     print_savings_summary(&results);
 
+    // Output-equivalence: pixel-level PSNR spot-check vs libvips. The geometry
+    // gate (tile count + per-level grid) runs inside the suite; this surfaces
+    // the pixel-fidelity score so a fast-but-visually-wrong engine is visible
+    // rather than silently passing on tile count alone (issue #23 / #32).
+    println!();
+    println!("=== Output-equivalence: mid-pyramid tile PSNR vs libvips ===");
+    let mut seen = std::collections::BTreeSet::new();
+    let mut any = false;
+    for r in &results {
+        let Some(psnr) = r.equivalence_psnr_db else {
+            continue;
+        };
+        let key = format!("{}x{} c{}", r.width, r.height, r.concurrency);
+        if seen.insert(key.clone()) {
+            any = true;
+            let verdict = if psnr >= harness::MIN_TILE_PSNR_DB {
+                "OK"
+            } else {
+                "FAIL"
+            };
+            println!("  {key:<16} {psnr:>7.1} dB  [{verdict}]");
+        }
+    }
+    if any {
+        println!(
+            "  threshold: {:.0} dB (near-lossless)",
+            harness::MIN_TILE_PSNR_DB
+        );
+    } else {
+        println!("  (libvips unavailable — pixel spot-check skipped)");
+    }
+
     // Executive verdict: per size, the winning engine on each axis plus
     // every engine's ratio vs libvips in the *same* snapshot (issue #160).
     let verdict = executive_verdict(&results);

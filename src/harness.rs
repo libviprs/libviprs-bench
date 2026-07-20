@@ -326,6 +326,11 @@ pub fn run_isolated_suite(
     let mut results = Vec::new();
 
     for &(w, h) in sizes {
+        // Pixel-level output-equivalence spot-check, once per size (the source
+        // is concurrency-independent). Its min PSNR is stamped onto every
+        // libviprs row for the size below; a sub-threshold score is logged
+        // loudly inside the call.
+        let psnr_check = equivalence_psnr_for_size(w, h, tile_size);
         for &conc in concurrency_levels {
             // Collect `iters` interleaved samples per engine: outer loop is
             // the iteration, inner loop the engine, so any slow machine
@@ -358,11 +363,18 @@ pub fn run_isolated_suite(
                 }
             }
 
-            let aggregated: Vec<RunMetrics> =
+            let mut aggregated: Vec<RunMetrics> =
                 per_engine.into_iter().filter_map(aggregate).collect();
 
-            // Output-equivalence gate for this configuration.
+            // Output-equivalence gate for this configuration: tile GEOMETRY
+            // (count + per-level grid) here, plus the pixel-level PSNR score
+            // from the per-size spot-check stamped onto each libviprs row.
             check_output_equivalence(w, h, conc, &aggregated);
+            if let Some(check) = psnr_check {
+                for run in aggregated.iter_mut().filter(|r| r.engine != "libvips") {
+                    run.equivalence_psnr_db = Some(check.min_psnr_db);
+                }
+            }
 
             results.extend(aggregated);
         }
@@ -429,6 +441,315 @@ pub fn current_exe() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("self"))
 }
 
+// ---------------------------------------------------------------------------
+// Pixel-level output-equivalence spot-check (PSNR / SSIM) — issue #23 / #32
+//
+// The geometry gate above ([`check_output_equivalence`]) proves each engine
+// emits the same *number* of correctly-sized tiles, but not that those tiles
+// carry the right *pixels* — a fast engine that wrote garbage tiles of the
+// right shape passed. This section adds a cheap pixel-level spot-check: decode
+// a few mid-pyramid tiles from the libvips `dzsave` reference and the libviprs
+// candidate and assert their PSNR clears a documented near-lossless threshold.
+// ---------------------------------------------------------------------------
+
+/// Minimum acceptable PSNR (dB) between a libviprs engine tile and the libvips
+/// `dzsave` reference tile in the mid-pyramid spot-check.
+///
+/// Both engines downsample with the **same** 2x2 box-average and encode
+/// **lossless** PNG, so a correctly-tiled pyramid is bit-identical to libvips
+/// (PSNR clamps to [`PSNR_CLAMP_DB`]) or differs only by ±1-LSB rounding at a
+/// handful of pixels (> 48 dB). 40 dB is the textbook "near-lossless" line: it
+/// leaves comfortable headroom for those benign encoder/rounding differences
+/// while a corrupted or wrong-content tile — whose pixels are uncorrelated with
+/// the reference — scores well under 20 dB (an inverted tile ≈ 4 dB). See the
+/// negative test in `tests/output_equivalence.rs`.
+pub const MIN_TILE_PSNR_DB: f64 = 40.0;
+
+/// Finite ceiling substituted for the (infinite) PSNR of two identical tiles,
+/// so the score stays serializable and averageable.
+pub const PSNR_CLAMP_DB: f64 = 100.0;
+
+/// Upper bound on tiles decoded per spot-check, so it stays a cheap *spot*
+/// check on a large mid level rather than decoding the whole grid.
+const MAX_SPOT_TILES: usize = 16;
+
+/// Peak signal-to-noise ratio (dB) between two equal-length 8-bit sample
+/// buffers. Self-contained — no image-quality crate.
+///
+/// Returns [`PSNR_CLAMP_DB`] for identical buffers (infinite PSNR, clamped) and
+/// `0.0` for a length mismatch (a definitive non-equivalence, not a partial
+/// compare). Finite results are capped at [`PSNR_CLAMP_DB`].
+pub fn psnr(a: &[u8], b: &[u8]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut se = 0.0f64;
+    for (x, y) in a.iter().zip(b.iter()) {
+        let d = *x as f64 - *y as f64;
+        se += d * d;
+    }
+    let mse = se / a.len() as f64;
+    if mse <= 0.0 {
+        return PSNR_CLAMP_DB;
+    }
+    (10.0 * (255.0f64 * 255.0 / mse).log10()).min(PSNR_CLAMP_DB)
+}
+
+/// Global (single-window) structural similarity between two equal-length 8-bit
+/// buffers, in `[-1, 1]` (1.0 = identical).
+///
+/// A cheap companion to [`psnr`]: one pass for the means, one for the
+/// (co)variances, with the standard SSIM stabilizers `C1 = (0.01·255)²`,
+/// `C2 = (0.03·255)²`. Returns `0.0` on a length mismatch. Surfaced alongside
+/// PSNR for context; PSNR remains the gate.
+pub fn ssim(a: &[u8], b: &[u8]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let n = a.len() as f64;
+    let (mut sa, mut sb) = (0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(b.iter()) {
+        sa += *x as f64;
+        sb += *y as f64;
+    }
+    let (ma, mb) = (sa / n, sb / n);
+    let (mut va, mut vb, mut cov) = (0.0f64, 0.0f64, 0.0f64);
+    for (x, y) in a.iter().zip(b.iter()) {
+        let da = *x as f64 - ma;
+        let db = *y as f64 - mb;
+        va += da * da;
+        vb += db * db;
+        cov += da * db;
+    }
+    va /= n;
+    vb /= n;
+    cov /= n;
+    let c1 = (0.01 * 255.0f64).powi(2);
+    let c2 = (0.03 * 255.0f64).powi(2);
+    ((2.0 * ma * mb + c1) * (2.0 * cov + c2)) / ((ma * ma + mb * mb + c1) * (va + vb + c2))
+}
+
+/// Result of the mid-pyramid tile spot-check between a libvips reference
+/// pyramid and a libviprs candidate pyramid.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TilePsnrCheck {
+    /// Number of tiles actually decoded and compared.
+    pub tiles_compared: usize,
+    /// Minimum PSNR (dB) over the compared tiles — the gated figure.
+    pub min_psnr_db: f64,
+    /// Mean PSNR (dB) over the compared tiles.
+    pub mean_psnr_db: f64,
+    /// Minimum global SSIM over the compared tiles (informational).
+    pub min_ssim: f64,
+    /// Tile grid (cols, rows) of the compared mid level.
+    pub level_cols: u32,
+    pub level_rows: u32,
+    /// Level directory index compared on each side. These differ when libvips
+    /// carries its extra 1x1 apex level, which is why the check aligns levels
+    /// by resolution rather than by raw index.
+    pub reference_level: u32,
+    pub candidate_level: u32,
+}
+
+impl TilePsnrCheck {
+    /// Whether every compared tile cleared [`MIN_TILE_PSNR_DB`].
+    pub fn passes(&self) -> bool {
+        self.min_psnr_db >= MIN_TILE_PSNR_DB
+    }
+}
+
+/// One pyramid level on disk: its directory index and `{col}_{row}.png` grid.
+struct LevelGrid {
+    index: u32,
+    cols: u32,
+    rows: u32,
+}
+
+/// Read the level directories under a DeepZoom `_files`-style tiles root,
+/// returning each level's index and tile grid (derived from the
+/// `{col}_{row}.png` names), sorted by index ascending.
+fn read_level_grids(files_dir: &Path) -> Vec<LevelGrid> {
+    let mut levels: Vec<LevelGrid> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(files_dir) else {
+        return levels;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(index) = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let (mut cols, mut rows) = (0u32, 0u32);
+        if let Ok(tiles) = std::fs::read_dir(&path) {
+            for tile in tiles.flatten() {
+                let tp = tile.path();
+                if tp.extension().and_then(|e| e.to_str()) != Some("png") {
+                    continue;
+                }
+                if let Some((c, r)) = tp
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.split_once('_'))
+                {
+                    if let (Ok(c), Ok(r)) = (c.parse::<u32>(), r.parse::<u32>()) {
+                        cols = cols.max(c + 1);
+                        rows = rows.max(r + 1);
+                    }
+                }
+            }
+        }
+        levels.push(LevelGrid { index, cols, rows });
+    }
+    levels.sort_by_key(|l| l.index);
+    levels
+}
+
+/// Decode a PNG tile to an RGB8 byte buffer, or `None` if it cannot be read.
+fn decode_rgb8(path: &Path) -> Option<Vec<u8>> {
+    Some(image::open(path).ok()?.to_rgb8().into_raw())
+}
+
+/// Spot-check mid-pyramid tile fidelity between a libvips `dzsave` reference
+/// pyramid (`reference_files`, a DeepZoom `_files` dir) and a libviprs
+/// candidate pyramid (`candidate_files`).
+///
+/// Picks a *downsampled, multi-tile* mid level — the median such level, so the
+/// check exercises the resampling pipeline (not just the full-resolution
+/// pass-through) over a handful of real tiles — aligns it across the two
+/// pyramids by counting down from full resolution (which absorbs the libvips
+/// extra 1x1 apex level), and compares up to [`MAX_SPOT_TILES`] co-present
+/// tiles by [`psnr`] / [`ssim`].
+///
+/// Returns `None` when there is no comparable multi-tile mid level (e.g. an
+/// image too small to have one) or no tile is present on both sides.
+pub fn spot_check_tile_psnr(
+    reference_files: &Path,
+    candidate_files: &Path,
+) -> Option<TilePsnrCheck> {
+    let refs = read_level_grids(reference_files);
+    let cands = read_level_grids(candidate_files);
+    if refs.is_empty() || cands.is_empty() {
+        return None;
+    }
+
+    // Align by counting down from full resolution (the highest index on each
+    // side): shared level `k` pairs `refs[len-1-k]` with `cands[len-1-k]`.
+    // `k == 0` is full resolution; the libvips apex surplus sits at the small
+    // end and is simply left unpaired.
+    let shared = refs.len().min(cands.len());
+    let mut mids: Vec<(&LevelGrid, &LevelGrid)> = Vec::new();
+    for k in 1..shared {
+        let r = &refs[refs.len() - 1 - k];
+        let c = &cands[cands.len() - 1 - k];
+        // Downsampled (k>=1), multi-tile, and matching grids on both sides.
+        if r.cols == c.cols && r.rows == c.rows && (c.cols as u64 * c.rows as u64) > 1 {
+            mids.push((r, c));
+        }
+    }
+    if mids.is_empty() {
+        return None;
+    }
+    // The median downsampled multi-tile level is our "mid-pyramid" level.
+    let (r_level, c_level) = mids[mids.len() / 2];
+
+    // Enumerate tile positions, capping the total decoded at MAX_SPOT_TILES by
+    // an even stride so the sample is deterministic and spread across the grid
+    // (position 0,0 is always taken).
+    let (cols, rows) = (c_level.cols, c_level.rows);
+    let total = cols as usize * rows as usize;
+    let stride = total.div_ceil(MAX_SPOT_TILES).max(1);
+
+    let mut compared = 0usize;
+    let mut min_psnr = f64::INFINITY;
+    let mut sum_psnr = 0.0f64;
+    let mut min_ssim = f64::INFINITY;
+    let mut idx = 0usize;
+    for row in 0..rows {
+        for col in 0..cols {
+            let take = idx % stride == 0;
+            idx += 1;
+            if !take {
+                continue;
+            }
+            let rp = reference_files.join(format!("{}/{col}_{row}.png", r_level.index));
+            let cp = candidate_files.join(format!("{}/{col}_{row}.png", c_level.index));
+            // Only compare tiles present on BOTH sides: a blank tile that one
+            // engine legitimately skips is not a corruption.
+            let (Some(ra), Some(ca)) = (decode_rgb8(&rp), decode_rgb8(&cp)) else {
+                continue;
+            };
+            let p = psnr(&ra, &ca);
+            min_psnr = min_psnr.min(p);
+            sum_psnr += p;
+            min_ssim = min_ssim.min(ssim(&ra, &ca));
+            compared += 1;
+        }
+    }
+    if compared == 0 {
+        return None;
+    }
+    Some(TilePsnrCheck {
+        tiles_compared: compared,
+        min_psnr_db: min_psnr,
+        mean_psnr_db: sum_psnr / compared as f64,
+        min_ssim,
+        level_cols: cols,
+        level_rows: rows,
+        reference_level: r_level.index,
+        candidate_level: c_level.index,
+    })
+}
+
+/// Pixel-level output-equivalence spot-check for one image size: regenerate a
+/// libviprs (monolithic) pyramid and a libvips `dzsave` pyramid from the same
+/// gradient source, [`spot_check_tile_psnr`] their mid-pyramid tiles, and log
+/// the result loudly. The source is concurrency-independent, so this runs once
+/// per size (outside the timed loop). Returns `None` — logging only — when
+/// libvips is unavailable or there is no comparable mid level.
+fn equivalence_psnr_for_size(w: u32, h: u32, tile_size: u32) -> Option<TilePsnrCheck> {
+    if !crate::vips_available() {
+        return None;
+    }
+    let src = crate::gradient_raster(w, h);
+    let plan = libviprs::PyramidPlanner::new(w, h, tile_size, 0, libviprs::Layout::DeepZoom)
+        .ok()?
+        .plan();
+
+    let root = std::env::temp_dir()
+        .join("libviprs-bench")
+        .join(format!("equiv_{w}x{h}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let candidate = crate::write_libviprs_pyramid(&src, &plan, &root.join("lv"));
+    let png = crate::write_temp_png(&src);
+    let check = crate::write_libvips_pyramid(&png, &root.join("vips"), tile_size)
+        .and_then(|reference| spot_check_tile_psnr(&reference, &candidate));
+    let _ = std::fs::remove_file(&png);
+    let _ = std::fs::remove_dir_all(&root);
+
+    match &check {
+        Some(c) if c.passes() => eprintln!(
+            "note: {w}x{h}: output-equivalence PSNR spot-check OK \
+             ({:.1} dB min / {:.1} dB mean over {} mid tiles, SSIM {:.4}).",
+            c.min_psnr_db, c.mean_psnr_db, c.tiles_compared, c.min_ssim
+        ),
+        Some(c) => eprintln!(
+            "WARNING: {w}x{h}: output-equivalence PSNR spot-check FAILED \
+             ({:.1} dB min < {MIN_TILE_PSNR_DB:.0} dB threshold over {} mid \
+             tiles). A libviprs engine is producing visually-wrong tiles; its \
+             timings are NOT comparing equal work.",
+            c.min_psnr_db, c.tiles_compared
+        ),
+        None => {}
+    }
+    check
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -473,6 +794,7 @@ mod tests {
             peak_rss_bytes: 1024 * 1024,
             stats: None,
             per_level_tiles: vec![1],
+            equivalence_psnr_db: None,
             tiles_produced: 1,
             levels_processed: 1,
             tiles_skipped: 0,

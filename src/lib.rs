@@ -144,6 +144,17 @@ pub struct RunMetrics {
     /// count + per-level grid). Empty for legacy history.
     #[serde(default)]
     pub per_level_tiles: Vec<u64>,
+    /// Minimum PSNR (dB) of this engine's mid-pyramid tiles against the
+    /// libvips `dzsave` reference, from the pixel-level output-equivalence
+    /// spot-check ([`harness::spot_check_tile_psnr`]). The pixel-level
+    /// companion to [`RunMetrics::per_level_tiles`]: the grid check proves the
+    /// tiles have the right *geometry*, this proves they carry the right
+    /// *pixels*, so a fast-but-visually-wrong engine no longer passes the gate
+    /// on tile count alone. `None` when libvips was unavailable, for the
+    /// libvips row itself, when the pyramid had no comparable multi-tile mid
+    /// level (a tiny image), and for legacy history predating this field.
+    #[serde(default)]
+    pub equivalence_psnr_db: Option<f64>,
     /// Total tiles produced.
     pub tiles_produced: u64,
     /// Levels processed.
@@ -386,6 +397,7 @@ pub fn bench_monolithic(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -441,6 +453,7 @@ pub fn bench_streaming(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -525,6 +538,7 @@ pub fn bench_mapreduce(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -557,6 +571,71 @@ pub fn write_temp_png(src: &Raster) -> std::path::PathBuf {
     .unwrap();
 
     path
+}
+
+/// Generate a libviprs **monolithic** pyramid from `src` into `dir` and return
+/// the tiles root (`dir/pyramid`, holding `{level}/{col}_{row}.png`).
+///
+/// Unlike the `bench_*` functions this does **not** delete its output — the
+/// caller owns `dir`. It exists for the pixel-level output-equivalence
+/// spot-check ([`harness::spot_check_tile_psnr`]), which needs both engines'
+/// tiles on disk at once. Uses the shared [`BENCH_TILE_FORMAT`] codec so the
+/// tiles are byte-comparable with the libvips reference.
+pub fn write_libviprs_pyramid(
+    src: &Raster,
+    plan: &PyramidPlan,
+    dir: &std::path::Path,
+) -> std::path::PathBuf {
+    let _ = std::fs::create_dir_all(dir);
+    let base = dir.join("pyramid");
+    let sink = engine_fs_sink(dir, plan);
+    let observer = Arc::new(CollectingObserver::new());
+    EngineBuilder::new(src, plan.clone(), &sink)
+        .with_engine(EngineKind::Monolithic)
+        .with_config(EngineConfig::default().with_concurrency(0))
+        .with_observer_arc(observer)
+        .run()
+        .unwrap();
+    base
+}
+
+/// Generate a libvips `dzsave` pyramid from a pre-written PNG (`png_path`) into
+/// `dir` and return the DeepZoom tiles root (`dir/pyramid_files`). `None` if
+/// `vips` fails or is absent.
+///
+/// Companion to [`write_libviprs_pyramid`] for the output-equivalence
+/// spot-check: same tile size, `overlap 0`, and [`BENCH_TILE_SUFFIX`] codec as
+/// the timed libvips CLI path, so the two pyramids are directly comparable.
+pub fn write_libvips_pyramid(
+    png_path: &std::path::Path,
+    dir: &std::path::Path,
+    tile_size: u32,
+) -> Option<std::path::PathBuf> {
+    let _ = std::fs::create_dir_all(dir);
+    let dz_path = dir.join("pyramid");
+    let output = Command::new("vips")
+        .arg("dzsave")
+        .arg(png_path)
+        .arg(&dz_path)
+        .args([
+            "--tile-size",
+            &tile_size.to_string(),
+            "--overlap",
+            "0",
+            "--suffix",
+            BENCH_TILE_SUFFIX,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        eprintln!(
+            "vips dzsave failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return None;
+    }
+    let files = dir.join("pyramid_files");
+    files.is_dir().then_some(files)
 }
 
 /// Check whether the `vips` CLI is available on the system.
@@ -711,6 +790,7 @@ pub fn bench_libvips(
         peak_rss_bytes: peak_memory_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
@@ -895,6 +975,7 @@ pub fn bench_libvips_inprocess(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
