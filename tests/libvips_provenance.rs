@@ -377,10 +377,7 @@ fn cargo_libvips_rs_req(cargo: &str) -> Option<String> {
 fn has_wellformed_sha256_digest(line: &str) -> bool {
     match line.split_once("@sha256:") {
         Some((_, rest)) => {
-            let hex = rest
-                .chars()
-                .take_while(|c| c.is_ascii_hexdigit())
-                .count();
+            let hex = rest.chars().take_while(|c| c.is_ascii_hexdigit()).count();
             hex == 64
         }
         None => false,

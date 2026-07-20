@@ -38,8 +38,10 @@ pub const PINNED_LIBVIPS_VERSION: &str = "8.18.4";
 /// exactly this value. Cross-checked against the upstream
 /// `vips-{PINNED_LIBVIPS_VERSION}.tar.xz.sha256sum` companion file — refresh
 /// it in the same edit whenever [`PINNED_LIBVIPS_VERSION`] is bumped.
-/// Validating the digest against the *real* upstream tarball on a schedule is
-/// tracked as a follow-up (libviprs-bench #36).
+/// [`classify_libvips_pin`] validates this digest (and the version) against the
+/// live upstream GitHub releases feed — run it on demand via
+/// `tools/check-libvips-pin.sh` or the `#[ignore]`d live test (libviprs-bench
+/// #36).
 pub const PINNED_LIBVIPS_SHA256: &str =
     "2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037";
 
@@ -236,6 +238,178 @@ pub fn parse_libvips_major_minor(version: &str) -> Option<(u32, u32)> {
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;
     Some((major, minor))
+}
+
+/// Parse a libvips version/tag string down to `(major, minor, patch)`.
+///
+/// Accepts the GitHub release tag (`"v8.18.4"`), the `vips --version` line
+/// (`"vips-8.18.4"`), and the bare pin (`"8.18.4"`). Unlike
+/// [`parse_libvips_major_minor`], the patch component is *required*: upstream
+/// releases always carry one, and [`classify_libvips_pin`] compares whole
+/// `(major, minor, patch)` tuples to decide whether a newer release exists. A
+/// pre-release tag (`"v8.18.3-rc1"`, whose patch is non-numeric) yields `None`,
+/// so a release candidate can never rank as — or newer than — a finished
+/// release.
+pub fn parse_libvips_version(tag: &str) -> Option<(u32, u32, u32)> {
+    let trimmed = tag.trim();
+    let no_vips = trimmed.strip_prefix("vips-").unwrap_or(trimmed);
+    let digits = no_vips.strip_prefix('v').unwrap_or(no_vips);
+    let mut parts = digits.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    let patch = parts.next()?.parse::<u32>().ok()?;
+    Some((major, minor, patch))
+}
+
+/// Outcome of validating the pinned libvips ([`PINNED_LIBVIPS_VERSION`] /
+/// [`PINNED_LIBVIPS_SHA256`]) against the upstream GitHub releases feed.
+///
+/// Produced by [`classify_libvips_pin`] from a captured or live
+/// `GET /repos/libvips/libvips/releases` payload. The on-demand validator
+/// (`tools/check-libvips-pin.sh` and the `#[ignore]`d live test) renders it; it
+/// is deliberately advisory, never a PR gate — this repo gates locally and
+/// skips GitHub CI on PR commits (libviprs-bench #36).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LibvipsPinStatus {
+    /// The pin is the latest stable upstream release and its tarball SHA-256
+    /// still matches — nothing to do.
+    UpToDate,
+    /// A stable upstream release strictly newer than the pin exists.
+    NewerReleaseAvailable {
+        /// Latest stable upstream version, `"major.minor.patch"` — the bump
+        /// target an operator sees.
+        latest: String,
+    },
+    /// The pinned release's upstream tarball digest no longer matches
+    /// [`PINNED_LIBVIPS_SHA256`] — upstream re-published the asset, or the
+    /// recorded digest is wrong. The integrity signal; reported ahead of a mere
+    /// version bump so a re-cut pinned tarball is never masked by "there is a
+    /// newer version anyway".
+    Sha256Mismatch {
+        /// The recorded pin (the `pinned_sha256` argument).
+        pinned: String,
+        /// The digest the upstream release now advertises for the pinned tarball.
+        upstream: String,
+    },
+    /// The pinned release (or its `vips-<version>.tar.xz` asset with a digest)
+    /// was not found in the feed, so the SHA could not be validated —
+    /// indeterminate, not a pass. Mirrors [`OracleMatch::Indeterminate`]'s
+    /// "no verdict" role.
+    PinnedReleaseNotFound,
+}
+
+/// Why [`classify_libvips_pin`] could not reach a verdict from a payload.
+#[derive(Debug)]
+pub enum LibvipsPinError {
+    /// The payload was not valid JSON in the expected releases-array shape.
+    /// Carries the underlying `serde_json` message.
+    Parse(String),
+    /// The payload carried no stable (non-draft, non-pre-release) release, so
+    /// there is nothing to compare the pin against.
+    NoStableRelease,
+}
+
+impl std::fmt::Display for LibvipsPinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(e) => write!(f, "could not parse the releases payload: {e}"),
+            Self::NoStableRelease => write!(f, "the releases payload carried no stable release"),
+        }
+    }
+}
+
+impl std::error::Error for LibvipsPinError {}
+
+/// One GitHub release, trimmed to the fields the validator reads. Unknown
+/// fields are ignored, so the real API payload deserializes unchanged.
+#[derive(Deserialize)]
+struct GhRelease {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GhAsset>,
+}
+
+/// One release asset: its file name and (when the API provides it) the
+/// `"sha256:<hex>"` digest GitHub advertises for it.
+#[derive(Deserialize)]
+struct GhAsset {
+    name: String,
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+/// Strip the `sha256:` scheme prefix GitHub asset digests carry.
+fn strip_sha256_prefix(digest: &str) -> &str {
+    digest.strip_prefix("sha256:").unwrap_or(digest)
+}
+
+/// Validate the recorded libvips pin (`pinned_version` / `pinned_sha256`,
+/// normally [`PINNED_LIBVIPS_VERSION`] / [`PINNED_LIBVIPS_SHA256`]) against a
+/// GitHub releases API payload (`GET /repos/libvips/libvips/releases`, a JSON
+/// array).
+///
+/// Host-independent and network-free: the caller supplies the payload — a
+/// captured sample in tests, a live `curl` fetch in the on-demand validator —
+/// so the same classification logic runs in both. Integrity beats freshness: a
+/// tarball digest that no longer matches upstream
+/// ([`LibvipsPinStatus::Sha256Mismatch`]) is reported ahead of a mere newer
+/// release, so a re-published pinned asset is never masked by a version bump.
+pub fn classify_libvips_pin(
+    releases_json: &str,
+    pinned_version: &str,
+    pinned_sha256: &str,
+) -> Result<LibvipsPinStatus, LibvipsPinError> {
+    let releases: Vec<GhRelease> =
+        serde_json::from_str(releases_json).map_err(|e| LibvipsPinError::Parse(e.to_string()))?;
+
+    // Latest *stable* release: drafts and pre-releases (e.g. `v8.18.3-rc1`) are
+    // never a bump target.
+    let latest_stable = releases
+        .iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter_map(|r| parse_libvips_version(&r.tag_name))
+        .max()
+        .ok_or(LibvipsPinError::NoStableRelease)?;
+
+    // Locate the pinned release's tarball digest, if the feed carries it.
+    let pinned_ver = parse_libvips_version(pinned_version);
+    let tarball = format!("vips-{pinned_version}.tar.xz");
+    let upstream_digest: Option<&str> = pinned_ver.and_then(|pv| {
+        releases
+            .iter()
+            .filter(|r| parse_libvips_version(&r.tag_name) == Some(pv))
+            .flat_map(|r| r.assets.iter())
+            .find(|a| a.name == tarball)
+            .and_then(|a| a.digest.as_deref())
+            .map(strip_sha256_prefix)
+    });
+
+    // Integrity first: a re-cut pinned tarball outranks a newer release.
+    if let Some(upstream) = upstream_digest.filter(|u| !u.eq_ignore_ascii_case(pinned_sha256)) {
+        return Ok(LibvipsPinStatus::Sha256Mismatch {
+            pinned: pinned_sha256.to_string(),
+            upstream: upstream.to_string(),
+        });
+    }
+
+    // Then freshness: a strictly newer stable release is a bump target.
+    if pinned_ver.is_some_and(|pv| latest_stable > pv) {
+        let (major, minor, patch) = latest_stable;
+        return Ok(LibvipsPinStatus::NewerReleaseAvailable {
+            latest: format!("{major}.{minor}.{patch}"),
+        });
+    }
+
+    // The pin is current, but its digest could not be located to confirm it.
+    if upstream_digest.is_none() {
+        return Ok(LibvipsPinStatus::PinnedReleaseNotFound);
+    }
+
+    Ok(LibvipsPinStatus::UpToDate)
 }
 
 /// Query the libvips version. Prefers the linked library's own

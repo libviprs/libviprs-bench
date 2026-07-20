@@ -169,8 +169,12 @@ fn classify_errors_on_malformed_payload() {
 /// `tests/fixtures/libvips_releases_sample.json` in the same edit.
 #[test]
 fn recorded_pin_matches_the_captured_upstream_sample() {
-    let status = classify_libvips_pin(RELEASES_SAMPLE, PINNED_LIBVIPS_VERSION, PINNED_LIBVIPS_SHA256)
-        .expect("captured sample classifies against the recorded pin");
+    let status = classify_libvips_pin(
+        RELEASES_SAMPLE,
+        PINNED_LIBVIPS_VERSION,
+        PINNED_LIBVIPS_SHA256,
+    )
+    .expect("captured sample classifies against the recorded pin");
     assert_eq!(
         status,
         LibvipsPinStatus::UpToDate,
