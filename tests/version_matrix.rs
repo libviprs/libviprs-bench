@@ -70,6 +70,7 @@ fn synthetic_run(engine: &str, wall_ms: u64) -> RunMetrics {
         inflight_strips: 0,
         concurrency: 0,
         memory_budget_bytes: 0,
+        equivalence_psnr_db: None,
     }
 }
 

@@ -144,6 +144,28 @@ pub struct RunMetrics {
     /// count + per-level grid). Empty for legacy history.
     #[serde(default)]
     pub per_level_tiles: Vec<u64>,
+    /// Minimum PSNR (dB) of **this engine's own** mid-pyramid tiles against the
+    /// libvips `dzsave` reference, from the pixel-level output-equivalence
+    /// spot-check ([`harness::spot_check_tile_psnr`]). Each libviprs engine
+    /// builds its *own* candidate pyramid at *this row's concurrency* and is
+    /// scored against the shared per-size reference — the figure is never
+    /// borrowed from another engine or configuration.
+    ///
+    /// The pixel-level companion to [`RunMetrics::per_level_tiles`]: the grid
+    /// check proves the tiles have the right *geometry*, this proves they carry
+    /// the right *pixels*, so a fast-but-visually-wrong engine is flagged
+    /// (loud stderr WARNING + a `[FAIL]` line in the report) rather than
+    /// passing on tile count alone. Advisory, not fatal — a sub-threshold score
+    /// does not abort the run.
+    ///
+    /// Only the *minimum* PSNR is persisted here; the mean PSNR, min SSIM and
+    /// compared-tile count from the richer [`harness::TileFidelityCheck`] are
+    /// logged to stderr but intentionally not serialized. `None` when libvips
+    /// was unavailable, for the libvips row itself, when the pyramid had no
+    /// comparable multi-tile mid level (a tiny image), and for legacy history
+    /// predating this field.
+    #[serde(default)]
+    pub equivalence_psnr_db: Option<f64>,
     /// Total tiles produced.
     pub tiles_produced: u64,
     /// Levels processed.
@@ -386,6 +408,7 @@ pub fn bench_monolithic(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -441,6 +464,7 @@ pub fn bench_streaming(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -525,6 +549,7 @@ pub fn bench_mapreduce(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -536,15 +561,17 @@ pub fn bench_mapreduce(
     }
 }
 
-/// Write a Raster to a temporary PNG file for libvips benchmarking.
+/// Encode `src` as a lossless RGB8 PNG at `path`, creating parent directories.
 ///
-/// Returns the path to the temp file. The caller is responsible for cleanup.
-pub fn write_temp_png(src: &Raster) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join("libviprs-bench");
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(format!("bench_{}x{}.png", src.width(), src.height()));
-
-    let file = std::fs::File::create(&path).unwrap();
+/// The reusable core behind [`write_temp_png`]; unlike it, this reports IO and
+/// encoder failures instead of panicking, so callers on a fail-soft path (the
+/// output-equivalence spot-check) can degrade to "no score" rather than
+/// aborting. The caller owns `path` and its cleanup.
+pub fn write_png_at(src: &Raster, path: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::File::create(path)?;
     let w = std::io::BufWriter::new(file);
     let encoder = image::codecs::png::PngEncoder::new(w);
     image::ImageEncoder::write_image(
@@ -554,9 +581,105 @@ pub fn write_temp_png(src: &Raster) -> std::path::PathBuf {
         src.height(),
         image::ColorType::Rgb8.into(),
     )
-    .unwrap();
+    .map_err(std::io::Error::other)
+}
 
+/// Write a Raster to a temporary PNG file for libvips benchmarking.
+///
+/// Returns the path to the temp file. The caller is responsible for cleanup.
+/// Panics on IO/encoder failure; use [`write_png_at`] where graceful
+/// degradation is required.
+pub fn write_temp_png(src: &Raster) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("libviprs-bench");
+    let path = dir.join(format!("bench_{}x{}.png", src.width(), src.height()));
+    write_png_at(src, &path).unwrap();
     path
+}
+
+/// Generate a libviprs pyramid from `src` into `dir` with the given `engine`
+/// and `concurrency`, returning the tiles root (`dir/pyramid`, holding
+/// `{level}/{col}_{row}.png`).
+///
+/// Parameterized over [`EngineKind`] so the output-equivalence spot-check can
+/// validate **each** libviprs engine's own pixels (not just the monolithic
+/// engine's) at the concurrency actually benchmarked. `budget_bytes` bounds the
+/// streaming / mapreduce engines (ignored by the monolithic engine), mirroring
+/// the timed `bench_*` paths so the candidate is built the same way it is
+/// measured.
+///
+/// Unlike the `bench_*` functions this does **not** delete its output — the
+/// caller owns `dir`. It exists for the pixel-level output-equivalence
+/// spot-check ([`harness::spot_check_tile_psnr`]), which needs both engines'
+/// tiles on disk at once. Uses the shared [`BENCH_TILE_FORMAT`] codec so the
+/// tiles are byte-comparable with the libvips reference. Propagates the
+/// engine's `run()` error (as an [`std::io::Error`]) rather than panicking, so
+/// a spot-check failure degrades to "no score" instead of aborting the run.
+pub fn write_libviprs_pyramid(
+    src: &Raster,
+    plan: &PyramidPlan,
+    engine: EngineKind,
+    concurrency: usize,
+    budget_bytes: u64,
+    dir: &std::path::Path,
+) -> std::io::Result<std::path::PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    let base = dir.join("pyramid");
+    let sink = engine_fs_sink(dir, plan);
+    let observer = Arc::new(CollectingObserver::new());
+    let mut builder = EngineBuilder::new(src, plan.clone(), &sink)
+        .with_engine(engine)
+        .with_config(EngineConfig::default().with_concurrency(concurrency))
+        .with_observer_arc(observer);
+    // The streaming / mapreduce engines are budget-driven; bound them exactly
+    // as their timed `bench_*` paths do. The monolithic engine ignores it.
+    if matches!(engine, EngineKind::Streaming | EngineKind::MapReduce) {
+        builder = builder
+            .with_memory_budget(budget_bytes)
+            .with_budget_policy(BudgetPolicy::Error);
+    }
+    builder
+        .run()
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    Ok(base)
+}
+
+/// Generate a libvips `dzsave` pyramid from a pre-written PNG (`png_path`) into
+/// `dir` and return the DeepZoom tiles root (`dir/pyramid_files`). `None` if
+/// `vips` fails or is absent.
+///
+/// Companion to [`write_libviprs_pyramid`] for the output-equivalence
+/// spot-check: same tile size, `overlap 0`, and [`BENCH_TILE_SUFFIX`] codec as
+/// the timed libvips CLI path, so the two pyramids are directly comparable.
+pub fn write_libvips_pyramid(
+    png_path: &std::path::Path,
+    dir: &std::path::Path,
+    tile_size: u32,
+) -> Option<std::path::PathBuf> {
+    let _ = std::fs::create_dir_all(dir);
+    let dz_path = dir.join("pyramid");
+    let output = Command::new("vips")
+        .arg("dzsave")
+        .arg(png_path)
+        .arg(&dz_path)
+        .args([
+            "--tile-size",
+            &tile_size.to_string(),
+            "--overlap",
+            "0",
+            "--suffix",
+            BENCH_TILE_SUFFIX,
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        eprintln!(
+            "vips dzsave failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return None;
+    }
+    let files = dir.join("pyramid_files");
+    files.is_dir().then_some(files)
 }
 
 /// Check whether the `vips` CLI is available on the system.
@@ -711,6 +834,7 @@ pub fn bench_libvips(
         peak_rss_bytes: peak_memory_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
@@ -895,6 +1019,7 @@ pub fn bench_libvips_inprocess(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        equivalence_psnr_db: None,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
