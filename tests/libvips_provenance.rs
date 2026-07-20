@@ -14,6 +14,12 @@
 //! provenance constant) and fail the moment the pin drifts or the Dockerfile
 //! regresses to an unpinned / apt-installed libvips — without needing Docker
 //! or libvips in the loop.
+//!
+//! Sub-issue #35 extends the same reproducibility guard to the rest of the
+//! build environment: the base images must be digest-pinned (`FROM …@sha256:`)
+//! and the apt toolchain (libpng et al. — the DeepZoom PNG hot path) pinned to
+//! a dated `snapshot.debian.org` mirror, so no layer floats on a live tag or a
+//! live mirror between benchmark runs.
 
 use libviprs_bench::provenance::{
     OracleMatch, PINNED_LIBVIPS_SHA256, PINNED_LIBVIPS_VERSION, Provenance,
@@ -40,9 +46,11 @@ fn recorded_libvips_version_parses_to_expected_major_minor() {
         "the pinned libvips must be on the 8.18 series the bindings target (#33)"
     );
 
-    // Raw `vips --version` output ("vips-8.18.4") parses identically to the
-    // `vips-`-stripped form provenance stores ("8.18.4").
+    // Raw `vips --version` output ("vips-8.18.4"), a GitHub tag ("v8.18"), and
+    // the `vips-`-stripped form provenance stores ("8.18.4") all parse
+    // identically — prefix handling is shared with `pin_check`'s triple parser.
     assert_eq!(parse_libvips_major_minor("vips-8.18.4"), Some((8, 18)));
+    assert_eq!(parse_libvips_major_minor("v8.18"), Some((8, 18)));
     assert_eq!(parse_libvips_major_minor("8.18.4"), Some((8, 18)));
     assert_eq!(
         parse_libvips_major_minor("vips-8.18.4"),
@@ -250,6 +258,84 @@ fn dockerfile_asserts_built_libvips_version_equals_pin() {
     );
 }
 
+/// #35 (Dockerfile reproducibility): every base image must be *digest*-pinned
+/// (`FROM …@sha256:<64-hex>`), not left on a floating tag. A tag can be re-cut
+/// upstream to point at different bytes; a digest fixes the exact base layer so
+/// it cannot shift under a rebuild.
+#[test]
+fn dockerfile_digest_pins_base_images() {
+    let froms: Vec<&str> = DOCKERFILE
+        .lines()
+        .filter(|line| line.trim_start().starts_with("FROM "))
+        .collect();
+    assert!(!froms.is_empty(), "Dockerfile must declare FROM stages");
+    for from in &froms {
+        assert!(
+            from.contains("@sha256:"),
+            "every base image must be digest-pinned for reproducibility (#35); \
+             `{}` is not",
+            from.trim()
+        );
+        assert!(
+            has_wellformed_sha256_digest(from),
+            "`{}` must carry a well-formed 64-hex `@sha256:` digest, not a \
+             placeholder (#35)",
+            from.trim()
+        );
+    }
+}
+
+/// #35: the apt build toolchain (libpng, glib, jpeg, tiff, webp, expat `-dev`)
+/// must be pinned to a dated `snapshot.debian.org` mirror, not resolved against
+/// the live bookworm mirror where an intra-suite point release (e.g. a libpng
+/// security update) can shift the encode hot path under a rebuild. This is
+/// exactly the float the #24 scope note deferred to #35.
+#[test]
+fn dockerfile_pins_apt_to_a_debian_snapshot() {
+    let instructions = dockerfile_instructions(DOCKERFILE);
+    assert!(
+        instructions.contains("snapshot.debian.org/archive/debian"),
+        "Dockerfile must point apt at a snapshot.debian.org archive so the codec \
+         `-dev` libraries resolve to fixed versions, not the live mirror (#35)"
+    );
+    // A concrete, well-formed snapshot timestamp (YYYYMMDDThhmmssZ), not a bare
+    // archive root that would still float.
+    assert!(
+        contains_snapshot_timestamp(&instructions),
+        "the snapshot.debian.org URL must carry a dated timestamp \
+         (e.g. 20250929T000000Z), not a floating archive root (#35)"
+    );
+    // Snapshot Release files carry an old `Valid-Until`; apt must be told to
+    // accept them or `apt-get update` rejects the dated snapshot outright.
+    assert!(
+        instructions.contains("Check-Valid-Until"),
+        "apt must set `Acquire::Check-Valid-Until false` to read a dated \
+         snapshot (#35)"
+    );
+}
+
+/// #35 consistency: the apt snapshot and the digest-pinned Debian base must
+/// describe the *same* point in time. The base image tag encodes its build date
+/// (`bookworm-YYYYMMDD`) and Debian embeds the matching snapshot, so the
+/// snapshot timestamp must carry that same date — one frozen point for the whole
+/// image, not two that can drift apart.
+#[test]
+fn apt_snapshot_matches_the_pinned_base_image_date() {
+    // Both dates are read from the comment-stripped build instructions, so the
+    // `(bookworm-20250929)` mention in the header prose can never stand in for
+    // the real `FROM` tag.
+    let instructions = dockerfile_instructions(DOCKERFILE);
+    let base = base_image_date(&instructions)
+        .expect("a Debian base image must carry a `bookworm-YYYYMMDD` date (#35)");
+    let snap = snapshot_date(&instructions)
+        .expect("the apt snapshot must carry a `YYYYMMDD` timestamp (#35)");
+    assert_eq!(
+        base, snap,
+        "the apt snapshot date ({snap}) must match the pinned Debian base image \
+         date ({base}) so the whole image is one frozen point in time (#35)"
+    );
+}
+
 /// Dockerfile text with `#` comment lines stripped, so *negative* assertions
 /// target build instructions rather than explanatory prose (a comment may
 /// still name the ~8.14 apt oracle the source build replaces).
@@ -291,4 +377,55 @@ fn cargo_libvips_rs_req(cargo: &str) -> Option<String> {
             .trim_start_matches(['=', '^', '~', '>', '<', ' '])
             .to_string(),
     )
+}
+
+/// Whether a `FROM` line carries a well-formed `@sha256:<64 hex>` digest pin.
+fn has_wellformed_sha256_digest(line: &str) -> bool {
+    match line.split_once("@sha256:") {
+        Some((_, rest)) => {
+            let hex = rest.chars().take_while(|c| c.is_ascii_hexdigit()).count();
+            hex == 64
+        }
+        None => false,
+    }
+}
+
+/// Whether `text` contains a `snapshot.debian.org` timestamp token
+/// (`YYYYMMDDThhmmssZ`, e.g. `20250929T000000Z`).
+fn contains_snapshot_timestamp(text: &str) -> bool {
+    text.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(is_snapshot_timestamp)
+}
+
+/// Match a single `YYYYMMDDThhmmssZ` snapshot timestamp token.
+fn is_snapshot_timestamp(token: &str) -> bool {
+    let b = token.as_bytes();
+    b.len() == 16
+        && b[..8].iter().all(u8::is_ascii_digit)
+        && b[8] == b'T'
+        && b[9..15].iter().all(u8::is_ascii_digit)
+        && b[15] == b'Z'
+}
+
+/// Extract the `YYYYMMDD` date from the first `bookworm-YYYYMMDD` base-image tag
+/// (the dated Debian image); ignores undated `-bookworm` tags and the
+/// `bookworm-updates` / `bookworm-security` suite names.
+///
+/// Reads the date from the base image's *tag* string, not its `@sha256:`
+/// digest: a digest's build date is not knowable offline, so this asserts the
+/// tag and the apt snapshot describe the same day. Feed it the comment-stripped
+/// [`dockerfile_instructions`] so it reads the real `FROM` tag, not header prose.
+fn base_image_date(dockerfile: &str) -> Option<String> {
+    dockerfile.split("bookworm-").skip(1).find_map(|rest| {
+        let date: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        (date.len() == 8).then_some(date)
+    })
+}
+
+/// Extract the `YYYYMMDD` prefix of the `snapshot.debian.org` timestamp token.
+fn snapshot_date(dockerfile: &str) -> Option<String> {
+    dockerfile
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .find(|token| is_snapshot_timestamp(token))
+        .map(|token| token[..8].to_string())
 }

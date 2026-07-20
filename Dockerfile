@@ -18,13 +18,23 @@
 # Pinned inputs. A benchmark is only reproducible if every layer is fixed:
 # a floating base image, an unpinned libvips, or a `latest` PDFium would
 # silently change the numbers between runs (issue #153). Bump these
-# deliberately, never implicitly. (One documented exception — the apt codec
-# `-dev` packages libvips links against are not snapshot-pinned; that scope is
-# spelled out in the builder stage and tracked in #35.)
+# deliberately, never implicitly.
 #   PDFIUM_RELEASE  — libviprs-dep release tag (checksum-verified builder)
 #   LIBVIPS_VERSION — upstream libvips source release, built from tarball
 #   LIBVIPS_SHA256  — SHA-256 of that tarball, verified before it is built
-# The Rust and Debian base images are pinned by tag on the FROM lines below.
+#   DEBIAN_SNAPSHOT — snapshot.debian.org timestamp the apt toolchain resolves
+#                     against, so the codec `-dev` libraries (libpng et al. —
+#                     the DeepZoom PNG hot path) are fixed too, not floated on
+#                     the live bookworm mirror (#35, closing the #33 scope gap)
+# The Rust and Debian base images are digest-pinned (`@sha256:`) on the FROM
+# lines below, so no layer floats on a mutable tag either (#35).
+#
+# Availability note (#35): pinning apt to snapshot.debian.org routes every
+# package fetch through a single archive host that is historically slow and can
+# be briefly rate-limited or degraded. That is the deliberate cost of a frozen
+# mirror; apt is set to retry and the libvips/PDFium tarball fetches use
+# `curl --retry`, so a transient snapshot blip should be re-run rather than
+# treated as a real failure.
 # ---------------------------------------------------------------------------
 ARG PDFIUM_RELEASE=pdfium-7881
 # Upstream libvips release compiled from source (issue #33). Kept in lockstep
@@ -34,9 +44,30 @@ ARG PDFIUM_RELEASE=pdfium-7881
 # `vips-<version>.tar.xz.sha256sum` companion file.
 ARG LIBVIPS_VERSION=8.18.4
 ARG LIBVIPS_SHA256=2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037
+# Dated snapshot.debian.org mirror the apt toolchain resolves against (#35).
+# Matches the Debian base image's own build date (bookworm-20250929) so the
+# whole image is one frozen point in time. snapshot.debian.org resolves a
+# timestamp to the nearest snapshot at or before it, so a dated value always
+# lands on a real snapshot.
+ARG DEBIAN_SNAPSHOT=20250929T000000Z
 
-# Stage 1: Download PDFium for the target architecture
-FROM debian:bookworm-20250929-slim AS pdfium
+# Stage 1: Download PDFium for the target architecture. Base image digest-pinned
+# (not just tag-pinned) so the exact layer cannot shift under a rebuild (#35).
+FROM debian:bookworm-20250929-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 AS pdfium
+
+# Pin apt to the dated Debian snapshot before installing anything, so even this
+# stage's `curl` resolves from a frozen mirror (#35). See the builder stage for
+# the full rationale; the deb822 source is rewritten wholesale (keeping the
+# stock archive keyring) so the pin is independent of the base image's layout.
+# NOTE: this deb822 snapshot block is duplicated verbatim in the builder stage
+# below (the canonical copy). The builder is `rust:*-bookworm` and cannot share
+# this Debian base image, so the two are kept intentionally in sync — edit both
+# together when either changes.
+ARG DEBIAN_SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "${DEBIAN_SNAPSHOT}" "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list.d/debian.sources && \
+    rm -f /etc/apt/sources.list && \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/10snapshot
 
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
@@ -63,8 +94,9 @@ RUN case "${TARGETARCH}" in \
 
 # Stage 2: Build and run benchmarks
 # Pinned Rust (was `rust:latest`) so the compiler and its bundled toolchain
-# do not drift between benchmark runs (issue #153).
-FROM rust:1.89-bookworm AS builder
+# do not drift between benchmark runs (issue #153); digest-pinned (not just
+# tag-pinned) so the exact base layer cannot shift under a rebuild (#35).
+FROM rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff AS builder
 
 ARG LIBVIPS_VERSION
 ARG LIBVIPS_SHA256
@@ -80,15 +112,24 @@ ARG LIBVIPS_SHA256
 # benchmark's hot path (DeepZoom writes PNG tiles), but jpeg/tiff/webp are
 # included so the oracle is a realistic, full-featured libvips build.
 #
-# Reproducibility scope (issue #33, tracked in #35): libvips itself is pinned
-# by version + SHA-256 and the base images by tag, but these apt `-dev`
-# packages are NOT snapshot-pinned — `apt-get install` resolves them against
-# bookworm's live mirror, so an intra-bookworm point release (e.g. a libpng
-# security update) can shift under a rebuild. Accepted deliberately here:
-# point releases hold ABI and rarely move the encode hot path materially, and
-# the meson force-enable below fails the build if a codec disappears entirely.
-# Fully closing this (a dated snapshot.debian.org source or digest-pinned
-# base) is deferred to #35.
+# Reproducibility scope (#35, closing the #33 gap): the apt toolchain is pinned
+# to the dated snapshot.debian.org mirror set up just below, so these `-dev`
+# packages resolve to fixed versions instead of bookworm's live mirror. Without
+# it an intra-bookworm point release (e.g. a libpng security update) could shift
+# the encode hot path under a rebuild — libpng directly shapes the measured
+# DeepZoom PNG-tile numbers. The meson force-enable further hard-fails the build
+# if a codec ever disappears from the snapshot entirely.
+#
+# The deb822 source is rewritten wholesale to the snapshot (keeping the stock
+# `debian-archive-keyring` so releases stay GPG-verified), and
+# `Check-Valid-Until false` is required because a dated snapshot's Release file
+# carries an expired `Valid-Until`.
+ARG DEBIAN_SNAPSHOT
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "${DEBIAN_SNAPSHOT}" "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list.d/debian.sources && \
+    rm -f /etc/apt/sources.list && \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/10snapshot
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
