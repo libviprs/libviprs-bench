@@ -25,9 +25,14 @@
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 
-use libviprs::{Layout, PyramidPlan, PyramidPlanner, Raster};
+use libviprs::streaming::BudgetPolicy;
+use libviprs::{
+    EngineBuilder, EngineConfig, EngineKind, Layout, MemorySink, PyramidPlan, PyramidPlanner,
+    Raster, RasterStripSource,
+};
 use libviprs_bench::{
     BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, bench_mapreduce, bench_streaming, gradient_raster,
+    streaming_budget_for,
 };
 
 /// A 256×256 source paired with a plan built for 1024×1024. The engine's
@@ -96,5 +101,67 @@ fn mapreduce_cell_fault_does_not_panic_or_leak() {
         !out_dir.exists(),
         "bench_mapreduce leaked its temp output dir {} on the error path (issue #46)",
         out_dir.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #47: the re-derived budget-admission formula, pinned to core reality.
+// ---------------------------------------------------------------------------
+
+/// Whether the REAL streaming engine admits a run at `budget` — the observable
+/// image of the core's up-front pre-flight gate. Uses an in-memory sink so the
+/// probe touches no filesystem.
+fn streaming_admits(plan: &PyramidPlan, src: &Raster, budget: u64) -> bool {
+    let sink = MemorySink::new();
+    EngineBuilder::new(RasterStripSource::new(src), plan.clone(), &sink)
+        .with_engine(EngineKind::Streaming)
+        .with_config(EngineConfig::default())
+        .with_memory_budget(budget)
+        .with_budget_policy(BudgetPolicy::Error)
+        .run()
+        .is_ok()
+}
+
+/// #47 is resolved WON'T-FIX: [`streaming_budget_for`] keeps re-deriving the
+/// streaming / mapreduce engines' pre-flight admission invariant
+/// (`canvas_width × 2·tile_size × bpp`) because the core exposes no public
+/// inverse to adopt and coupling the deliberately-raw, saturation-guarded,
+/// plan-less-callable helper to a `&PyramidPlan` is out of proportion to the
+/// coupling (see the helper's docs). This pin gives the duplication teeth by
+/// tying it to the engine's ACTUAL behaviour rather than a same-shaped formula:
+/// the real engine must REJECT a budget one byte below the invariant and ADMIT
+/// one exactly at it. If the core ever changes its admission rule, this goes
+/// red — the signal to revisit the "won't-fix". The mapreduce engine gates on
+/// the identical invariant, so pinning streaming pins the shared formula.
+#[test]
+fn streaming_budget_min_strip_agrees_with_core_preflight() {
+    let src = gradient_raster(1024, 1024);
+    let plan = PyramidPlanner::new(1024, 1024, BENCH_TILE_SIZE, 0, Layout::DeepZoom)
+        .expect("plan the pyramid")
+        .plan();
+    let bpp = src.format().bytes_per_pixel() as u32;
+
+    // The invariant the bench re-derives in `streaming_budget_for`.
+    let min_strip = plan.canvas_width as u64 * 2 * plan.tile_size as u64 * bpp as u64;
+
+    // Reality check: the real engine rejects one byte below the invariant and
+    // admits exactly at it, so the bench's re-derived threshold IS the core's
+    // pre-flight gate — not merely a same-shaped formula (issue #47).
+    assert!(
+        !streaming_admits(&plan, &src, min_strip - 1),
+        "core must reject a budget one byte below its worst-case-strip pre-flight gate"
+    );
+    assert!(
+        streaming_admits(&plan, &src, min_strip),
+        "core must admit a budget exactly at its worst-case-strip pre-flight gate"
+    );
+
+    // And the shared sizing helper sizes strictly above that gate (the fixed 2×
+    // margin), so every streaming-family bench path clears pre-flight with slack.
+    let sized = streaming_budget_for(0, plan.canvas_width, plan.tile_size, bpp);
+    assert_eq!(sized, min_strip * 2, "the fixed 2× pre-flight margin");
+    assert!(
+        sized >= min_strip,
+        "the sized budget must admit the gate strip"
     );
 }

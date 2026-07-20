@@ -118,7 +118,7 @@ fn generate_flamegraph(stacks: &[String], output_path: &Path, title: &str) {
     flamegraph::from_reader(&mut opts, reader.as_bytes(), writer).expect("generate flamegraph");
 }
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
     fs::create_dir_all(&report_dir).unwrap();
 
@@ -129,8 +129,9 @@ fn main() {
     // Size the streaming/mapreduce budget to admit the worst-case tile-aligned
     // strip at this 4096-wide canvas: a flat 1 MB trips `BudgetPolicy::Error`'s
     // `BudgetExceeded` up front (worst-case strip = 4096·512·3 = 6.29 MB) and
-    // `.run().unwrap()` would panic — the exact failure mode issue #38 fixes.
-    // RGB8 gradient, so bpp = 3; shared with the report/scalability paths.
+    // the engine `.run()?` below would surface it as an error — the exact
+    // failure mode issue #38 sizes around. RGB8 gradient, so bpp = 3; shared
+    // with the report/scalability paths.
     let budget = streaming_budget_for(1_000_000, plan.canvas_width, TILE_SIZE, 3);
 
     println!("Image: {WIDTH}x{HEIGHT}, tile_size={TILE_SIZE}");
@@ -151,8 +152,7 @@ fn main() {
             .with_engine(EngineKind::Monolithic)
             .with_config(EngineConfig::default())
             .with_observer_arc(observer.clone())
-            .run()
-            .unwrap();
+            .run()?;
         let elapsed = start.elapsed();
 
         println!(
@@ -185,8 +185,7 @@ fn main() {
             .with_memory_budget(budget)
             .with_budget_policy(BudgetPolicy::Error)
             .with_observer_arc(observer.clone())
-            .run()
-            .unwrap();
+            .run()?;
         let elapsed = start.elapsed();
 
         let strip_count = observer
@@ -226,8 +225,7 @@ fn main() {
             .with_memory_budget(budget)
             .with_budget_policy(BudgetPolicy::Error)
             .with_observer_arc(observer.clone())
-            .run()
-            .unwrap();
+            .run()?;
         let elapsed = start.elapsed();
 
         let events = observer.events();
@@ -261,4 +259,6 @@ fn main() {
 
     println!();
     println!("Flame graphs written to {}", report_dir.display());
+
+    Ok(())
 }

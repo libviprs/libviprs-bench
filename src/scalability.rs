@@ -139,7 +139,12 @@ fn run_monolithic(src: &Raster, tile_size: u32, concurrency: usize) -> EngineRun
     }
 }
 
-fn run_streaming(src: &Raster, tile_size: u32, budget: u64, concurrency: usize) -> EngineRun {
+fn run_streaming(
+    src: &Raster,
+    tile_size: u32,
+    budget: u64,
+    concurrency: usize,
+) -> Option<EngineRun> {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
@@ -147,25 +152,43 @@ fn run_streaming(src: &Raster, tile_size: u32, budget: u64, concurrency: usize) 
     let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
-    let result = EngineBuilder::new(strip_src, plan, &sink)
+    let run_result = EngineBuilder::new(strip_src, plan, &sink)
         .with_engine(EngineKind::Streaming)
         .with_config(EngineConfig::default().with_concurrency(concurrency))
         .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
-        .run()
-        .unwrap();
+        .run();
     let dur = start.elapsed();
     let rss_bytes = process_peak_rss();
+    // Reclaim the temp dir on every exit — including the error path — so a
+    // genuine engine fault degrades this point to a skipped series instead of
+    // aborting the whole sweep and leaking a dir under $TMPDIR (issue #46).
     let _ = std::fs::remove_dir_all(&out_dir);
-    EngineRun {
+    let result = match run_result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "scalability streaming {}x{} failed, skipping (issue #46): {e}",
+                src.width(),
+                src.height()
+            );
+            return None;
+        }
+    };
+    Some(EngineRun {
         dur,
         tracked_bytes: result.peak_memory_bytes,
         rss_bytes,
         tiles: result.tiles_produced,
-    }
+    })
 }
 
-fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64, concurrency: usize) -> EngineRun {
+fn run_mapreduce(
+    src: &Raster,
+    tile_size: u32,
+    budget: u64,
+    concurrency: usize,
+) -> Option<EngineRun> {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
@@ -173,22 +196,35 @@ fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64, concurrency: usize) 
     let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
-    let result = EngineBuilder::new(strip_src, plan, &sink)
+    let run_result = EngineBuilder::new(strip_src, plan, &sink)
         .with_engine(EngineKind::MapReduce)
         .with_config(EngineConfig::default().with_concurrency(concurrency))
         .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
-        .run()
-        .unwrap();
+        .run();
     let dur = start.elapsed();
     let rss_bytes = process_peak_rss();
+    // Reclaim the temp dir on every exit — including the error path — so a
+    // genuine engine fault degrades this point to a skipped series instead of
+    // aborting the whole sweep and leaking a dir under $TMPDIR (issue #46).
     let _ = std::fs::remove_dir_all(&out_dir);
-    EngineRun {
+    let result = match run_result {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!(
+                "scalability mapreduce {}x{} failed, skipping (issue #46): {e}",
+                src.width(),
+                src.height()
+            );
+            return None;
+        }
+    };
+    Some(EngineRun {
         dur,
         tracked_bytes: result.peak_memory_bytes,
         rss_bytes,
         tiles: result.tiles_produced,
-    }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -589,41 +625,48 @@ fn main() {
             // tile-aligned minimum strip always fits.
             let budget = streaming_budget_for(STREAMING_BUDGET_FLOOR, w, TILE_SIZE, 3);
 
-            // Streaming
-            let run = run_streaming(&src, TILE_SIZE, budget, conc);
-            print!(
-                "stream={:.0}ms/{:.1}MB(trk)  ",
-                run.dur.as_secs_f64() * 1000.0,
-                run.tracked_bytes as f64 / (1024.0 * 1024.0),
-            );
-            all_points.push(to_point(
-                w,
-                h,
-                "streaming",
-                conc,
-                run.dur,
-                run.tracked_bytes,
-                run.rss_bytes,
-                run.tiles,
-            ));
+            // Streaming — a genuine engine fault degrades to a skipped series
+            // (the reason is logged to stderr) rather than aborting the sweep.
+            if let Some(run) = run_streaming(&src, TILE_SIZE, budget, conc) {
+                print!(
+                    "stream={:.0}ms/{:.1}MB(trk)  ",
+                    run.dur.as_secs_f64() * 1000.0,
+                    run.tracked_bytes as f64 / (1024.0 * 1024.0),
+                );
+                all_points.push(to_point(
+                    w,
+                    h,
+                    "streaming",
+                    conc,
+                    run.dur,
+                    run.tracked_bytes,
+                    run.rss_bytes,
+                    run.tiles,
+                ));
+            } else {
+                print!("stream=skipped  ");
+            }
 
             // MapReduce
-            let run = run_mapreduce(&src, TILE_SIZE, budget, conc);
-            println!(
-                "mr={:.0}ms/{:.1}MB(trk)",
-                run.dur.as_secs_f64() * 1000.0,
-                run.tracked_bytes as f64 / (1024.0 * 1024.0),
-            );
-            all_points.push(to_point(
-                w,
-                h,
-                "mapreduce",
-                conc,
-                run.dur,
-                run.tracked_bytes,
-                run.rss_bytes,
-                run.tiles,
-            ));
+            if let Some(run) = run_mapreduce(&src, TILE_SIZE, budget, conc) {
+                println!(
+                    "mr={:.0}ms/{:.1}MB(trk)",
+                    run.dur.as_secs_f64() * 1000.0,
+                    run.tracked_bytes as f64 / (1024.0 * 1024.0),
+                );
+                all_points.push(to_point(
+                    w,
+                    h,
+                    "mapreduce",
+                    conc,
+                    run.dur,
+                    run.tracked_bytes,
+                    run.rss_bytes,
+                    run.tiles,
+                ));
+            } else {
+                println!("mr=skipped");
+            }
 
             // Real-content counterpart (issue #31): rasterize the committed PDF
             // fixture to ~this width via PdfiumStripSource (streaming) and

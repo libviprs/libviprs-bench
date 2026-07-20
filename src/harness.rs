@@ -78,10 +78,28 @@ impl Engine {
     }
 }
 
+/// Degrade a fail-soft streaming / mapreduce cell to a skipped row: on a genuine
+/// engine fault (the strict `BudgetPolicy::Error` these engines run under, a
+/// sink IO error, the plan/source dimension guard, …) record no metrics and
+/// warn, so the parent driver drops just that cell instead of the child
+/// panicking and taking the whole engine series down with it (issue #46).
+fn warn_on_skip(label: &str, res: Result<RunMetrics, libviprs::EngineError>) -> Option<RunMetrics> {
+    match res {
+        Ok(m) => Some(m),
+        Err(e) => {
+            eprintln!("cell {label} failed, skipping (issue #46): {e}");
+            None
+        }
+    }
+}
+
 /// Run exactly one cell in *this* process and return its metrics.
 ///
 /// This is the child body behind `--single`. Each engine is exercised once
 /// (single shot); the parent handles warm-up, repetition, and aggregation.
+/// A streaming / mapreduce engine fault degrades to `None` (a skipped cell)
+/// rather than panicking, so one unmeasurable cell never aborts the report
+/// (issue #46).
 pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
     use libviprs::{Layout, PyramidPlanner};
 
@@ -122,18 +140,35 @@ pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
                 PyramidPlanner::new(spec.width, spec.height, spec.tile_size, 0, Layout::DeepZoom)
                     .ok()?;
             let plan = planner.plan();
-            Some(match other {
-                Engine::Monolithic => {
-                    crate::bench_monolithic(&src, &plan, spec.concurrency, &label)
-                }
-                Engine::Streaming => {
-                    crate::bench_streaming(&src, &plan, spec.concurrency, spec.budget_bytes, &label)
-                }
-                Engine::MapReduce => {
-                    crate::bench_mapreduce(&src, &plan, spec.concurrency, spec.budget_bytes, &label)
-                }
+            match other {
+                Engine::Monolithic => Some(crate::bench_monolithic(
+                    &src,
+                    &plan,
+                    spec.concurrency,
+                    &label,
+                )),
+                Engine::Streaming => warn_on_skip(
+                    &label,
+                    crate::bench_streaming(
+                        &src,
+                        &plan,
+                        spec.concurrency,
+                        spec.budget_bytes,
+                        &label,
+                    ),
+                ),
+                Engine::MapReduce => warn_on_skip(
+                    &label,
+                    crate::bench_mapreduce(
+                        &src,
+                        &plan,
+                        spec.concurrency,
+                        spec.budget_bytes,
+                        &label,
+                    ),
+                ),
                 Engine::Libvips => unreachable!(),
-            })
+            }
         }
     }
 }
