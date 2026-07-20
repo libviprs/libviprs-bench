@@ -82,6 +82,9 @@ impl Engine {
 ///
 /// This is the child body behind `--single`. Each engine is exercised once
 /// (single shot); the parent handles warm-up, repetition, and aggregation.
+/// Any engine fault degrades to `None` (a skipped cell) via the shared
+/// [`skip_on_engine_fault`](crate::skip_on_engine_fault) rather than panicking,
+/// so one unmeasurable cell never aborts the report (issue #46).
 pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
     use libviprs::{Layout, PyramidPlanner};
 
@@ -122,18 +125,33 @@ pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
                 PyramidPlanner::new(spec.width, spec.height, spec.tile_size, 0, Layout::DeepZoom)
                     .ok()?;
             let plan = planner.plan();
-            Some(match other {
-                Engine::Monolithic => {
-                    crate::bench_monolithic(&src, &plan, spec.concurrency, &label)
-                }
-                Engine::Streaming => {
-                    crate::bench_streaming(&src, &plan, spec.concurrency, spec.budget_bytes, &label)
-                }
-                Engine::MapReduce => {
-                    crate::bench_mapreduce(&src, &plan, spec.concurrency, spec.budget_bytes, &label)
-                }
+            match other {
+                Engine::Monolithic => crate::skip_on_engine_fault(
+                    &label,
+                    crate::bench_monolithic(&src, &plan, spec.concurrency, &label),
+                ),
+                Engine::Streaming => crate::skip_on_engine_fault(
+                    &label,
+                    crate::bench_streaming(
+                        &src,
+                        &plan,
+                        spec.concurrency,
+                        spec.budget_bytes,
+                        &label,
+                    ),
+                ),
+                Engine::MapReduce => crate::skip_on_engine_fault(
+                    &label,
+                    crate::bench_mapreduce(
+                        &src,
+                        &plan,
+                        spec.concurrency,
+                        spec.budget_bytes,
+                        &label,
+                    ),
+                ),
                 Engine::Libvips => unreachable!(),
-            })
+            }
         }
     }
 }

@@ -86,7 +86,8 @@ fn report_default_budget_admits_large_streaming_pyramid() {
         .plan();
 
     // Exactly the budget/policy the report drives every streaming cell with.
-    let m = bench_streaming(&src, &plan, 0, BENCH_STREAMING_BUDGET, "budget38_stream");
+    let m = bench_streaming(&src, &plan, 0, BENCH_STREAMING_BUDGET, "budget38_stream")
+        .expect("the sized budget must admit the streaming run, not error");
 
     assert_valid_large_pyramid(&m, "streaming");
 }
@@ -101,7 +102,8 @@ fn report_default_budget_admits_large_mapreduce_pyramid() {
         .expect("plan the pyramid")
         .plan();
 
-    let m = bench_mapreduce(&src, &plan, 0, BENCH_STREAMING_BUDGET, "budget38_mr");
+    let m = bench_mapreduce(&src, &plan, 0, BENCH_STREAMING_BUDGET, "budget38_mr")
+        .expect("the sized budget must admit the mapreduce run, not error");
 
     assert_valid_large_pyramid(&m, "mapreduce");
 }
