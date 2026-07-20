@@ -30,6 +30,7 @@ use libviprs::{
     EngineBuilder, EngineConfig, EngineKind, FsSink, Layout, PyramidPlanner, Raster,
     RasterStripSource, TileFormat,
 };
+use libviprs_bench::provenance::{OracleMatch, Provenance};
 use libviprs_bench::{bench_libvips, gradient_raster, vips_available, write_temp_png};
 
 /// Peak RSS of the current process in bytes. Mirrors the RSS basis the
@@ -626,6 +627,20 @@ fn main() {
         println!("libvips CLI: included");
     } else {
         println!("libvips CLI: not found, skipping");
+    }
+    // Mismatched-oracle guard (#33) on the default container CMD: if this run
+    // measured a different libvips than the container was pinned to build, its
+    // numbers are not comparable to a pinned-oracle run — warn loudly. Only
+    // fires on a genuine parsed mismatch, never on a host run without libvips.
+    let prov = Provenance::capture();
+    if let OracleMatch::Mismatch { measured, pinned } = prov.libvips_oracle_match() {
+        eprintln!(
+            "WARNING: measured libvips {}.{} != pinned oracle {}.{} — this \
+             scalability run measured a different libvips than the container \
+             was pinned to build (issue #33); its numbers are NOT comparable \
+             to a pinned-oracle run.",
+            measured.0, measured.1, pinned.0, pinned.1
+        );
     }
     println!();
 

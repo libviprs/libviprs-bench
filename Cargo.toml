@@ -32,6 +32,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 image = "0.25"
 inferno = "0.12"
 libc = "0.2"
+# In-process libvips FFI (gated by the `libvips` feature). Its major.minor
+# MUST track the libvips the container builds — `provenance::PINNED_LIBVIPS_VERSION`
+# and the Dockerfile's `ARG LIBVIPS_VERSION` (both 8.18.x). Measuring one
+# libvips series through a different-series binding is its own mismatched
+# oracle (issue #33); `tests/libvips_provenance.rs` asserts they stay aligned.
 libvips-rs = { version = "8.18", optional = true }
 plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series"] }
 polars = { version = "0.50", optional = true, default-features = false, features = [
