@@ -24,7 +24,15 @@ use std::process::Command;
 const CORE_DIR: &str = "../libviprs";
 
 fn main() {
-    let core_dir = Path::new(CORE_DIR);
+    // The version-matrix runner rebuilds this harness against a *worktree* of
+    // the core crate checked out at some tag, redirecting the linked library
+    // with a Cargo `paths` override. `paths` overrides don't reach this build
+    // script, so it honours `BENCH_CORE_DIR`: when set, the version/SHA stamps
+    // are read from that worktree instead of the sibling `../libviprs`, keeping
+    // the built binary's self-reported version in step with the library it
+    // actually linked (issues #19, #26). Unset (the everyday build) → `../libviprs`.
+    let core_dir = std::env::var("BENCH_CORE_DIR").unwrap_or_else(|_| CORE_DIR.to_string());
+    let core_dir = Path::new(&core_dir);
     let manifest = core_dir.join("Cargo.toml");
 
     let version = read_package_version(&manifest).unwrap_or_else(|| "unknown".to_string());
@@ -46,12 +54,19 @@ fn main() {
     // pace with a core version bump without a manual clean.
     println!("cargo:rerun-if-changed={}", manifest.display());
     println!("cargo:rerun-if-changed=build.rs");
+    // Re-run when the version-matrix runner repoints the measured core at a
+    // per-tag worktree, so each tag's build re-stamps its own version/SHA.
+    println!("cargo:rerun-if-env-changed=BENCH_CORE_DIR");
 }
 
 /// Extract the first `version = "..."` from the `[package]` section of a
 /// Cargo manifest. I keep this to a small hand scan rather than pulling
 /// in a TOML parser as a build dependency: the `[package] version` line
 /// is stable and appears before any other table.
+///
+/// This intentionally duplicates the library's `version_matrix::read_package_field`:
+/// a build script cannot depend on the crate it builds, so the two copies can't
+/// be merged. Keep them in step.
 fn read_package_version(manifest: &Path) -> Option<String> {
     let text = std::fs::read_to_string(manifest).ok()?;
     let mut in_package = false;

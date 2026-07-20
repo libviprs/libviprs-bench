@@ -138,6 +138,24 @@ pub fn run_single_cell(spec: CellSpec) -> Option<RunMetrics> {
     }
 }
 
+/// If `argv` begins with the hidden `--print-core` subcommand, print the
+/// core crate identity this harness was built against — one line,
+/// `version\tshort_sha` from the `build.rs` stamp ([`crate::core_version`] /
+/// [`crate::core_git_sha`]) — and return `Some(0)`; otherwise `None`.
+///
+/// This is the artifact's own answer to "which core did you link?", used by the
+/// version-matrix runner to verify a per-tag rebuild actually measured the ref
+/// it is about to be recorded under, rather than trusting a side-channel read
+/// (issue #19). Keep it ahead of the normal `main` body, like `--single`.
+pub fn maybe_run_print_core_subcommand() -> Option<i32> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) != Some("--print-core") {
+        return None;
+    }
+    println!("{}\t{}", crate::core_version(), crate::core_git_sha());
+    Some(0)
+}
+
 /// If `argv` begins with the hidden `--single` subcommand, run that one
 /// cell, print its [`RunMetrics`] JSON on stdout, and return `Some(exit)`.
 /// The caller (a `main`) should `std::process::exit` with the code.

@@ -21,9 +21,9 @@ use std::path::Path;
 use libviprs_bench::harness::{self, Engine};
 use libviprs_bench::provenance::{OracleMatch, Provenance};
 use libviprs_bench::{
-    core_git_sha, core_version, create_snapshot, executive_verdict, generate_charts,
-    generate_history_chart, load_history, print_comparison_table, print_savings_summary,
-    save_history, vips_available,
+    BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, DEFAULT_CONCURRENCY, DEFAULT_SIZES, core_git_sha,
+    core_version, create_snapshot, executive_verdict, generate_charts, generate_history_chart,
+    load_history, print_comparison_table, print_savings_summary, save_history, vips_available,
 };
 
 fn main() {
@@ -36,13 +36,23 @@ fn main() {
         std::process::exit(code);
     }
 
+    // Hidden `--print-core`: the version-matrix runner rebuilds this binary per
+    // tag and asks it which core it linked, to verify the measured artifact's
+    // identity matches the ref before recording a snapshot (issue #19).
+    if let Some(code) = harness::maybe_run_print_core_subcommand() {
+        std::process::exit(code);
+    }
+
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
     fs::create_dir_all(&report_dir).unwrap();
 
-    let sizes: &[(u32, u32)] = &[(512, 512), (1024, 1024), (2048, 2048), (4096, 4096)];
-    let concurrency_levels: &[usize] = &[0, 4];
-    let tile_size: u32 = 256;
-    let streaming_budget: u64 = 1_000_000; // 1 MB
+    // The canonical suite, shared with the version-matrix runner so the
+    // everyday axis and the release-history axis measure the identical sizes,
+    // concurrency, tile size, and budget (issue #19).
+    let sizes: &[(u32, u32)] = DEFAULT_SIZES;
+    let concurrency_levels: &[usize] = DEFAULT_CONCURRENCY;
+    let tile_size: u32 = BENCH_TILE_SIZE;
+    let streaming_budget: u64 = BENCH_STREAMING_BUDGET; // 1 MB
 
     // Statistics: >= 7 timed iterations after a discarded warm-up, each cell
     // in its own child process, engine order interleaved within a size
@@ -208,23 +218,30 @@ fn main() {
         Ok(mut history) => {
             let snapshot = create_snapshot(results.clone(), tile_size, streaming_budget);
             history.push(snapshot);
-            save_history(&history_path, &history);
-            println!(
-                "Benchmark history updated: {} entries in {}",
-                history.len(),
-                history_path.display()
-            );
+            match save_history(&history_path, &history) {
+                Ok(()) => {
+                    println!(
+                        "Benchmark history updated: {} entries in {}",
+                        history.len(),
+                        history_path.display()
+                    );
 
-            // Generate history trend charts if we have multiple versions
-            if history.len() >= 2 {
-                for &(w, h) in sizes {
-                    for &conc in concurrency_levels {
-                        generate_history_chart(&history, &report_dir, (w, h), conc);
+                    // Generate history trend charts if we have multiple versions
+                    if history.len() >= 2 {
+                        for &(w, h) in sizes {
+                            for &conc in concurrency_levels {
+                                generate_history_chart(&history, &report_dir, (w, h), conc);
+                            }
+                        }
+                        println!("History trend charts written to {}", report_dir.display());
+                    } else {
+                        println!("(run again on a different version to generate trend charts)");
                     }
                 }
-                println!("History trend charts written to {}", report_dir.display());
-            } else {
-                println!("(run again on a different version to generate trend charts)");
+                Err(e) => {
+                    eprintln!("warning: {e}");
+                    eprintln!("This run's snapshot was not persisted; prior history is intact.");
+                }
             }
         }
         Err(e) => {
