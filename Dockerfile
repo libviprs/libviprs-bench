@@ -6,25 +6,32 @@
 # to a real on-disk sink with the same codec, so neither side gets a
 # filesystem-I/O or encoding advantage (issue #153).
 #
+# libvips is compiled from a pinned upstream *source* tarball (not Debian's
+# frozen `libvips-dev`), so the C oracle is a recent release matched to the
+# `libvips-rs` 8.18 bindings rather than a years-old ~8.14 mismatch (#33).
+#
 # Build:  docker build -t libviprs-bench .
 # Run:    docker run --rm libviprs-bench
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Pinned inputs. A benchmark is only reproducible if every layer is fixed:
-# a floating base image, an unpinned `libvips-dev`, or a `latest` PDFium
-# would silently change the numbers between runs (issue #153). Bump these
+# a floating base image, an unpinned libvips, or a `latest` PDFium would
+# silently change the numbers between runs (issue #153). Bump these
 # deliberately, never implicitly.
-#   PDFIUM_RELEASE  : libviprs-dep release tag (checksum-verified builder)
-#   LIBVIPS_VERSION — exact Debian bookworm `libvips*` package version
+#   PDFIUM_RELEASE  — libviprs-dep release tag (checksum-verified builder)
+#   LIBVIPS_VERSION — upstream libvips source release, built from tarball
+#   LIBVIPS_SHA256  — SHA-256 of that tarball, verified before it is built
 # The Rust and Debian base images are pinned by tag on the FROM lines below.
 # ---------------------------------------------------------------------------
 ARG PDFIUM_RELEASE=pdfium-7881
-# Exact `libvips*` version currently in Debian bookworm. Debian only keeps the
-# newest security build of a package on the live mirror, so this must name the
-# current `8.14.1-3+deb12uN` — bump `N` when a new bookworm security update
-# lands (otherwise `apt-get install` cannot resolve the pinned version).
-ARG LIBVIPS_VERSION=8.14.1-3+deb12u3
+# Upstream libvips release compiled from source (issue #33). Kept in lockstep
+# with `provenance::PINNED_LIBVIPS_VERSION` and the `libvips-rs` binding in
+# Cargo.toml — `tests/libvips_provenance.rs` fails if they drift. Bump all
+# three together, refreshing LIBVIPS_SHA256 from the upstream
+# `vips-<version>.tar.xz.sha256sum` companion file.
+ARG LIBVIPS_VERSION=8.18.4
+ARG LIBVIPS_SHA256=2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037
 
 # Stage 1: Download PDFium for the target architecture
 FROM debian:bookworm-20250929-slim AS pdfium
@@ -58,26 +65,64 @@ RUN case "${TARGETARCH}" in \
 FROM rust:1.89-bookworm AS builder
 
 ARG LIBVIPS_VERSION
+ARG LIBVIPS_SHA256
 
-# Install libvips development headers and runtime (C library for comparison)
-# plus pkg-config for the build script to find it. `libvips*` are pinned to an
-# exact Debian version so the C baseline is fixed run-to-run; bump
-# LIBVIPS_VERSION deliberately when refreshing the environment.
+# Build libvips from a pinned upstream source tarball rather than installing
+# Debian's frozen `libvips-dev` (issue #33): bookworm ships ~8.14, years
+# behind the `libvips-rs` 8.18 bindings, so the apt package made the C oracle
+# an unfair, mismatched baseline. A source build gives a recent release
+# matched to the bindings, fixed by version + SHA-256.
+#
+# Two dependency sets: the meson/ninja toolchain that compiles libvips, and
+# the image-format `-dev` libraries it links against. Only PNG is on the
+# benchmark's hot path (DeepZoom writes PNG tiles), but jpeg/tiff/webp are
+# included so the oracle is a realistic, full-featured libvips build.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
-        "libvips-dev=${LIBVIPS_VERSION}" \
-        "libvips-tools=${LIBVIPS_VERSION}" \
+        curl \
+        xz-utils \
+        build-essential \
+        meson \
+        ninja-build \
         pkg-config \
+        libglib2.0-dev \
+        libexpat1-dev \
+        libpng-dev \
+        libjpeg62-turbo-dev \
+        libtiff-dev \
+        libwebp-dev \
         time \
     && rm -rf /var/lib/apt/lists/*
+
+# Download, checksum-verify, and compile the pinned libvips release. The
+# tarball is verified against LIBVIPS_SHA256 before it is unpacked (a pinned
+# URL without a digest still trusts the remote end forever — the same rule the
+# PDFium stage follows), then built release-mode into /usr/local. `--libdir=lib`
+# keeps `vips.pc` under /usr/local/lib/pkgconfig where pkg-config finds it
+# without a multiarch subdir; meson auto-detects features from the `-dev`
+# libraries installed above.
+RUN curl -fL -o /tmp/vips.tar.xz \
+        "https://github.com/libvips/libvips/releases/download/v${LIBVIPS_VERSION}/vips-${LIBVIPS_VERSION}.tar.xz" && \
+    echo "${LIBVIPS_SHA256}  /tmp/vips.tar.xz" | sha256sum -c - && \
+    mkdir -p /tmp/vips-src && \
+    tar xJf /tmp/vips.tar.xz -C /tmp/vips-src --strip-components=1 && \
+    cd /tmp/vips-src && \
+    meson setup build --buildtype=release --prefix=/usr/local --libdir=lib && \
+    ninja -C build && \
+    ninja -C build install && \
+    ldconfig && \
+    rm -rf /tmp/vips.tar.xz /tmp/vips-src
+
+# Let the build script's pkg-config probe find the freshly built libvips.
+ENV PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
 # Install PDFium shared library
 COPY --from=pdfium /opt/pdfium/lib/libpdfium.so /usr/local/lib/libpdfium.so
 RUN ldconfig
 
-# Verify libvips is installed and accessible
-RUN vips --version && pkg-config --libs vips
+# Verify the built libvips is the pinned version and is discoverable
+RUN vips --version && pkg-config --modversion vips
 
 WORKDIR /src
 
