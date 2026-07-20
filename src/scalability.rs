@@ -22,7 +22,6 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use plotters::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use libviprs::streaming::BudgetPolicy;
@@ -69,17 +68,6 @@ fn streaming_budget_for(width: u32, tile_size: u32) -> u64 {
     (min_strip_bytes * 2).max(STREAMING_BUDGET_FLOOR)
 }
 
-/// Default x-axis crop (megapixels) for scalability charts.
-///
-/// The smallest images we benchmark (sub-megapixel up to ~12 MP) sit in a
-/// regime where libvips's per-region working set and the libviprs engines'
-/// fixed setup costs dominate the metrics. On efficiency / resource-cost
-/// charts this manifests as a near-vertical drop on the left side of the
-/// graph that hides the trend in the size range users actually care about
-/// (full-page blueprints at 72 DPI live near 15 MP and above). We crop the
-/// x-axis at this value by default; `--no-crop` falls back to showing the
-/// full series.
-const DEFAULT_X_AXIS_CROP_MP: f64 = 15.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScalabilityPoint {
@@ -362,338 +350,8 @@ fn run_pdf_streaming(
     }
 }
 
-fn draw_scalability_chart(
-    path: &std::path::Path,
-    title: &str,
-    x_label: &str,
-    y_label: &str,
-    series: &[(&str, RGBColor, &[(f64, f64)])],
-    // When `Some(v)`, the chart's x-axis starts at `v` and any data
-    // points with x < v are dropped before plotting. The y-axis range
-    // is recomputed from only the visible points so labels suit the
-    // zoomed-in scale. When `None`, behaves like the original chart
-    // (axis from 0, full series).
-    x_min: Option<f64>,
-    // Optional disclosure drawn in a thin band below the plot. Used to note
-    // the rasterized-PDF series' confounds directly on the shared SVG so the
-    // deliverable stays honest even when a chart is viewed without the console
-    // caveat (issue #22 review). `None` keeps the original 700x450 canvas.
-    footnote: Option<&str>,
-) {
-    let x_lo = x_min.unwrap_or(0.0);
-
-    // Filter every series to the visible x range up-front. Plotters would
-    // clip out-of-range points on its own, but we still need the filtered
-    // view to drive y-axis sizing — otherwise a huge off-chart point keeps
-    // the y-axis stretched and the visible range looks flat against the
-    // axis.
-    let visible_series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = series
-        .iter()
-        .map(|(name, color, pts)| {
-            let visible: Vec<(f64, f64)> =
-                pts.iter().filter(|(x, _)| *x >= x_lo).copied().collect();
-            (*name, *color, visible)
-        })
-        .collect();
-
-    let max_x = visible_series
-        .iter()
-        .flat_map(|(_, _, pts)| pts.iter().map(|(x, _)| *x))
-        .fold(x_lo, f64::max)
-        * 1.05;
-    let max_y = visible_series
-        .iter()
-        .flat_map(|(_, _, pts)| pts.iter().map(|(_, y)| *y))
-        .fold(0.0f64, f64::max)
-        * 1.15;
-
-    // Reserve a 36px band under the 450px plot for the footnote when present,
-    // so the disclosure never overlaps the axis.
-    let height = if footnote.is_some() { 486 } else { 450 };
-    let root = SVGBackend::new(path, (700, height)).into_drawing_area();
-    root.fill(&WHITE).unwrap();
-
-    let plot_area = if let Some(note) = footnote {
-        let (upper, lower) = root.split_vertically(450);
-        let style = TextStyle::from(("sans-serif", 11).into_font()).color(&RGBColor(110, 110, 110));
-        lower.draw_text(note, &style, (12, 13)).unwrap();
-        upper
-    } else {
-        root.clone()
-    };
-
-    let display_title: String = if x_min.is_some() {
-        format!("{title}  (x ≥ {x_lo:.0} MP)")
-    } else {
-        title.to_string()
-    };
-
-    let mut chart = ChartBuilder::on(&plot_area)
-        .caption(display_title, ("sans-serif", 18).into_font())
-        .margin(15)
-        .x_label_area_size(40)
-        .y_label_area_size(70)
-        .build_cartesian_2d(x_lo..max_x, 0.0..max_y)
-        .unwrap();
-
-    chart
-        .configure_mesh()
-        .x_desc(x_label)
-        .y_desc(y_label)
-        .draw()
-        .unwrap();
-
-    for (name, color, pts) in &visible_series {
-        let data = pts.clone();
-        let legend_color = *color;
-        chart
-            .draw_series(LineSeries::new(data.clone(), color.stroke_width(2)))
-            .unwrap()
-            .label(*name)
-            .legend(move |(x, y)| {
-                Rectangle::new([(x, y - 5), (x + 15, y + 5)], legend_color.filled())
-            });
-        chart
-            .draw_series(
-                data.iter()
-                    .map(|&(x, y)| Circle::new((x, y), 4, color.filled())),
-            )
-            .unwrap();
-    }
-
-    chart
-        .configure_series_labels()
-        .position(SeriesLabelPosition::UpperLeft)
-        .background_style(WHITE.mix(0.9))
-        .border_style(BLACK.mix(0.3))
-        .label_font(("sans-serif", 12))
-        .draw()
-        .unwrap();
-
-    root.present().unwrap();
-}
-
-/// Render one full set of five scalability SVGs for every distinct thread
-/// budget present in `all_points`. Points measured at different thread caps
-/// are NEVER drawn on the same line set (issue #156): each concurrency level
-/// gets its own `scalability_*_c{n}.svg` files with the cap in the caption.
-fn render_charts(
-    all_points: &[ScalabilityPoint],
-    report_dir: &std::path::Path,
-    x_min: Option<f64>,
-) {
-    let mut concs: Vec<usize> = all_points.iter().map(|p| p.concurrency).collect();
-    concs.sort_unstable();
-    concs.dedup();
-    for conc in concs {
-        let subset: Vec<ScalabilityPoint> = all_points
-            .iter()
-            .filter(|p| p.concurrency == conc)
-            .cloned()
-            .collect();
-        render_charts_for_conc(&subset, report_dir, x_min, conc);
-    }
-}
-
-/// Render the five scalability SVGs for a single thread budget into
-/// `report_dir`, filenames suffixed `_c{concurrency}`.
-fn render_charts_for_conc(
-    all_points: &[ScalabilityPoint],
-    report_dir: &std::path::Path,
-    x_min: Option<f64>,
-    concurrency: usize,
-) {
-    let thread_cap = if concurrency == 0 {
-        "auto threads".to_string()
-    } else {
-        format!(
-            "{concurrency} thread{}",
-            if concurrency == 1 { "" } else { "s" }
-        )
-    };
-    let vips_color = RGBColor(156, 39, 176);
-    let mono_color = RGBColor(66, 133, 244);
-    let stream_color = RGBColor(52, 168, 83);
-    let mr_color = RGBColor(234, 67, 53);
-    // Orange — the real-content rasterized-PDF series, kept visually distinct
-    // from the four synthetic-gradient engine lines (issue #31).
-    let pdf_color = RGBColor(255, 152, 0);
-
-    let extract_series = |engine: &str| -> Vec<(f64, f64, f64, f64, f64, f64)> {
-        all_points
-            .iter()
-            .filter(|p| p.engine == engine)
-            .map(|p| {
-                (
-                    p.megapixels,
-                    p.wall_time_ms,
-                    p.peak_rss_mb,
-                    p.tiles_per_second,
-                    p.tiles_per_second_per_mb,
-                    p.resource_cost,
-                )
-            })
-            .collect()
-    };
-
-    let vips_data = extract_series("libvips");
-    let mono_data = extract_series("monolithic");
-    let stream_data = extract_series("streaming");
-    let mr_data = extract_series("mapreduce");
-    // Real-content series (issue #31). Empty on a default build (no
-    // `streaming-pdf` points), in which case the chart is byte-for-byte what it
-    // was before and the titles keep saying "synthetic gradient".
-    let pdf_data = extract_series("streaming-pdf");
-    let workload = if pdf_data.is_empty() {
-        "synthetic gradient"
-    } else {
-        "gradient + rasterized PDF"
-    };
-
-    // Helper to pull one metric (by tuple field index) from each engine's
-    // (megapixels, m1, m2, m3, m4, m5) tuples.
-    macro_rules! xy {
-        ($data:expr, $idx:tt) => {
-            $data.iter().map(|d| (d.0, d.$idx)).collect::<Vec<_>>()
-        };
-    }
-
-    // Per-chart definition: (filename, title, y-label, tuple-index for the
-    // metric on each engine's series). Looping over this avoids repeating
-    // the build-up boilerplate five times.
-    // NOTE: the four engine series (libvips/monolithic/streaming/mapreduce)
-    // are a SYNTHETIC gradient raster (see `gradient_raster`), sized to the
-    // 1.42:1 aspect of the California South page. Under the `pdfium` feature a
-    // fifth `streaming-pdf` series is added: the committed real-content fixture
-    // (`fixtures/cc_licenses_mapping.pdf`) rasterized via `PdfiumStripSource`
-    // (issues #30/#31). Titles name whichever workloads are actually present
-    // (`workload`) rather than implying a real blueprint when only the gradient
-    // ran (issue #161).
-    //
-    // The PDF line is NOT a like-for-like engine comparison and every title
-    // carries `workload` plus a per-chart `footnote` disclosing why (issue #22
-    // review): (1) it is end-to-end rasterize+pyramid — pdfium renders each
-    // strip *inside* the timed run — while the gradient series are pyramid-only
-    // over a pre-materialised raster, so its time/throughput/efficiency/cost
-    // include rasterization the others never pay; (2) its strips are RGBA
-    // (4 bpp) at a matched-but-larger budget and pdfium serialises every render,
-    // so it cannot exhibit strip-render parallelism; (3) peak RSS is a shared,
-    // process-wide monotonic high-water mark (see `RunMetrics::peak_rss_mb`),
-    // not a per-run figure — the per-run bounded footprint is the JSON's
-    // `tracked_memory_mb` column, not this chart.
-    let charts: [(String, String, &str, u8); 5] = [
-        (
-            format!("scalability_wall_time_c{concurrency}.svg"),
-            format!("Wall Time Scalability — {workload} ({thread_cap})"),
-            "Time (ms)",
-            1,
-        ),
-        (
-            format!("scalability_peak_memory_c{concurrency}.svg"),
-            format!("Peak RSS Scalability — {workload} ({thread_cap})"),
-            "Peak RSS (MB)",
-            2,
-        ),
-        (
-            format!("scalability_throughput_c{concurrency}.svg"),
-            format!("Throughput Scalability — {workload} ({thread_cap})"),
-            "Tiles/s",
-            3,
-        ),
-        (
-            format!("scalability_efficiency_c{concurrency}.svg"),
-            format!("Memory Efficiency — Tiles/s per RSS-MB — {workload} ({thread_cap})"),
-            "Tiles/s/RSS-MB",
-            4,
-        ),
-        (
-            format!("scalability_resource_cost_c{concurrency}.svg"),
-            format!(
-                "Resource Cost — RSS-MB\u{00b7}s per Tile — {workload} ({thread_cap}, lower is better)"
-            ),
-            "RSS-MB\u{00b7}s / tile",
-            5,
-        ),
-    ];
-
-    for (filename, title, y_label, idx) in &charts {
-        let filename = filename.as_str();
-        let title = title.as_str();
-        let idx = *idx;
-        let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
-        if !vips_data.is_empty() {
-            let pts = match idx {
-                1 => xy!(vips_data, 1),
-                2 => xy!(vips_data, 2),
-                3 => xy!(vips_data, 3),
-                4 => xy!(vips_data, 4),
-                5 => xy!(vips_data, 5),
-                _ => unreachable!(),
-            };
-            series.push(("libvips", vips_color, pts));
-        }
-        let pts_for = |data: &Vec<(f64, f64, f64, f64, f64, f64)>| match idx {
-            1 => xy!(data, 1),
-            2 => xy!(data, 2),
-            3 => xy!(data, 3),
-            4 => xy!(data, 4),
-            5 => xy!(data, 5),
-            _ => unreachable!(),
-        };
-        series.push(("Monolithic", mono_color, pts_for(&mono_data)));
-        series.push(("Streaming", stream_color, pts_for(&stream_data)));
-        series.push(("MapReduce", mr_color, pts_for(&mr_data)));
-        // The real-content series only when it was measured (pdfium build).
-        if !pdf_data.is_empty() {
-            series.push(("Streaming (PDF)", pdf_color, pts_for(&pdf_data)));
-        }
-
-        let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
-            .iter()
-            .map(|(n, c, d)| (*n, *c, d.as_slice()))
-            .collect();
-
-        // Disclose the rasterized-PDF confound directly on the SVG (only when
-        // that series is present). The memory chart's confound (shared RSS
-        // high-water mark) differs from the others' (rasterize+pyramid vs
-        // pyramid-only), so pick the note by metric (issue #22 review).
-        let footnote: Option<&str> = if pdf_data.is_empty() {
-            None
-        } else if idx == 2 {
-            Some(
-                "Note: 'Streaming (PDF)' RSS is a shared in-process high-water mark, \
-                 not a per-run peak — see tracked_memory_mb in the JSON.",
-            )
-        } else {
-            Some(
-                "Note: 'Streaming (PDF)' is end-to-end rasterize+pyramid (RGBA, serialized \
-                 pdfium); the gradient series are pyramid-only.",
-            )
-        };
-
-        draw_scalability_chart(
-            &report_dir.join(filename),
-            title,
-            "Image Size (megapixels)",
-            y_label,
-            &refs,
-            x_min,
-            footnote,
-        );
-    }
-}
-
 /// Parsed CLI options for the scalability binary.
 struct CliOpts {
-    /// When true, skip the bench loop and re-render charts from the
-    /// `scalability_results.json` already on disk. Useful for iterating on
-    /// chart styling without paying the multi-minute bench cost.
-    replot: bool,
-    /// When true, crop the x-axis to `DEFAULT_X_AXIS_CROP_MP` and up. The
-    /// full range is now the DEFAULT (issue #161) — the crop hid the small-
-    /// image regime and was only opt-in for zooming into the large-image
-    /// tail.
-    crop: bool,
     /// Megapixel cap for the real-content PDF series (`--pdf-max-mp`, default
     /// [`DEFAULT_PDF_MAX_MP`]). Only meaningful on a `pdfium` build; the four
     /// gradient series always run the full sweep.
@@ -702,17 +360,11 @@ struct CliOpts {
 }
 
 fn parse_cli() -> CliOpts {
-    let mut replot = false;
-    let mut crop = false;
     #[cfg(feature = "pdfium")]
     let mut pdf_max_mp = DEFAULT_PDF_MAX_MP;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--replot" => replot = true,
-            "--crop" => crop = true,
-            // Back-compat no-ops: full range is now the default.
-            "--no-crop" | "--full-x-range" => {}
             "--pdf-max-mp" => {
                 let val = args.next();
                 #[cfg(feature = "pdfium")]
@@ -732,15 +384,8 @@ fn parse_cli() -> CliOpts {
                 let _ = val;
             }
             "-h" | "--help" => {
-                println!("Usage: scalability [--replot] [--crop] [--pdf-max-mp <n>]");
+                println!("Usage: scalability [--pdf-max-mp <n>]");
                 println!();
-                println!("  --replot         Skip the bench; redraw SVGs from the existing");
-                println!("                   report/scalability_results.json.");
-                println!(
-                    "  --crop           Zoom the x-axis to >= {} MP (default is the full",
-                    DEFAULT_X_AXIS_CROP_MP
-                );
-                println!("                   range so the small-image regime is visible).");
                 println!("  --pdf-max-mp <n>  Cap the real-content PDF series at n megapixels");
                 println!(
                     "                   (pdfium builds only; the gradient series are uncapped)."
@@ -755,8 +400,6 @@ fn parse_cli() -> CliOpts {
         }
     }
     CliOpts {
-        replot,
-        crop,
         #[cfg(feature = "pdfium")]
         pdf_max_mp,
     }
@@ -764,43 +407,11 @@ fn parse_cli() -> CliOpts {
 
 fn main() {
     let opts = parse_cli();
-    let x_axis_crop: Option<f64> = if opts.crop {
-        Some(DEFAULT_X_AXIS_CROP_MP)
-    } else {
-        None
-    };
+    #[cfg(not(feature = "pdfium"))]
+    let _ = &opts;
 
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
     fs::create_dir_all(&report_dir).unwrap();
-
-    // Replot mode: skip the bench, reload points from JSON, jump straight
-    // to chart generation. Lets us iterate on chart styling (cropping,
-    // colors, captions) without paying the multi-minute bench cost.
-    if opts.replot {
-        let json_path = report_dir.join("scalability_results.json");
-        let raw = fs::read_to_string(&json_path).unwrap_or_else(|e| {
-            eprintln!("--replot needs an existing {}: {e}", json_path.display());
-            std::process::exit(1);
-        });
-        let all_points: Vec<ScalabilityPoint> = serde_json::from_str(&raw).unwrap_or_else(|e| {
-            eprintln!("failed to parse {}: {e}", json_path.display());
-            std::process::exit(1);
-        });
-        println!(
-            "Replotting {} points from {} (crop: {})",
-            all_points.len(),
-            json_path.display(),
-            x_axis_crop
-                .map(|v| format!(">= {v} MP"))
-                .unwrap_or_else(|| "off".to_string()),
-        );
-        render_charts(&all_points, &report_dir, x_axis_crop);
-        println!(
-            "Charts written to {}/scalability_*.svg",
-            report_dir.display()
-        );
-        return;
-    }
 
     let has_vips = vips_available();
 
@@ -808,7 +419,7 @@ fn main() {
     // sizes. Uses 1.42:1 aspect ratio matching 43551_California_South.pdf
     // (4608x3240 pts). The grid intentionally spans both the small "noise"
     // regime (sub-megapixel) and several points well above the default
-    // x-axis crop (15 MP) so the cropped charts have real lines instead
+    // small-image regime AND the large-image tail, so the log-log charts
     // of a single dot per series. Memory: monolithic peak ≈ w×h×3×1.25
     // bytes — capped here at ~1.7 GB so the default 4 GB Docker container
     // still has headroom for libvips alongside.
@@ -1049,8 +660,8 @@ fn main() {
         }
     }
 
-    // --- Generate charts ---
-    render_charts(&all_points, &report_dir, x_axis_crop);
+    // --- Charts render from scalability_results.json via
+    // tools/charts/render.mjs (invoked by run-bench.sh after this writes JSON). ---
 
     // Save raw data
     let json_path = report_dir.join("scalability_results.json");

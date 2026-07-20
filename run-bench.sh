@@ -115,6 +115,28 @@ LIBVIPS_PIN="$(sed -n 's/^ARG LIBVIPS_VERSION=//p' "$SCRIPT_DIR/Dockerfile" | he
 # [profile.release] pin in Cargo.toml (issue #162).
 export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 
+# Directory containing this script (the crate root). Defined up-front so both
+# the local and Docker paths can locate report/ and the JS chart renderer.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Regenerate the history + scalability SVGs from the JSON the Rust harness
+# just wrote, using the causl-bench JS chart library (tools/charts/render.mjs).
+# The Rust binaries only emit JSON now; charts are rendered here so a single
+# run always refreshes report/*.svg. Skipped with a hint if node is missing —
+# the JSON is the source of truth and can be re-rendered later.
+regenerate_charts() {
+    local report_dir="$1"
+    if command -v node >/dev/null 2>&1; then
+        echo ""
+        echo "Regenerating SVG charts from JSON (tools/charts/render.mjs)..."
+        node "$SCRIPT_DIR/tools/charts/render.mjs" --report-dir "$report_dir"
+    else
+        echo ""
+        echo "node not found — skipping SVG chart regeneration."
+        echo "  JSON written; run: node tools/charts/render.mjs --report-dir $report_dir"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Local mode (--no-build) — runs on the host, no Docker required
 # ---------------------------------------------------------------------------
@@ -151,6 +173,8 @@ if [ "$NO_BUILD" = true ]; then
     fi
 
     cargo run --release $FEATURES --bin "$BENCH_CMD"
+
+    regenerate_charts "$SCRIPT_DIR/report"
     exit 0
 fi
 
@@ -208,6 +232,10 @@ docker run --rm \
     -v "$SCRIPT_DIR/report:/src/libviprs-bench/report" \
     "$IMAGE_NAME" \
     cargo run --release --features libvips --bin "$BENCH_CMD"
+
+# Charts are rendered on the HOST (node lives here, not in the Rust image)
+# from the JSON the container wrote into the mounted report/ volume.
+regenerate_charts "$SCRIPT_DIR/report"
 
 echo ""
 echo "Results written to ${SCRIPT_DIR}/report/"

@@ -90,7 +90,8 @@ fn load_history_migrates_legacy_file() {
 #[test]
 fn history_chart_filter_matches_migrated_labels() {
     // The concrete regression: a migrated label must satisfy the exact
-    // prefix filter `generate_history_chart` uses.
+    // `{w}x{h}_c{c}` prefix filter the history-trend pipeline groups runs by
+    // (the SVG rendering itself now lives in tools/charts/render.mjs).
     let dir = std::env::temp_dir().join(format!("libviprs_hist2_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("benchmark_history.json");
