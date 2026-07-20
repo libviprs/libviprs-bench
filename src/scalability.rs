@@ -64,7 +64,6 @@ const TILE_SIZE: u32 = 256;
 /// width here is identical to sizing from `plan.canvas_width` (RGB8, bpp = 3).
 const STREAMING_BUDGET_FLOOR: u64 = 4_000_000; // 4 MB
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScalabilityPoint {
     width: u32,
