@@ -48,7 +48,14 @@ function segmentsFor(svg, color) {
 
 test('renderAll writes every expected SVG from the sample JSON', () => {
   const outDir = freshOut();
-  const written = renderAll({ historyPath: HISTORY, scalabilityPath: SCAL, outDir });
+  // No results JSON here → only the history + scalability set (the grouped-bar
+  // comparison charts have their own coverage), so this stays an exact-set check.
+  const written = renderAll({
+    historyPath: HISTORY,
+    scalabilityPath: SCAL,
+    resultsPath: join(FIX, 'no-results.json'),
+    outDir,
+  });
   const names = written.map((p) => basename(p)).sort();
   for (const want of EXPECTED) {
     assert.ok(names.includes(want), `render.mjs writes ${want}`);
@@ -137,4 +144,24 @@ test('--linear option changes the scalability rendering', () => {
   const logSvg = readFileSync(join(logDir, 'scalability_wall_time_c1.svg'), 'utf8');
   const linSvg = readFileSync(join(linDir, 'scalability_wall_time_c1.svg'), 'utf8');
   assert.notEqual(logSvg, linSvg, 'linear vs log-log produce different SVGs');
+});
+
+test('--zoom adds large-image _zoom scalability variants while keeping full-range', () => {
+  // #43: zoom is opt-in and ADDITIVE — the default full-range charts are still
+  // written (they are the default view), and a `_zoom` variant restricted to
+  // the large-image regime is written alongside.
+  const outDir = freshOut();
+  const written = renderAll({
+    scalabilityPath: SCAL,
+    historyPath: join(FIX, 'none.json'),
+    resultsPath: join(FIX, 'none.json'),
+    outDir,
+    zoom: 10,
+  });
+  const names = written.map((p) => basename(p));
+  assert.ok(names.includes('scalability_wall_time_c1.svg'), 'full-range chart still emitted (default view)');
+  assert.ok(names.includes('scalability_wall_time_c1_zoom.svg'), 'zoomed large-image variant emitted');
+  const full = readFileSync(join(outDir, 'scalability_wall_time_c1.svg'), 'utf8');
+  const zoom = readFileSync(join(outDir, 'scalability_wall_time_c1_zoom.svg'), 'utf8');
+  assert.notEqual(full, zoom, 'the zoomed regime renders differently from the full range');
 });
