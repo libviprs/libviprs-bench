@@ -121,3 +121,60 @@ fn folded_stacks_are_time_weighted_not_count_weighted() {
         "a tile COUNT (3) must never leak in as a sample weight"
     );
 }
+
+/// Pins the strip-batch / concurrent-emission limitation the module docs call
+/// out (and the streaming / MapReduce SVG titles warn about): when a strip
+/// renders and then emits its tiles back-to-back, the first tile of the strip
+/// absorbs the whole strip's wall time and the rest drain in near-zero gaps. So
+/// per-tile widths are emission CADENCE, not per-tile compute time — the
+/// boundary tile dwarfs its neighbours that did comparable work. What stays
+/// honest is the AGGREGATE: because each weight is the gap since the previous
+/// tile, the weights tile the timeline and their sum equals the wall-clock span
+/// (which is why the level/root width is a true wall-time measure even here).
+#[test]
+fn batch_burst_loads_the_boundary_tile_yet_the_aggregate_is_the_wall_span() {
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    let tile = |col: u32, at: SystemTime| EngineEvent::TileCompleted {
+        coord: TileCoord::new(0, col, 0),
+        worker_id: None,
+        timestamp: Some(at),
+    };
+    // A strip that took 40 ms to render, then four tiles draining effectively
+    // instantly (their emit timestamps cluster at the 40 ms boundary) — the
+    // pattern `emit_strip_tiles`/`emit_strip_tiles_parallel` produces.
+    let first = t0; // first tile ever: no predecessor -> floored to 1 µs
+    let boundary = t0 + Duration::from_millis(40); // absorbs the strip render
+    let drain1 = boundary + Duration::from_micros(5);
+    let drain2 = drain1 + Duration::from_micros(5);
+    let events = vec![
+        tile(0, first),
+        tile(1, boundary),
+        tile(2, drain1),
+        tile(3, drain2),
+    ];
+
+    let weights: Vec<u64> = events_to_folded_stacks(&events, "mapreduce")
+        .iter()
+        .map(|s| s.rsplit_once(' ').unwrap().1.parse::<u64>().unwrap())
+        .collect();
+
+    assert_eq!(
+        weights,
+        vec![1, 40_000, 5, 5],
+        "the strip-boundary tile absorbs the 40 ms render; the drained tiles get slivers"
+    );
+    // The artifact: the boundary tile looks thousands of times heavier than the
+    // neighbours that did comparable per-tile work — so a per-tile reading lies.
+    assert!(
+        weights[1] > weights[2] * 1_000,
+        "per-tile widths are emission cadence, not per-tile compute time"
+    );
+    // The honest part: the weights sum to the wall-clock span (plus the single
+    // floored sliver for the very first tile, which has no predecessor gap).
+    let span_micros = drain2.duration_since(first).unwrap().as_micros() as u64;
+    assert_eq!(
+        weights.iter().sum::<u64>(),
+        span_micros + 1,
+        "the aggregate width equals the wall-clock span — the level/root measure stays true"
+    );
+}

@@ -122,7 +122,11 @@ fn executive_verdict_states_units_and_direction() {
         "efficiency direction stated"
     );
     assert!(
-        verdict.to_lowercase().contains("tiles/s"),
-        "the efficiency unit is named (tiles/s per RSS-MB)"
+        verdict.contains("T/s/RSS-MB"),
+        "the efficiency unit names its full RSS-MB basis (T/s/RSS-MB), not the ambiguous T/s/MB"
+    );
+    assert!(
+        verdict.contains("T = pyramid tiles"),
+        "the T = tiles key is restated so the T/s shorthand is unambiguous"
     );
 }

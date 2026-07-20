@@ -485,8 +485,19 @@ pub fn append_version_snapshot(
     memory_budget_bytes: u64,
 ) -> Result<usize, MatrixError> {
     let mut history = crate::load_history(history_path).map_err(MatrixError::History)?;
-    let snapshot =
-        crate::create_snapshot_for(version, git_sha, runs, tile_size, memory_budget_bytes);
+    // Capture provenance live in this driver process — the host/toolchain is the
+    // same for every tag — and inject it, matching the one-capture-per-run model
+    // the `report` binary uses now that provenance carries dynamic load/thermal
+    // axes (#25 review).
+    let provenance = crate::provenance::Provenance::capture();
+    let snapshot = crate::create_snapshot_for(
+        provenance,
+        version,
+        git_sha,
+        runs,
+        tile_size,
+        memory_budget_bytes,
+    );
     history.push(snapshot);
     // `save_history` is atomic (temp file + rename) and fallible: a write fault
     // is surfaced as a per-version `History` skip so the sweep continues and the

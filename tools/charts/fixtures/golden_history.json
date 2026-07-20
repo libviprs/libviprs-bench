@@ -15,9 +15,9 @@
         "in_container": false
       },
       "load_average": {
-        "one": 1.5,
-        "five": 1.2,
-        "fifteen": 1.0
+        "one_min": 1.5,
+        "five_min": 1.2,
+        "fifteen_min": 1.0
       },
       "thermal_throttle_count": null
     },
@@ -181,9 +181,9 @@
         "in_container": false
       },
       "load_average": {
-        "one": 1.5,
-        "five": 1.2,
-        "fifteen": 1.0
+        "one_min": 1.5,
+        "five_min": 1.2,
+        "fifteen_min": 1.0
       },
       "thermal_throttle_count": null
     },

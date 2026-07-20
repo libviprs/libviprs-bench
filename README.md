@@ -44,7 +44,7 @@ The harness produces:
 | `benches/engine_comparison.rs` | Criterion micro-benchmarks for monolithic / streaming / MapReduce, plus a head-to-head group across image sizes. |
 | `src/scalability.rs` (`scalability` bin) | Scalability sweep from 0.2 MP to 47 MP, comparing all four engines on a 1.42:1 aspect ratio matching `43551_California_South.pdf`. |
 | `src/report.rs` (`report` bin) | Full comparison matrix across image sizes and concurrency levels, with versioned history. |
-| `src/flamegraph.rs` (`flamegraph` bin) | Time-weighted flame graphs (frame width = per-tile µs) for all three libviprs engines on a 4096x4096 image. |
+| `src/flamegraph.rs` (`flamegraph` bin) | Time-weighted flame graphs (frame width = µs) for all three libviprs engines on a 4096x4096 image. Per-tile widths are faithful for the serial monolithic engine; for the strip-based streaming/MapReduce engines read them at level/root granularity (per-tile widths are emission cadence). |
 
 ## Running benchmarks
 

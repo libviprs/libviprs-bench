@@ -214,9 +214,22 @@ fn golden_run_metrics_matches_the_serializer_shape() {
 
 #[test]
 fn golden_snapshot_matches_the_serializer_shape() {
-    // `create_snapshot` stamps a live-captured Provenance, so this also pins the
-    // Provenance + HostInfo + nested-runs shape the history golden must carry.
-    let snapshot: BenchmarkSnapshot = create_snapshot(vec![sample_run_metrics()], 256, 4_000_000);
+    // This pins the Provenance + HostInfo + nested-runs shape the history golden
+    // must carry. Inject a provenance whose dynamic axes are populated
+    // (`load_average = Some`) so the serialized SHAPE is deterministic regardless
+    // of host: the golden carries a populated `load_average` OBJECT, and a host
+    // where `getloadavg` is unavailable would otherwise serialize `null` and
+    // drift the shape. (#25 made provenance an explicit parameter, which is what
+    // lets the test pin this instead of depending on the runner's live load.)
+    let mut prov = libviprs_bench::provenance::Provenance::capture();
+    prov.load_average = Some(libviprs_bench::provenance::LoadAverage {
+        one_min: 1.5,
+        five_min: 1.2,
+        fifteen_min: 1.0,
+    });
+    prov.thermal_throttle_count = Some(0);
+    let snapshot: BenchmarkSnapshot =
+        create_snapshot(prov, vec![sample_run_metrics()], 256, 4_000_000);
     let serialized = serde_json::to_value(&snapshot).unwrap();
     let golden = read_golden("golden_history.json");
     let first = golden

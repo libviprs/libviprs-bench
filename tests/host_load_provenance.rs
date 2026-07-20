@@ -22,7 +22,7 @@ fn capture_records_a_host_load_average() {
     let la = prov
         .load_average
         .expect("load average must be recorded on linux/macos");
-    for v in [la.one, la.five, la.fifteen] {
+    for v in [la.one_min, la.five_min, la.fifteen_min] {
         assert!(
             v.is_finite() && v >= 0.0,
             "each load component is finite and non-negative, got {v}"
@@ -35,9 +35,9 @@ fn capture_records_a_host_load_average() {
 fn load_and_thermal_round_trip() {
     let mut prov = Provenance::capture();
     prov.load_average = Some(LoadAverage {
-        one: 3.5,
-        five: 2.0,
-        fifteen: 1.25,
+        one_min: 3.5,
+        five_min: 2.0,
+        fifteen_min: 1.25,
     });
     prov.thermal_throttle_count = Some(7);
 
@@ -47,9 +47,9 @@ fn load_and_thermal_round_trip() {
     assert_eq!(
         back.load_average,
         Some(LoadAverage {
-            one: 3.5,
-            five: 2.0,
-            fifteen: 1.25
+            one_min: 3.5,
+            five_min: 2.0,
+            fifteen_min: 1.25
         })
     );
     assert_eq!(back.thermal_throttle_count, Some(7));
@@ -90,6 +90,55 @@ fn legacy_provenance_without_load_or_thermal_deserializes() {
     assert_eq!(prov.host.ncpu, 10);
 }
 
+/// The centralised measurement-condition warnings (#25 review): one source of
+/// wording for the `report` and `scalability` binaries so their stderr guards
+/// can never drift again. A clean provenance warns about nothing; a contended,
+/// thermally-throttled, mispinned one emits exactly the three lines, in order.
+#[test]
+fn measurement_condition_warnings_are_centralised() {
+    // Clean: idle (no load average), no thermal counter, oracle indeterminate
+    // (both versions "unknown") — nothing to warn about.
+    let clean = Provenance::default();
+    assert!(
+        clean.measurement_condition_warnings().is_empty(),
+        "a clean run warns about nothing"
+    );
+
+    // Contended + throttled + mispinned — all three guards trip, in order.
+    let mut dirty = Provenance::default();
+    dirty.host.ncpu = 4;
+    dirty.load_average = Some(LoadAverage {
+        one_min: 8.0,
+        five_min: 6.0,
+        fifteen_min: 5.0,
+    });
+    dirty.thermal_throttle_count = Some(3);
+    dirty.libvips_version = "8.16.0".to_string();
+    dirty.pinned_libvips_version = "8.18.4".to_string();
+
+    let warnings = dirty.measurement_condition_warnings();
+    assert_eq!(
+        warnings.len(),
+        3,
+        "contention + thermal + oracle mismatch, got: {warnings:?}"
+    );
+    assert!(
+        warnings[0].contains("host load") && warnings[0].contains(">= 4 CPUs"),
+        "first line is the contention guard: {}",
+        warnings[0]
+    );
+    assert!(
+        warnings[1].contains("thermal-throttle"),
+        "second line is the thermal guard: {}",
+        warnings[1]
+    );
+    assert!(
+        warnings[2].contains("8.16") && warnings[2].contains("8.18") && warnings[2].contains("#33"),
+        "third line is the mismatched-oracle guard: {}",
+        warnings[2]
+    );
+}
+
 /// Load average and thermal state are per-run measurement *conditions*, not part
 /// of the environment identity: two runs on the same box under different loads
 /// must still group together, so the fingerprint must not vary with them —
@@ -100,15 +149,15 @@ fn load_and_thermal_are_not_in_the_fingerprint() {
     let mut idle = Provenance::capture();
     let mut loaded = idle.clone();
     idle.load_average = Some(LoadAverage {
-        one: 0.1,
-        five: 0.1,
-        fifteen: 0.1,
+        one_min: 0.1,
+        five_min: 0.1,
+        fifteen_min: 0.1,
     });
     idle.thermal_throttle_count = Some(0);
     loaded.load_average = Some(LoadAverage {
-        one: 40.0,
-        five: 39.0,
-        fifteen: 38.0,
+        one_min: 40.0,
+        five_min: 39.0,
+        fifteen_min: 38.0,
     });
     loaded.thermal_throttle_count = Some(999);
     assert_eq!(

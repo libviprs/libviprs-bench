@@ -20,7 +20,7 @@ use std::fs;
 use std::path::Path;
 
 use libviprs_bench::harness::{self, Engine};
-use libviprs_bench::provenance::{OracleMatch, Provenance};
+use libviprs_bench::provenance::Provenance;
 use libviprs_bench::{
     BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, DEFAULT_CONCURRENCY, DEFAULT_SIZES, comparison_table,
     core_git_sha, core_version, create_snapshot, executive_verdict, load_history,
@@ -83,37 +83,15 @@ fn main() {
         "    libvips oracle: measured {} / pinned {}",
         prov.libvips_version, prov.pinned_libvips_version
     );
-    // Contended-host / thermal guards: a run measured while the box was busy or
-    // thermally throttled is slower for reasons unrelated to the code under test,
-    // so its wall-time numbers are not comparable to an idle-host run — say so
-    // loudly on stderr. A missing load/thermal sample never trips these.
-    if prov.host_looked_contended() {
-        eprintln!(
-            "WARNING: 1-minute host load {} >= {} CPUs — this run was measured under \
-             contention; its wall-time numbers are inflated by scheduling pressure, not \
-             the code under test.",
-            prov.load_average_line(),
-            prov.host.ncpu
-        );
-    }
-    if prov.thermally_throttled() {
-        eprintln!(
-            "WARNING: CPU thermal-throttle counter is non-zero — the cores may have been \
-             clock-capped during this run; its timing numbers may understate true throughput."
-        );
-    }
-    // Mismatched-oracle guard (#33): if this run measured a different libvips
-    // than the environment was pinned to build, its numbers are not comparable
-    // to a pinned-oracle run — say so loudly on stderr. Only fires on a genuine
-    // parsed mismatch, never on a host run that simply has no libvips.
-    if let OracleMatch::Mismatch { measured, pinned } = prov.libvips_oracle_match() {
-        eprintln!(
-            "WARNING: measured libvips {}.{} != pinned oracle {}.{} — this run \
-             measured a different libvips than the environment was pinned to \
-             build (issue #33); its numbers are NOT comparable to a \
-             pinned-oracle run.",
-            measured.0, measured.1, pinned.0, pinned.1
-        );
+    // Measurement-condition guards: a run measured while the box was busy or
+    // thermally throttled, or against a different libvips than the environment
+    // was pinned to build (#33), is not comparable to a clean pinned-oracle run
+    // — say so loudly on stderr. The wording lives on `Provenance` so the
+    // `report` and `scalability` binaries share one source and can never drift
+    // (issue #25 review). A missing load/thermal sample, or a host run with no
+    // libvips, never trips these.
+    for warning in prov.measurement_condition_warnings() {
+        eprintln!("{warning}");
     }
     println!();
     println!(
@@ -224,8 +202,7 @@ fn main() {
          host load (1/5/15m): {}\n\
          Tile size: {tile_size}, streaming/mapreduce budget floor: {streaming_budget} bytes \
          (auto-scaled per width; per-row effective budget in benchmark_results.json)\n\
-         Iterations: {iters} timed + {warmup} warm-up per cell (child-isolated); the warm-up \
-         run is discarded, so every figure below is a warm (steady-state) median.\n\n",
+         Iterations: {iters} timed + {warmup} warm-up per cell (child-isolated).\n\n",
         core_version(),
         core_git_sha(),
         env!("CARGO_PKG_VERSION"),
@@ -260,7 +237,14 @@ fn main() {
     println!();
     match load_history(&history_path) {
         Ok(mut history) => {
-            let snapshot = create_snapshot(results.clone(), tile_size, streaming_budget);
+            // Persist the SAME provenance captured at the top of the run (before
+            // any timed work), so the load/thermal the history file records is
+            // the ambient pre-run condition its own doc promises — and equals the
+            // value this run printed and wrote to comparison_table.txt. Capturing
+            // fresh here would instead record the tail of the benchmark's OWN load
+            // curve, disagreeing with the printed/txt figure (issue #25 review).
+            let snapshot =
+                create_snapshot(prov.clone(), results.clone(), tile_size, streaming_budget);
             history.push(snapshot);
             match save_history(&history_path, &history) {
                 Ok(()) => {

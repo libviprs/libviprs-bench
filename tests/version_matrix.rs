@@ -339,6 +339,7 @@ fn ordered_version_keys_sorts_by_semver_and_timestamp_not_lexically() {
 /// test (bypassing `create_snapshot` so the timestamp is deterministic).
 fn snap_with(version: &str, git_sha: &str, timestamp: &str) -> BenchmarkSnapshot {
     let mut snap = libviprs_bench::create_snapshot_for(
+        libviprs_bench::provenance::Provenance::default(),
         version,
         git_sha,
         vec![synthetic_run("monolithic", 1)],

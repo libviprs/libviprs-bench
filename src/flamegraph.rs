@@ -35,6 +35,17 @@ const HEIGHT: u32 = 4096;
 const TILE_SIZE: u32 = 256;
 
 fn generate_flamegraph(stacks: &[String], output_path: &Path, title: &str) {
+    if stacks.is_empty() {
+        // inferno's `from_reader` errors on empty input, which the `.expect`
+        // below would turn into a panic. A zero-tile run (no `TileCompleted`
+        // events) legitimately folds to no frames — skip the SVG with a notice
+        // rather than abort. Latent for the fixed 4096² workload (which always
+        // produces tiles), but #25 dropped the marker frames that used to
+        // guarantee non-empty output, so guard the regression (#25 review).
+        eprintln!("  (no tiles produced — skipping {})", output_path.display());
+        return;
+    }
+
     let mut opts = Options::default();
     opts.title = title.to_string();
     // The sample unit is microseconds of wall time (see the flame module), not a
@@ -100,7 +111,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generate_flamegraph(
             &stacks,
             &path,
-            "libviprs monolithic engine — time-weighted tile flame graph (width = µs)",
+            "libviprs monolithic engine — time-weighted flame graph \
+             (per-tile width = µs; serial engine, faithful per tile)",
         );
         println!("  → {}", path.display());
     }
@@ -140,7 +152,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generate_flamegraph(
             &stacks,
             &path,
-            "libviprs streaming engine — time-weighted tile flame graph (width = µs)",
+            "libviprs streaming engine — time-weighted flame graph \
+             (width = µs; read at level/root — per-tile widths are strip-emission cadence)",
         );
         println!("  → {}", path.display());
     }
@@ -185,7 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generate_flamegraph(
             &stacks,
             &path,
-            "libviprs MapReduce engine — time-weighted tile flame graph (width = µs)",
+            "libviprs MapReduce engine — time-weighted flame graph \
+             (width = µs; read at level/root — per-tile widths are emission cadence)",
         );
         println!("  → {}", path.display());
     }
