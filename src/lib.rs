@@ -1575,10 +1575,20 @@ pub fn create_snapshot_for(
 // ---------------------------------------------------------------------------
 // SVG chart generation via plotters
 // ---------------------------------------------------------------------------
+//
+// Scope note (issue #20/#21 charting rework): the history-trend and
+// scalability SVGs are now rendered in JS (`tools/charts/chart.mjs` +
+// `render.mjs`) from the harness JSON. The six grouped-bar `chart_*.svg`
+// comparison charts below (`generate_charts`) remain Rust-owned via plotters
+// for now; porting them to JS and dropping the plotters dependency is tracked
+// as follow-up work. Until then the engine palette here is intentionally
+// MIRRORED by `COLORS` in `tools/charts/chart.mjs` (same RGB values) and the
+// two must be kept in lockstep.
 
 use plotters::prelude::*;
 
-/// Color palette for the four engines.
+/// Color palette for the four engines. Mirrored — keep in lockstep — with the
+/// `COLORS` map in `tools/charts/chart.mjs` (the JS history/scalability charts).
 const COLOR_VIPS: RGBColor = RGBColor(156, 39, 176); // purple — libvips
 const COLOR_MONO: RGBColor = RGBColor(66, 133, 244); // blue   — monolithic
 const COLOR_STREAM: RGBColor = RGBColor(52, 168, 83); // green  — streaming
@@ -1843,213 +1853,6 @@ pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
         "RSS-MB\u{00b7}s / tile",
         &groups,
     );
-}
-
-/// Generate a version history line chart showing a metric across releases.
-pub fn generate_history_chart(
-    history: &[BenchmarkSnapshot],
-    report_dir: &std::path::Path,
-    image_size: (u32, u32),
-    concurrency: usize,
-) {
-    if history.len() < 2 {
-        return; // Need at least 2 data points for a trend
-    }
-
-    let (w, h) = image_size;
-    let filter_label_prefix = format!("{w}x{h}_c{concurrency}");
-
-    // Extract time series per engine
-    struct Point {
-        version: String,
-        wall_time_ms: f64,
-        peak_memory_mb: f64,
-    }
-
-    let mut vips_pts: Vec<Point> = Vec::new();
-    let mut mono_pts: Vec<Point> = Vec::new();
-    let mut stream_pts: Vec<Point> = Vec::new();
-    let mut mr_pts: Vec<Point> = Vec::new();
-
-    for snap in history {
-        for run in &snap.runs {
-            if !run.label.starts_with(&filter_label_prefix) {
-                continue;
-            }
-            let pt = Point {
-                version: snap.version.clone(),
-                wall_time_ms: run.wall_time_ms(),
-                peak_memory_mb: run.peak_rss_mb(),
-            };
-            match run.engine.as_str() {
-                "libvips" => vips_pts.push(pt),
-                "monolithic" => mono_pts.push(pt),
-                "streaming" => stream_pts.push(pt),
-                "mapreduce" => mr_pts.push(pt),
-                _ => {}
-            }
-        }
-    }
-
-    if mono_pts.is_empty() {
-        return;
-    }
-
-    let all_times: Vec<f64> = vips_pts
-        .iter()
-        .chain(mono_pts.iter())
-        .chain(stream_pts.iter())
-        .chain(mr_pts.iter())
-        .map(|p| p.wall_time_ms)
-        .collect();
-    let max_time = all_times.iter().cloned().fold(0.0f64, f64::max) * 1.1;
-    let n = mono_pts.len();
-
-    let chart_w = 140 + n as u32 * 80;
-    let chart_h = 380;
-    let path = report_dir.join(format!("chart_history_{w}x{h}_c{concurrency}_time.svg"));
-
-    let root = SVGBackend::new(&path, (chart_w, chart_h)).into_drawing_area();
-    root.fill(&WHITE).unwrap();
-
-    let mut chart = ChartBuilder::on(&root)
-        .caption(
-            format!("Wall Time History — {w}x{h} c{concurrency}"),
-            ("sans-serif", 16).into_font(),
-        )
-        .margin(10)
-        .x_label_area_size(40)
-        .y_label_area_size(60)
-        .build_cartesian_2d(0..n.max(1), 0.0..max_time)
-        .unwrap();
-
-    chart
-        .configure_mesh()
-        .x_labels(n)
-        .x_label_formatter(&|x| {
-            mono_pts
-                .get(*x)
-                .map(|p| p.version.clone())
-                .unwrap_or_default()
-        })
-        .y_desc("Time (ms)")
-        .draw()
-        .unwrap();
-
-    // Draw lines for each engine
-    let mut draw_line = |pts: &[Point], color: RGBColor, name: &str| {
-        let series: Vec<(usize, f64)> = pts
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (i, p.wall_time_ms))
-            .collect();
-        if !series.is_empty() {
-            chart
-                .draw_series(LineSeries::new(series.clone(), color.stroke_width(2)))
-                .unwrap()
-                .label(name)
-                .legend(move |(x, y)| {
-                    Rectangle::new([(x, y - 5), (x + 15, y + 5)], color.filled())
-                });
-            chart
-                .draw_series(
-                    series
-                        .iter()
-                        .map(|&(x, y)| Circle::new((x, y), 3, color.filled())),
-                )
-                .unwrap();
-        }
-    };
-
-    draw_line(&vips_pts, COLOR_VIPS, "libvips");
-    draw_line(&mono_pts, COLOR_MONO, "Monolithic");
-    draw_line(&stream_pts, COLOR_STREAM, "Streaming");
-    draw_line(&mr_pts, COLOR_MR, "MapReduce");
-
-    chart
-        .configure_series_labels()
-        .background_style(WHITE.mix(0.8))
-        .border_style(BLACK.mix(0.3))
-        .draw()
-        .unwrap();
-
-    root.present().unwrap();
-
-    // Also generate memory history
-    let all_mem: Vec<f64> = vips_pts
-        .iter()
-        .chain(mono_pts.iter())
-        .chain(stream_pts.iter())
-        .chain(mr_pts.iter())
-        .map(|p| p.peak_memory_mb)
-        .collect();
-    let max_mem = all_mem.iter().cloned().fold(0.0f64, f64::max) * 1.1;
-
-    let mem_path = report_dir.join(format!("chart_history_{w}x{h}_c{concurrency}_memory.svg"));
-    let root = SVGBackend::new(&mem_path, (chart_w, chart_h)).into_drawing_area();
-    root.fill(&WHITE).unwrap();
-
-    let mut chart = ChartBuilder::on(&root)
-        .caption(
-            format!("Peak RSS History — {w}x{h} c{concurrency}"),
-            ("sans-serif", 16).into_font(),
-        )
-        .margin(10)
-        .x_label_area_size(40)
-        .y_label_area_size(60)
-        .build_cartesian_2d(0..n.max(1), 0.0..max_mem)
-        .unwrap();
-
-    chart
-        .configure_mesh()
-        .x_labels(n)
-        .x_label_formatter(&|x| {
-            mono_pts
-                .get(*x)
-                .map(|p| p.version.clone())
-                .unwrap_or_default()
-        })
-        .y_desc("Memory (MB)")
-        .draw()
-        .unwrap();
-
-    let mut draw_mem_line = |pts: &[Point], color: RGBColor, name: &str| {
-        let series: Vec<(usize, f64)> = pts
-            .iter()
-            .enumerate()
-            .map(|(i, p)| (i, p.peak_memory_mb))
-            .collect();
-        if !series.is_empty() {
-            chart
-                .draw_series(LineSeries::new(series.clone(), color.stroke_width(2)))
-                .unwrap()
-                .label(name)
-                .legend(move |(x, y)| {
-                    Rectangle::new([(x, y - 5), (x + 15, y + 5)], color.filled())
-                });
-            chart
-                .draw_series(
-                    series
-                        .iter()
-                        .map(|&(x, y)| Circle::new((x, y), 3, color.filled())),
-                )
-                .unwrap();
-        }
-    };
-
-    draw_mem_line(&vips_pts, COLOR_VIPS, "libvips");
-    draw_mem_line(&mono_pts, COLOR_MONO, "Monolithic");
-    draw_mem_line(&stream_pts, COLOR_STREAM, "Streaming");
-    draw_mem_line(&mr_pts, COLOR_MR, "MapReduce");
-
-    chart
-        .configure_series_labels()
-        .background_style(WHITE.mix(0.8))
-        .border_style(BLACK.mix(0.3))
-        .draw()
-        .unwrap();
-
-    root.present().unwrap();
 }
 
 /// Build the executive verdict table.
