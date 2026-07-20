@@ -52,6 +52,10 @@ serde_json = "1"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# SHA-256 for the committed real-content fixture's integrity guard
+# (tests/pdf_fixture.rs). Matches the core crate's sha2 major so the build
+# graph carries a single version.
+sha2 = "0.11"
 
 [[bench]]
 name = "engine_comparison"

@@ -41,6 +41,10 @@ fixtures/*.png
 fixtures/*.jpg
 fixtures/*.jpeg
 fixtures/*.raw
+# ...except the one small, checksum-verified real-content fixture committed for
+# the rasterized-PDF scalability workload (issues #30/#31). Its provenance and
+# the enforced SHA-256 live in fixtures/PROVENANCE.md.
+!fixtures/cc_licenses_mapping.pdf
 
 # Docker build context artifacts
 *.tar
