@@ -10,11 +10,13 @@ set -euo pipefail
 # in-RAM-sink or encoding advantage.
 #
 # Usage:
-#   ./run-bench.sh                     # scalability benchmark (default)
-#   ./run-bench.sh report              # full comparison report
-#   ./run-bench.sh --arch arm          # force arm64 build
-#   ./run-bench.sh --memory 4096       # container memory limit in MB
-#   ./run-bench.sh --no-build          # run locally (requires libvips-dev)
+#   ./run-bench.sh                             # scalability benchmark (default)
+#   ./run-bench.sh report                      # full comparison report
+#   ./run-bench.sh versions --versions v0.2.0,v0.3.1,HEAD
+#                                              # release-history axis (one snapshot per tag)
+#   ./run-bench.sh --arch arm                  # force arm64 build
+#   ./run-bench.sh --memory 4096               # container memory limit in MB
+#   ./run-bench.sh --no-build                  # run locally (requires libvips-dev)
 #
 # Output is written to report/ (charts, JSON, text tables).
 # ---------------------------------------------------------------------------
@@ -23,6 +25,7 @@ ARCH=""
 NO_BUILD=false
 MEMORY_MB=""
 BENCH_CMD="scalability"
+VERSIONS=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -39,12 +42,19 @@ while [[ $# -gt 0 ]]; do
             shift
             ARCH="$1"
             ;;
+        --versions)
+            shift
+            VERSIONS="$1"
+            ;;
         report|scalability)
             BENCH_CMD="$1"
             ;;
+        versions)
+            BENCH_CMD="version_matrix"
+            ;;
         *)
             echo "Unknown argument: $1"
-            echo "Usage: $0 [scalability|report] [--arch arm|amd64] [--memory MB] [--no-build]"
+            echo "Usage: $0 [scalability|report|versions] [--versions v0.2.0,v0.3.1,HEAD] [--arch arm|amd64] [--memory MB] [--no-build]"
             exit 1
             ;;
     esac
@@ -52,6 +62,25 @@ while [[ $# -gt 0 ]]; do
 done
 
 MEMORY_MB="${MEMORY_MB:-4096}"
+
+# The version-matrix runner drives its own per-tag git worktrees + cargo builds
+# of the sibling core crate, so it must run on the host toolchain rather than
+# inside the pinned Docker image (which carries no git worktree topology).
+# Force local execution for it.
+#
+# Consequence: unlike every other axis (measured inside the pinned container),
+# the release-history axis is measured on THIS host's toolchain/libvips. Its
+# snapshots are a self-contained series — compare them only within themselves,
+# not against Docker-measured snapshots in the same history. Each snapshot
+# records its environment fingerprint, and cross_version flags cross-environment
+# cells with `env≠`, so the two are never silently mixed.
+if [ "$BENCH_CMD" = "version_matrix" ]; then
+    NO_BUILD=true
+    if [ -z "$VERSIONS" ]; then
+        echo "Error: 'versions' mode requires --versions <tag,tag,HEAD>"
+        exit 1
+    fi
+fi
 
 # Detect architecture
 ARCH="${ARCH:-$(uname -m)}"
@@ -110,6 +139,15 @@ if [ "$NO_BUILD" = true ]; then
     LIBVIPS_LIBS="$(pkg-config --libs-only-L vips glib-2.0 2>/dev/null | sed 's/-L//g' | tr ' ' ':' || true)"
     if [ -n "$LIBVIPS_LIBS" ]; then
         export LIBRARY_PATH="${LIBVIPS_LIBS}${LIBRARY_PATH:+:$LIBRARY_PATH}"
+    fi
+
+    # Version-matrix runner: one tagged, fingerprinted snapshot appended per
+    # ref. It manages its own per-tag rebuilds internally, so we only launch
+    # the driver here.
+    if [ "$BENCH_CMD" = "version_matrix" ]; then
+        echo "Running version-matrix over: ${VERSIONS}"
+        cargo run --release $FEATURES --bin version_matrix -- --versions "$VERSIONS"
+        exit 0
     fi
 
     cargo run --release $FEATURES --bin "$BENCH_CMD"

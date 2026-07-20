@@ -65,6 +65,13 @@ path = "src/flamegraph.rs"
 name = "report"
 path = "src/report.rs"
 
+# Version-matrix runner: `--versions <tag,tag,HEAD>` builds + benchmarks the
+# harness against a series of core releases in one invocation, appending the
+# release-history axis to benchmark_history.json (issues #19, #26, #27).
+[[bin]]
+name = "version_matrix"
+path = "src/version_matrix_main.rs"
+
 [[bin]]
 name = "scalability"
 path = "src/scalability.rs"
