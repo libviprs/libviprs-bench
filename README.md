@@ -11,7 +11,7 @@
 
 Benchmark harness for [libviprs](../libviprs), comparing its three pyramid engines against [libvips](https://www.libvips.org/) `dzsave` under identical inputs.
 
-This crate is kept in a separate repository so the library crate stays free of heavy benchmark-only dependencies (criterion, plotters, libvips FFI).
+This crate is kept in a separate repository so the library crate stays free of heavy benchmark-only dependencies (criterion, libvips FFI).
 
 > Flag reference and runnable Rust examples for every knob the benchmarks
 > tune live at <https://libviprs.org/cli/>.
@@ -72,18 +72,19 @@ Output is written to `report/`. Each run of the `report` command appends an entr
 
 ### Charts
 
-The history-trend and scalability SVGs are rendered by a small JS chart library (`tools/charts/`), not by the Rust binaries. `run-bench.sh` invokes it automatically after the harness writes its JSON, so a normal run refreshes the SVGs for you. This requires **Node** (any recent LTS) on the host; if Node is missing the run still completes and leaves the JSON, printing the command to render later.
+Every SVG — the grouped-bar comparison charts (`chart_*.svg`), the history-trend charts (`chart_history_*.svg`), and the scalability charts (`scalability_*.svg`) — is rendered by a small JS chart library (`tools/charts/`), not by the Rust binaries. `run-bench.sh` invokes it automatically after the harness writes its JSON, so a normal run refreshes the SVGs for you. This requires **Node** (any recent LTS) on the host; if Node is missing the run still completes and leaves the JSON, printing the command to render later.
 
 Running a binary directly (`cargo run --bin scalability` / `--bin report`) emits **JSON only**. To (re)render the SVGs from JSON already on disk:
 
 ```bash
 node tools/charts/render.mjs --report-dir report            # log-log scalability axes (default)
 node tools/charts/render.mjs --report-dir report --linear   # linear scalability axes
+node tools/charts/render.mjs --report-dir report --zoom 20  # + large-image scalability_*_zoom.svg (>= 20 MP)
 ```
 
 `render.mjs` is deterministic (same JSON → byte-identical SVGs) and idempotent — it re-renders the whole report from whatever JSON is present. Its own tests run with `node --test '*.test.mjs'` from `tools/charts/` (or `npm test` there).
 
-The grouped-bar comparison charts (`chart_*.svg`) are still emitted by the Rust `report` binary itself.
+The grouped-bar comparison charts read `benchmark_results.json`, the history trends read `benchmark_history.json`, and the scalability charts read `scalability_results.json`. A committed golden set under `tools/charts/fixtures/` mirrors the exact serde shape the Rust serializers emit; `render.mjs`'s shape probes plus the Rust `tests/chart_shape_drift.rs` guard catch producer/consumer field drift between the two.
 
 The criterion micro-benchmarks are run separately:
 

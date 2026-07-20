@@ -1,0 +1,322 @@
+[
+  {
+    "schema_version": 2,
+    "provenance": {
+      "libvips_version": "8.18.4",
+      "pinned_libvips_version": "8.18.4",
+      "rustc_version": "1.89.0",
+      "build_profile": "release",
+      "build_flags": "lto=thin,codegen-units=1",
+      "host": {
+        "cpu_model": "Apple M2 Pro",
+        "ncpu": 10,
+        "arch": "aarch64",
+        "os": "macos",
+        "in_container": false
+      }
+    },
+    "version": "0.4.0",
+    "git_sha": "aa11bb2",
+    "timestamp": "2026-07-01T09:00:00Z",
+    "tile_size": 256,
+    "memory_budget_bytes": 4000000,
+    "runs": [
+      {
+        "label": "2048x2048_c0_monolithic",
+        "width": 2048,
+        "height": 2048,
+        "engine": "monolithic",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 86000000
+        },
+        "tracked_memory_bytes": 16777216,
+        "peak_rss_bytes": 209715200,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 86.0,
+          "wall_ms_min": 83.0,
+          "wall_ms_iqr": 3.5,
+          "wall_ms_ci95": 1.8,
+          "rss_mb_median": 200.0,
+          "rss_mb_min": 198.0,
+          "rss_mb_iqr": 2.0,
+          "rss_mb_ci95": 1.1
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": 48.5,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      },
+      {
+        "label": "2048x2048_c0_streaming",
+        "width": 2048,
+        "height": 2048,
+        "engine": "streaming",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 96000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 62914560,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 96.0,
+          "wall_ms_min": 93.0,
+          "wall_ms_iqr": 3.0,
+          "wall_ms_ci95": 1.6,
+          "rss_mb_median": 60.0,
+          "rss_mb_min": 58.0,
+          "rss_mb_iqr": 1.5,
+          "rss_mb_ci95": 0.9
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": 47.9,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 8,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "2048x2048_c0_mapreduce",
+        "width": 2048,
+        "height": 2048,
+        "engine": "mapreduce",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 91000000
+        },
+        "tracked_memory_bytes": 1310720,
+        "peak_rss_bytes": 73400320,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 91.0,
+          "wall_ms_min": 88.0,
+          "wall_ms_iqr": 3.2,
+          "wall_ms_ci95": 1.7,
+          "rss_mb_median": 70.0,
+          "rss_mb_min": 68.0,
+          "rss_mb_iqr": 1.8,
+          "rss_mb_ci95": 1.0
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": 47.8,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 8,
+        "batches": 2,
+        "inflight_strips": 1,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "2048x2048_c0_libvips",
+        "width": 2048,
+        "height": 2048,
+        "engine": "libvips",
+        "measurement_path": "ffi",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 141000000
+        },
+        "tracked_memory_bytes": 0,
+        "peak_rss_bytes": 314572800,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 141.0,
+          "wall_ms_min": 137.0,
+          "wall_ms_iqr": 4.0,
+          "wall_ms_ci95": 2.2,
+          "rss_mb_median": 300.0,
+          "rss_mb_min": 296.0,
+          "rss_mb_iqr": 3.0,
+          "rss_mb_ci95": 1.6
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": null,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      }
+    ]
+  },
+  {
+    "schema_version": 2,
+    "provenance": {
+      "libvips_version": "8.18.4",
+      "pinned_libvips_version": "8.18.4",
+      "rustc_version": "1.89.0",
+      "build_profile": "release",
+      "build_flags": "lto=thin,codegen-units=1",
+      "host": {
+        "cpu_model": "Apple M2 Pro",
+        "ncpu": 10,
+        "arch": "aarch64",
+        "os": "macos",
+        "in_container": false
+      }
+    },
+    "version": "0.4.1",
+    "git_sha": "cc33dd4",
+    "timestamp": "2026-07-15T09:00:00Z",
+    "tile_size": 256,
+    "memory_budget_bytes": 4000000,
+    "runs": [
+      {
+        "label": "2048x2048_c0_monolithic",
+        "width": 2048,
+        "height": 2048,
+        "engine": "monolithic",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 82000000
+        },
+        "tracked_memory_bytes": 16777216,
+        "peak_rss_bytes": 207618048,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 82.0,
+          "wall_ms_min": 79.0,
+          "wall_ms_iqr": 3.3,
+          "wall_ms_ci95": 1.7,
+          "rss_mb_median": 198.0,
+          "rss_mb_min": 196.0,
+          "rss_mb_iqr": 1.9,
+          "rss_mb_ci95": 1.0
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": 48.6,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      },
+      {
+        "label": "2048x2048_c0_streaming",
+        "width": 2048,
+        "height": 2048,
+        "engine": "streaming",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 92000000
+        },
+        "tracked_memory_bytes": 1048576,
+        "peak_rss_bytes": 61865984,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 92.0,
+          "wall_ms_min": 89.0,
+          "wall_ms_iqr": 2.9,
+          "wall_ms_ci95": 1.5,
+          "rss_mb_median": 59.0,
+          "rss_mb_min": 57.0,
+          "rss_mb_iqr": 1.4,
+          "rss_mb_ci95": 0.8
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": 47.9,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 8,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "2048x2048_c0_mapreduce",
+        "width": 2048,
+        "height": 2048,
+        "engine": "mapreduce",
+        "measurement_path": "",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 87000000
+        },
+        "tracked_memory_bytes": 1310720,
+        "peak_rss_bytes": 72351744,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 87.0,
+          "wall_ms_min": 84.0,
+          "wall_ms_iqr": 3.1,
+          "wall_ms_ci95": 1.6,
+          "rss_mb_median": 69.0,
+          "rss_mb_min": 67.0,
+          "rss_mb_iqr": 1.7,
+          "rss_mb_ci95": 0.9
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": 47.8,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 8,
+        "batches": 2,
+        "inflight_strips": 1,
+        "concurrency": 0,
+        "memory_budget_bytes": 4000000
+      },
+      {
+        "label": "2048x2048_c0_libvips",
+        "width": 2048,
+        "height": 2048,
+        "engine": "libvips",
+        "measurement_path": "ffi",
+        "wall_time": {
+          "secs": 0,
+          "nanos": 138000000
+        },
+        "tracked_memory_bytes": 0,
+        "peak_rss_bytes": 313524224,
+        "stats": {
+          "n": 7,
+          "wall_ms_median": 138.0,
+          "wall_ms_min": 134.0,
+          "wall_ms_iqr": 3.9,
+          "wall_ms_ci95": 2.1,
+          "rss_mb_median": 299.0,
+          "rss_mb_min": 295.0,
+          "rss_mb_iqr": 2.9,
+          "rss_mb_ci95": 1.5
+        },
+        "per_level_tiles": [64, 16, 4, 1],
+        "equivalence_psnr_db": null,
+        "tiles_produced": 85,
+        "levels_processed": 4,
+        "tiles_skipped": 0,
+        "strips": 0,
+        "batches": 0,
+        "inflight_strips": 0,
+        "concurrency": 0,
+        "memory_budget_bytes": 0
+      }
+    ]
+  }
+]
