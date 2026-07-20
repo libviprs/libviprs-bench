@@ -83,7 +83,12 @@ pub struct BenchmarkSnapshot {
     pub timestamp: String,
     /// Tile size used.
     pub tile_size: u32,
-    /// Memory budget used for streaming/mapreduce engines.
+    /// Requested streaming/mapreduce budget FLOOR (the report's configured
+    /// [`BENCH_STREAMING_BUDGET`]), not the budget any single run actually used.
+    /// The effective budget is sized up per canvas width by
+    /// [`streaming_budget_for`] (issue #38), so cross-size rows are NOT under one
+    /// identical budget; each run's effective figure lives in
+    /// [`RunMetrics::memory_budget_bytes`].
     pub memory_budget_bytes: u64,
     /// Individual run metrics.
     pub runs: Vec<RunMetrics>,
@@ -180,7 +185,12 @@ pub struct RunMetrics {
     pub inflight_strips: u32,
     /// Concurrency level used.
     pub concurrency: usize,
-    /// Memory budget in bytes (streaming/mapreduce only, 0 for monolithic).
+    /// EFFECTIVE memory budget the engine actually ran with, in bytes
+    /// (streaming/mapreduce only, 0 for monolithic). This is the per-run figure
+    /// after [`streaming_budget_for`] raised the requested floor to admit the
+    /// worst-case tile-aligned strip at this canvas width (issue #38), so it is
+    /// size-dependent and generally exceeds the report's flat floor (the
+    /// [`BenchmarkSnapshot`] `memory_budget_bytes`).
     pub memory_budget_bytes: u64,
 }
 
@@ -421,28 +431,45 @@ pub fn bench_monolithic(
 }
 
 /// Size a streaming / mapreduce memory budget so the worst-case tile-aligned
-/// strip (`width × 2·tile_size × bpp`) always fits under the strict
-/// [`BudgetPolicy::Error`] these engines run with.
+/// strip always fits under the strict [`BudgetPolicy::Error`] these engines run
+/// with — sized from the SAME input the engines' pre-flight gates on:
+/// `canvas_width × 2·tile_size × bpp`.
 ///
 /// The streaming and mapreduce engines reject a run up front with
 /// `BudgetExceeded` when even one minimum aligned strip (`2 × tile_size` rows at
-/// canvas width) cannot fit the budget, so a flat budget that is fine for small
-/// canvases (the report's [`BENCH_STREAMING_BUDGET`]) starves every image from
-/// 1024 px up. `requested` is treated as a floor and raised only when a wider
-/// canvas needs more, mirroring the `scalability` binary's own
-/// `streaming_budget_for` and the pdfium path in `bench_streaming_pdf`. The `2×`
-/// over the minimum aligned strip leaves headroom for the per-level accumulator
-/// chain.
+/// canvas width) cannot fit the budget (`libviprs::streaming` /
+/// `streaming_mapreduce`), so a flat budget that is fine for small canvases (the
+/// report's [`BENCH_STREAMING_BUDGET`]) starves every image from 1024 px up.
+/// `floor` is a lower bound, raised only when a wider canvas needs more.
 ///
-/// Saturating arithmetic throughout: an adversarial `width` / `tile_size`
-/// saturates the budget large — which the engine then rejects cleanly rather
-/// than being handed a wrapped-small budget — instead of overflowing (a debug
-/// panic / release wraparound).
-pub fn streaming_budget_for(requested: u64, width: u32, tile_size: u32, bpp: u64) -> u64 {
-    let min_strip_bytes = (width as u64)
+/// Pass the plan's [`canvas_width`](PyramidPlan::canvas_width), NOT the source
+/// width: the engines gate on the canvas, and for a centred/padded plan the
+/// canvas is wider than the image (`canvas_width = top_cols × tile_size`), so
+/// sizing from the source width would under-budget the exact strip the engine
+/// checks (issue #38 review). This is the single sizing helper shared by every
+/// streaming-family bench path — the raster [`bench_streaming`] /
+/// [`bench_mapreduce`], the candidate builder [`write_libviprs_pyramid`], the
+/// pdfium `bench_streaming_pdf`, and the `scalability` / `flamegraph` binaries.
+///
+/// The `2×` over the single-strip pre-flight minimum is a fixed benchmark
+/// margin: it clears the strict pre-flight gate (the only enforced
+/// `BudgetExceeded` source for raster streaming) with 100% slack. It is
+/// deliberately NOT the full per-level working-set estimate
+/// ([`PyramidPlan::estimate_streaming_peak_memory`](libviprs::PyramidPlan)),
+/// which is strictly larger (the lower levels plus the 10% margin are unfunded);
+/// under this budget `compute_strip_height` returns `None` and the engine runs
+/// at its minimum aligned strip (`2·tile_size`) — the true-streaming regime this
+/// benchmark exists to characterize.
+///
+/// Saturating arithmetic keeps the helper total and panic-free. No constructible
+/// [`PyramidPlan`] reaches magnitudes that would overflow (the planner's
+/// `checked_canvas_bounds` rejects them), so the saturation is purely defensive.
+#[must_use]
+pub fn streaming_budget_for(floor: u64, canvas_width: u32, tile_size: u32, bpp: u32) -> u64 {
+    let min_strip_bytes = (canvas_width as u64)
         .saturating_mul(2u64.saturating_mul(tile_size as u64))
-        .saturating_mul(bpp);
-    requested.max(min_strip_bytes.saturating_mul(2))
+        .saturating_mul(bpp as u64);
+    floor.max(min_strip_bytes.saturating_mul(2))
 }
 
 /// Run the streaming engine and collect metrics.
@@ -455,12 +482,13 @@ pub fn bench_streaming(
 ) -> RunMetrics {
     // Size the budget to admit the worst-case tile-aligned strip so the strict
     // `BudgetPolicy::Error` never trips on a large canvas; the flat report
-    // budget alone starves every image from 1024 px up (issue #38).
+    // budget alone starves every image from 1024 px up (issue #38). Size from
+    // `plan.canvas_width` — the exact width the engine's pre-flight gates on.
     let budget = streaming_budget_for(
         memory_budget_bytes,
-        src.width(),
+        plan.canvas_width,
         plan.tile_size,
-        src.format().bytes_per_pixel() as u64,
+        src.format().bytes_per_pixel() as u32,
     );
     let out_dir = fs_sink_dir(label);
     let sink = engine_fs_sink(&out_dir, plan);
@@ -520,14 +548,15 @@ pub fn bench_mapreduce(
 ) -> RunMetrics {
     // Size the budget to admit the worst-case tile-aligned strip so the strict
     // `BudgetPolicy::Error` never trips on a large canvas; the flat report
-    // budget alone starves every image from 1024 px up (issue #38). The sized
-    // budget is what the engine runs with, so the strip-height and in-flight
-    // accounting below is computed against it too.
+    // budget alone starves every image from 1024 px up (issue #38). Size from
+    // `plan.canvas_width` — the exact width the engine's pre-flight gates on.
+    // The sized budget is what the engine runs with, so the strip-height and
+    // in-flight accounting below is computed against it too.
     let budget = streaming_budget_for(
         memory_budget_bytes,
-        src.width(),
+        plan.canvas_width,
         plan.tile_size,
-        src.format().bytes_per_pixel() as u64,
+        src.format().bytes_per_pixel() as u32,
     );
     let out_dir = fs_sink_dir(label);
     let sink = engine_fs_sink(&out_dir, plan);
@@ -712,12 +741,13 @@ pub fn bench_streaming_pdf(
     // Admit the worst-case tile-aligned strip so `BudgetPolicy::Error` never
     // trips on the wide RGBA pdfium strips (4-bpp here, wider than the 3-bpp
     // gradient at the same width). Shared with the raster `bench_streaming` /
-    // `bench_mapreduce` path via `streaming_budget_for` (saturating).
+    // `bench_mapreduce` path via `streaming_budget_for` (saturating), sized from
+    // `plan.canvas_width` — the width the engine's pre-flight gates on.
     let budget = streaming_budget_for(
         memory_budget_bytes,
-        width,
-        tile_size,
-        source.format().bytes_per_pixel() as u64,
+        plan.canvas_width,
+        plan.tile_size,
+        source.format().bytes_per_pixel() as u32,
     );
 
     let out_dir = fs_sink_dir(label);
@@ -813,10 +843,13 @@ pub fn write_temp_png(src: &Raster) -> std::path::PathBuf {
 ///
 /// Parameterized over [`EngineKind`] so the output-equivalence spot-check can
 /// validate **each** libviprs engine's own pixels (not just the monolithic
-/// engine's) at the concurrency actually benchmarked. `budget_bytes` bounds the
-/// streaming / mapreduce engines (ignored by the monolithic engine), mirroring
-/// the timed `bench_*` paths so the candidate is built the same way it is
-/// measured.
+/// engine's) at the concurrency actually benchmarked. `budget_bytes` is the
+/// budget FLOOR for the streaming / mapreduce engines (ignored by the monolithic
+/// engine); it is sized up per canvas via [`streaming_budget_for`] exactly as
+/// the timed `bench_*` paths do, so the candidate is built under the identical
+/// budget its timed row ran with. Without that sizing the raw floor (the
+/// report's 1 MB) trips `BudgetExceeded` at every size >= 1024 px and the
+/// spot-check silently degrades to "no score" (issue #38 review).
 ///
 /// Unlike the `bench_*` functions this does **not** delete its output — the
 /// caller owns `dir`. It exists for the pixel-level output-equivalence
@@ -842,10 +875,19 @@ pub fn write_libviprs_pyramid(
         .with_config(EngineConfig::default().with_concurrency(concurrency))
         .with_observer_arc(observer);
     // The streaming / mapreduce engines are budget-driven; bound them exactly
-    // as their timed `bench_*` paths do. The monolithic engine ignores it.
+    // as their timed `bench_*` paths do — size the floor up to admit the
+    // worst-case tile-aligned strip so the strict `BudgetPolicy::Error` does not
+    // trip on a large canvas and silently skip the spot-check (issue #38
+    // review). The monolithic engine ignores the budget.
     if matches!(engine, EngineKind::Streaming | EngineKind::MapReduce) {
+        let budget = streaming_budget_for(
+            budget_bytes,
+            plan.canvas_width,
+            plan.tile_size,
+            src.format().bytes_per_pixel() as u32,
+        );
         builder = builder
-            .with_memory_budget(budget_bytes)
+            .with_memory_budget(budget)
             .with_budget_policy(BudgetPolicy::Error);
     }
     builder
@@ -2143,47 +2185,82 @@ mod budget_tests {
     use super::*;
 
     /// From 1024 px up the worst-case tile-aligned strip
-    /// (`width × 2·tile_size × bpp`) exceeds the report's flat 1 MB budget, so
-    /// [`streaming_budget_for`] must raise it to admit that strip (with the 2×
-    /// accumulator headroom) rather than let `BudgetPolicy::Error` trip.
+    /// (`canvas_width × 2·tile_size × bpp`) exceeds the report's flat 1 MB
+    /// budget, so [`streaming_budget_for`] must raise it to admit that strip
+    /// (at 2× the single-strip pre-flight minimum) rather than let
+    /// `BudgetPolicy::Error` trip.
     #[test]
     fn sized_budget_admits_worst_case_strip_at_large_width() {
-        let requested = BENCH_STREAMING_BUDGET; // 1 MB, the report default
+        let floor = BENCH_STREAMING_BUDGET; // 1 MB, the report default
         let tile = BENCH_TILE_SIZE; // 256
-        let bpp: u64 = 3; // RGB8 gradient
+        let bpp: u32 = 3; // RGB8 gradient
         let width: u32 = 1024;
-        let worst_case = width as u64 * 2 * tile as u64 * bpp;
+        let worst_case = width as u64 * 2 * tile as u64 * bpp as u64;
         // Premise: the flat budget really is too small at this width.
         assert!(
-            worst_case > requested,
+            worst_case > floor,
             "test premise: 1024px worst-case strip must exceed the flat budget"
         );
-        let budget = streaming_budget_for(requested, width, tile, bpp);
+        let budget = streaming_budget_for(floor, width, tile, bpp);
         assert!(
             budget >= worst_case,
             "sized budget {budget} must admit the worst-case strip {worst_case}"
         );
-        // Exactly the 2× headroom over the minimum aligned strip.
+        // Exactly 2× the minimum aligned strip (the fixed pre-flight margin).
         assert_eq!(budget, worst_case * 2);
     }
 
     /// A small canvas whose worst-case strip already fits keeps the caller's
-    /// requested budget as the floor — the budget is raised, never lowered.
+    /// requested floor — the budget is raised, never lowered.
     #[test]
     fn small_canvas_keeps_requested_floor() {
-        let requested = BENCH_STREAMING_BUDGET;
+        let floor = BENCH_STREAMING_BUDGET;
         // 256px RGB8 at tile 256: worst-case = 256·512·3 = 393_216; 2× =
         // 786_432, still under the 1 MB floor.
-        let budget = streaming_budget_for(requested, 256, BENCH_TILE_SIZE, 3);
-        assert_eq!(
-            budget, requested,
-            "floor must win when the strip already fits"
-        );
+        let budget = streaming_budget_for(floor, 256, BENCH_TILE_SIZE, 3);
+        assert_eq!(budget, floor, "floor must win when the strip already fits");
         assert!(budget >= 256u64 * 2 * BENCH_TILE_SIZE as u64 * 3);
     }
 
-    /// Adversarial dimensions saturate the budget large (which the engine then
-    /// rejects cleanly) rather than overflowing to a wrapped-small value.
+    /// The helper sizes from the CANVAS width it is handed, and the callers hand
+    /// it `plan.canvas_width` (not the source width) so it reproduces the input
+    /// the engine's pre-flight gates on. A centred plan widens the canvas past a
+    /// tile-unaligned source, so sizing from the canvas yields a strictly larger
+    /// budget than sizing from the source width would — this pins why the call
+    /// sites must pass `plan.canvas_width` (issue #38 review).
+    #[test]
+    fn budget_tracks_canvas_width_not_source_width() {
+        let img_w: u32 = 1000; // deliberately not a multiple of the tile size
+        let plan = PyramidPlanner::new(img_w, 1000, BENCH_TILE_SIZE, 0, libviprs::Layout::DeepZoom)
+            .expect("plan")
+            .with_centre(true)
+            .plan();
+        assert!(
+            plan.canvas_width > img_w,
+            "a centred plan pads a tile-unaligned canvas wider than the image \
+             ({} vs {img_w})",
+            plan.canvas_width
+        );
+        let floor = BENCH_STREAMING_BUDGET;
+        let from_canvas = streaming_budget_for(floor, plan.canvas_width, plan.tile_size, 3);
+        let from_source = streaming_budget_for(floor, img_w, plan.tile_size, 3);
+        assert!(
+            from_canvas >= from_source,
+            "canvas-sized budget {from_canvas} must be >= source-sized {from_source}"
+        );
+        // The canvas-sized budget admits the strip the engine actually checks.
+        let engine_gate = plan.canvas_width as u64 * 2 * plan.tile_size as u64 * 3;
+        assert!(
+            from_canvas >= engine_gate,
+            "canvas-sized budget {from_canvas} must admit the engine gate strip \
+             {engine_gate}"
+        );
+    }
+
+    /// Adversarial dimensions saturate the budget large rather than overflowing
+    /// to a wrapped-small value. (No constructible [`PyramidPlan`] reaches these
+    /// magnitudes — the planner rejects them — so the saturation is purely
+    /// defensive, keeping the helper total.)
     #[test]
     fn adversarial_dimensions_saturate_not_wrap() {
         let budget = streaming_budget_for(BENCH_STREAMING_BUDGET, u32::MAX, u32::MAX, 4);
