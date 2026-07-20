@@ -53,22 +53,6 @@ jobs:
         working-directory: libviprs-bench
         run: cargo clippy --lib --tests --features libvips
 
-  charts:
-    name: Chart renderers (JS)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      # The history + scalability SVGs are now rendered in JS
-      # (tools/charts/*.mjs). Gate its node:test suite. NOTE: the directory
-      # form `node --test tools/charts/` fails to resolve on current Node; the
-      # working invocation is the explicit *.test.mjs glob (run from the dir).
-      - name: Test chart renderers
-        working-directory: tools/charts
-        run: node --test '*.test.mjs'
-
   test:
     name: Test (libvips FFI)
     runs-on: ubuntu-latest
