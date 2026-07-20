@@ -16,6 +16,15 @@ pdfium = ["libviprs/pdfium"]
 # light. Gates the `cross_version` binary.
 polars = ["dep:polars"]
 
+# Pinned measurement profile. Benchmark numbers are only meaningful under
+# a fixed optimizer configuration; this is THE config the committed
+# report/ artifacts were measured with. `run-bench.sh` additionally pins
+# RUSTFLAGS (recorded in each snapshot's provenance). Keep these two in
+# lockstep — changing them invalidates cross-run comparisons (issue #162).
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
 [dependencies]
 libviprs = { path = "../libviprs" }
 chrono = { version = "0.4", features = ["serde"] }

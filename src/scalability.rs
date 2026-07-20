@@ -1,14 +1,22 @@
 //! Engine scalability benchmark.
 //!
-//! Extracts a raster from `fixtures/43551_California_South.pdf`, crops it
-//! to progressively larger sizes, and runs all four engines (libvips,
-//! monolithic, streaming, MapReduce) at each size. Produces SVG line
-//! charts showing how wall time, peak memory, and efficiency scale with
-//! image area.
+//! Generates a SYNTHETIC gradient raster (see `gradient_raster`) at
+//! progressively larger sizes — the actual `43551_California_South.pdf`
+//! fixture is not committed, so the workload is a stand-in sized to that
+//! page's 1.42:1 aspect, NOT a rasterized blueprint. Runs all four engines
+//! (libvips, monolithic, streaming, MapReduce) at each size and at matched
+//! thread budgets (1 and num_cpus), producing SVG line charts — one set per
+//! thread budget — showing how wall time, peak RSS, and efficiency scale
+//! with image area.
 //!
 //! Run: cargo run --release --bin scalability
 //!
 //! Output: report/scalability_*.svg + report/scalability_results.json
+
+// The chart plumbing threads fixed-arity metric tuples and borrowed series
+// slices through a few local closures; naming each as a `type` would add
+// noise without aiding readers, so the complexity lint is allowed here.
+#![allow(clippy::type_complexity)]
 
 use std::fs;
 use std::path::Path;
@@ -78,12 +86,22 @@ struct ScalabilityPoint {
     height: u32,
     megapixels: f64,
     engine: String,
+    /// Thread budget this point was measured at (`VIPS_CONCURRENCY` for
+    /// libvips; engine concurrency for the libviprs engines). Points at
+    /// different thread caps are NEVER mixed on one chart line set (issue
+    /// #156). Defaults to 0 for pre-#156 history that predates the field.
+    #[serde(default)]
+    concurrency: usize,
     wall_time_ms: f64,
     /// Engine-tracked working set (libviprs engines; 0 for libvips). Kept in a
     /// separate field from `peak_rss_mb` so the two memory bases are never
-    /// conflated (issue #153).
+    /// conflated (issue #153). Defaults to 0 for pre-#153 history.
+    #[serde(default)]
     tracked_memory_mb: f64,
     /// Process/child peak RSS — the cross-engine-comparable memory basis.
+    /// The `peak_memory_mb` alias lets pre-#153 scalability history (which
+    /// used that field name) deserialize unchanged.
+    #[serde(alias = "peak_memory_mb")]
     peak_rss_mb: f64,
     tiles_produced: u64,
     tiles_per_second: f64,
@@ -114,7 +132,7 @@ fn sink_dir(label: &str) -> std::path::PathBuf {
     dir
 }
 
-fn run_monolithic(src: &Raster, tile_size: u32) -> EngineRun {
+fn run_monolithic(src: &Raster, tile_size: u32, concurrency: usize) -> EngineRun {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
@@ -123,7 +141,7 @@ fn run_monolithic(src: &Raster, tile_size: u32) -> EngineRun {
     let start = Instant::now();
     let result = EngineBuilder::new(src, plan, &sink)
         .with_engine(EngineKind::Monolithic)
-        .with_config(EngineConfig::default())
+        .with_config(EngineConfig::default().with_concurrency(concurrency))
         .run()
         .unwrap();
     let dur = start.elapsed();
@@ -137,7 +155,7 @@ fn run_monolithic(src: &Raster, tile_size: u32) -> EngineRun {
     }
 }
 
-fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
+fn run_streaming(src: &Raster, tile_size: u32, budget: u64, concurrency: usize) -> EngineRun {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
@@ -147,7 +165,7 @@ fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
     let start = Instant::now();
     let result = EngineBuilder::new(strip_src, plan, &sink)
         .with_engine(EngineKind::Streaming)
-        .with_config(EngineConfig::default())
+        .with_config(EngineConfig::default().with_concurrency(concurrency))
         .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
         .run()
@@ -163,7 +181,7 @@ fn run_streaming(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
     }
 }
 
-fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
+fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64, concurrency: usize) -> EngineRun {
     let planner =
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
@@ -173,7 +191,7 @@ fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
     let start = Instant::now();
     let result = EngineBuilder::new(strip_src, plan, &sink)
         .with_engine(EngineKind::MapReduce)
-        .with_config(EngineConfig::default().with_concurrency(4))
+        .with_config(EngineConfig::default().with_concurrency(concurrency))
         .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
         .run()
@@ -189,10 +207,12 @@ fn run_mapreduce(src: &Raster, tile_size: u32, budget: u64) -> EngineRun {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn to_point(
     w: u32,
     h: u32,
     engine: &str,
+    concurrency: usize,
     dur: std::time::Duration,
     tracked_bytes: u64,
     rss_bytes: u64,
@@ -218,6 +238,7 @@ fn to_point(
         height: h,
         megapixels: mp,
         engine: engine.to_string(),
+        concurrency,
         wall_time_ms: ms,
         tracked_memory_mb: tracked_mb,
         peak_rss_mb: rss_mb,
@@ -251,11 +272,8 @@ fn draw_scalability_chart(
     let visible_series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = series
         .iter()
         .map(|(name, color, pts)| {
-            let visible: Vec<(f64, f64)> = pts
-                .iter()
-                .filter(|(x, _)| *x >= x_lo)
-                .copied()
-                .collect();
+            let visible: Vec<(f64, f64)> =
+                pts.iter().filter(|(x, _)| *x >= x_lo).copied().collect();
             (*name, *color, visible)
         })
         .collect();
@@ -325,13 +343,44 @@ fn draw_scalability_chart(
     root.present().unwrap();
 }
 
-/// Render the five scalability SVGs into `report_dir`. Shared between
-/// the bench-then-render path and the `--replot` path.
+/// Render one full set of five scalability SVGs for every distinct thread
+/// budget present in `all_points`. Points measured at different thread caps
+/// are NEVER drawn on the same line set (issue #156): each concurrency level
+/// gets its own `scalability_*_c{n}.svg` files with the cap in the caption.
 fn render_charts(
     all_points: &[ScalabilityPoint],
     report_dir: &std::path::Path,
     x_min: Option<f64>,
 ) {
+    let mut concs: Vec<usize> = all_points.iter().map(|p| p.concurrency).collect();
+    concs.sort_unstable();
+    concs.dedup();
+    for conc in concs {
+        let subset: Vec<ScalabilityPoint> = all_points
+            .iter()
+            .filter(|p| p.concurrency == conc)
+            .cloned()
+            .collect();
+        render_charts_for_conc(&subset, report_dir, x_min, conc);
+    }
+}
+
+/// Render the five scalability SVGs for a single thread budget into
+/// `report_dir`, filenames suffixed `_c{concurrency}`.
+fn render_charts_for_conc(
+    all_points: &[ScalabilityPoint],
+    report_dir: &std::path::Path,
+    x_min: Option<f64>,
+    concurrency: usize,
+) {
+    let thread_cap = if concurrency == 0 {
+        "auto threads".to_string()
+    } else {
+        format!(
+            "{concurrency} thread{}",
+            if concurrency == 1 { "" } else { "s" }
+        )
+    };
     let vips_color = RGBColor(156, 39, 176);
     let mono_color = RGBColor(66, 133, 244);
     let stream_color = RGBColor(52, 168, 83);
@@ -370,40 +419,48 @@ fn render_charts(
     // Per-chart definition: (filename, title, y-label, tuple-index for the
     // metric on each engine's series). Looping over this avoids repeating
     // the build-up boilerplate five times.
-    let charts: [(&str, &str, &str, u8); 5] = [
+    // NOTE: the workload is a SYNTHETIC gradient raster (see
+    // `gradient_raster`), sized to the 1.42:1 aspect of the California
+    // South page — the actual PDF fixture is not committed. Titles say so
+    // rather than implying a real rasterized blueprint was benchmarked
+    // (issue #161).
+    let charts: [(String, String, &str, u8); 5] = [
         (
-            "scalability_wall_time.svg",
-            "Wall Time Scalability — 43551_California_South.pdf",
+            format!("scalability_wall_time_c{concurrency}.svg"),
+            format!("Wall Time Scalability — synthetic gradient ({thread_cap})"),
             "Time (ms)",
             1,
         ),
         (
-            "scalability_peak_memory.svg",
-            "Peak RSS Scalability — 43551_California_South.pdf",
+            format!("scalability_peak_memory_c{concurrency}.svg"),
+            format!("Peak RSS Scalability — synthetic gradient ({thread_cap})"),
             "Peak RSS (MB)",
             2,
         ),
         (
-            "scalability_throughput.svg",
-            "Throughput Scalability — 43551_California_South.pdf",
+            format!("scalability_throughput_c{concurrency}.svg"),
+            format!("Throughput Scalability — synthetic gradient ({thread_cap})"),
             "Tiles/s",
             3,
         ),
         (
-            "scalability_efficiency.svg",
-            "Memory Efficiency Scalability — Tiles/s per MB",
-            "Tiles/s/MB",
+            format!("scalability_efficiency_c{concurrency}.svg"),
+            format!("Memory Efficiency — Tiles/s per RSS-MB ({thread_cap})"),
+            "Tiles/s/RSS-MB",
             4,
         ),
         (
-            "scalability_resource_cost.svg",
-            "Resource Cost Scalability — MB\u{00b7}s per Tile (lower is better)",
-            "MB\u{00b7}s / tile",
+            format!("scalability_resource_cost_c{concurrency}.svg"),
+            format!("Resource Cost — RSS-MB\u{00b7}s per Tile, lower is better ({thread_cap})"),
+            "RSS-MB\u{00b7}s / tile",
             5,
         ),
     ];
 
-    for (filename, title, y_label, idx) in charts {
+    for (filename, title, y_label, idx) in &charts {
+        let filename = filename.as_str();
+        let title = title.as_str();
+        let idx = *idx;
         let mut series: Vec<(&str, RGBColor, Vec<(f64, f64)>)> = Vec::new();
         if !vips_data.is_empty() {
             let pts = match idx {
@@ -450,26 +507,32 @@ struct CliOpts {
     /// `scalability_results.json` already on disk. Useful for iterating on
     /// chart styling without paying the multi-minute bench cost.
     replot: bool,
-    /// When true, draw charts with the original full-range x-axis. When
-    /// false (the default), x-axis starts at `DEFAULT_X_AXIS_CROP_MP` so
-    /// the steep-slope startup region is hidden.
-    no_crop: bool,
+    /// When true, crop the x-axis to `DEFAULT_X_AXIS_CROP_MP` and up. The
+    /// full range is now the DEFAULT (issue #161) — the crop hid the small-
+    /// image regime and was only opt-in for zooming into the large-image
+    /// tail.
+    crop: bool,
 }
 
 fn parse_cli() -> CliOpts {
     let mut replot = false;
-    let mut no_crop = false;
+    let mut crop = false;
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "--replot" => replot = true,
-            "--no-crop" | "--full-x-range" => no_crop = true,
+            "--crop" => crop = true,
+            // Back-compat no-ops: full range is now the default.
+            "--no-crop" | "--full-x-range" => {}
             "-h" | "--help" => {
-                println!("Usage: scalability [--replot] [--no-crop]");
+                println!("Usage: scalability [--replot] [--crop]");
                 println!();
                 println!("  --replot     Skip the bench; redraw SVGs from the existing");
                 println!("               report/scalability_results.json.");
-                println!("  --no-crop    Disable the default x-axis crop ({} MP) so the", DEFAULT_X_AXIS_CROP_MP);
-                println!("               startup region of every chart is visible again.");
+                println!(
+                    "  --crop       Zoom the x-axis to >= {} MP (default is the full",
+                    DEFAULT_X_AXIS_CROP_MP
+                );
+                println!("               range so the small-image regime is visible).");
                 std::process::exit(0);
             }
             other => {
@@ -479,15 +542,15 @@ fn parse_cli() -> CliOpts {
             }
         }
     }
-    CliOpts { replot, no_crop }
+    CliOpts { replot, crop }
 }
 
 fn main() {
     let opts = parse_cli();
-    let x_axis_crop: Option<f64> = if opts.no_crop {
-        None
-    } else {
+    let x_axis_crop: Option<f64> = if opts.crop {
         Some(DEFAULT_X_AXIS_CROP_MP)
+    } else {
+        None
     };
 
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
@@ -546,7 +609,10 @@ fn main() {
     ];
 
     println!("=== Engine Scalability Benchmark ===");
-    println!("Reference: 43551_California_South.pdf (4608x3240 pts)");
+    println!(
+        "Workload: SYNTHETIC gradient raster (not a rasterized PDF); aspect \
+         1.42:1 matches the California South page (4608x3240 pts)."
+    );
     println!(
         "Sizes: {} points from 512x360 to {}x{}",
         sizes.len(),
@@ -565,100 +631,132 @@ fn main() {
 
     let mut all_points: Vec<ScalabilityPoint> = Vec::new();
 
-    for &(w, h) in &sizes {
-        let src = gradient_raster(w, h);
-        let mp = w as f64 * h as f64 / 1_000_000.0;
-        print!("{w}x{h} ({mp:.1} MP): ");
+    // Matched thread budgets: run EVERY engine — including libvips, via a
+    // matched `VIPS_CONCURRENCY` — at both a single thread and all cores, so
+    // no engine is silently pinned to a different thread count than another
+    // (issue #156). The two levels are charted separately, never mixed.
+    let ncpu = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let concurrency_levels: Vec<usize> = if ncpu > 1 { vec![1, ncpu] } else { vec![1] };
+    println!("Thread budgets: {concurrency_levels:?} (1 and num_cpus)");
+    println!();
 
-        // libvips: prefer in-process FFI, fall back to CLI
-        let mut vips_done = false;
-        #[cfg(feature = "libvips")]
-        {
-            if let Some(r) = libviprs_bench::bench_libvips_inprocess(&src, TILE_SIZE, 1, "vips") {
-                print!("vips={:.0}ms/{:.1}MB(rss)  ", r.wall_time_ms(), r.peak_rss_mb());
-                all_points.push(to_point(
-                    w,
-                    h,
-                    "libvips",
-                    r.wall_time,
-                    r.tracked_memory_bytes,
-                    r.peak_rss_bytes,
-                    r.tiles_produced,
-                ));
-                vips_done = true;
+    for &conc in &concurrency_levels {
+        println!("--- thread budget: {conc} ---");
+        for &(w, h) in &sizes {
+            let src = gradient_raster(w, h);
+            let mp = w as f64 * h as f64 / 1_000_000.0;
+            print!("[c{conc}] {w}x{h} ({mp:.1} MP): ");
+
+            // libvips: prefer in-process FFI, fall back to CLI. Both honour
+            // the matched thread budget (`concurrency_set` / VIPS_CONCURRENCY).
+            // `vips_done` is only reassigned under the `libvips` feature.
+            #[cfg_attr(not(feature = "libvips"), allow(unused_mut))]
+            let mut vips_done = false;
+            #[cfg(feature = "libvips")]
+            {
+                if let Some(r) =
+                    libviprs_bench::bench_libvips_inprocess(&src, TILE_SIZE, conc, "vips")
+                {
+                    print!(
+                        "vips={:.0}ms/{:.1}MB(rss)  ",
+                        r.wall_time_ms(),
+                        r.peak_rss_mb()
+                    );
+                    all_points.push(to_point(
+                        w,
+                        h,
+                        "libvips",
+                        conc,
+                        r.wall_time,
+                        r.tracked_memory_bytes,
+                        r.peak_rss_bytes,
+                        r.tiles_produced,
+                    ));
+                    vips_done = true;
+                }
             }
-        }
-        if !vips_done && has_vips {
-            let png_path = write_temp_png(&src);
-            if let Some(r) = bench_libvips(&png_path, w, h, TILE_SIZE, 1, "vips") {
-                print!("vips={:.0}ms/{:.1}MB(rss)  ", r.wall_time_ms(), r.peak_rss_mb());
-                all_points.push(to_point(
-                    w,
-                    h,
-                    "libvips",
-                    r.wall_time,
-                    r.tracked_memory_bytes,
-                    r.peak_rss_bytes,
-                    r.tiles_produced,
-                ));
+            if !vips_done && has_vips {
+                let png_path = write_temp_png(&src);
+                if let Some(r) = bench_libvips(&png_path, w, h, TILE_SIZE, conc, "vips") {
+                    print!(
+                        "vips={:.0}ms/{:.1}MB(rss)  ",
+                        r.wall_time_ms(),
+                        r.peak_rss_mb()
+                    );
+                    all_points.push(to_point(
+                        w,
+                        h,
+                        "libvips",
+                        conc,
+                        r.wall_time,
+                        r.tracked_memory_bytes,
+                        r.peak_rss_bytes,
+                        r.tiles_produced,
+                    ));
+                }
+                let _ = fs::remove_file(&png_path);
             }
-            let _ = fs::remove_file(&png_path);
+
+            // Monolithic
+            let run = run_monolithic(&src, TILE_SIZE, conc);
+            print!(
+                "mono={:.0}ms/{:.1}MB(trk)  ",
+                run.dur.as_secs_f64() * 1000.0,
+                run.tracked_bytes as f64 / (1024.0 * 1024.0),
+            );
+            all_points.push(to_point(
+                w,
+                h,
+                "monolithic",
+                conc,
+                run.dur,
+                run.tracked_bytes,
+                run.rss_bytes,
+                run.tiles,
+            ));
+
+            // Streaming + MapReduce share a budget chosen per-width so the
+            // tile-aligned minimum strip always fits.
+            let budget = streaming_budget_for(w, TILE_SIZE);
+
+            // Streaming
+            let run = run_streaming(&src, TILE_SIZE, budget, conc);
+            print!(
+                "stream={:.0}ms/{:.1}MB(trk)  ",
+                run.dur.as_secs_f64() * 1000.0,
+                run.tracked_bytes as f64 / (1024.0 * 1024.0),
+            );
+            all_points.push(to_point(
+                w,
+                h,
+                "streaming",
+                conc,
+                run.dur,
+                run.tracked_bytes,
+                run.rss_bytes,
+                run.tiles,
+            ));
+
+            // MapReduce
+            let run = run_mapreduce(&src, TILE_SIZE, budget, conc);
+            println!(
+                "mr={:.0}ms/{:.1}MB(trk)",
+                run.dur.as_secs_f64() * 1000.0,
+                run.tracked_bytes as f64 / (1024.0 * 1024.0),
+            );
+            all_points.push(to_point(
+                w,
+                h,
+                "mapreduce",
+                conc,
+                run.dur,
+                run.tracked_bytes,
+                run.rss_bytes,
+                run.tiles,
+            ));
         }
-
-        // Monolithic
-        let run = run_monolithic(&src, TILE_SIZE);
-        print!(
-            "mono={:.0}ms/{:.1}MB(trk)  ",
-            run.dur.as_secs_f64() * 1000.0,
-            run.tracked_bytes as f64 / (1024.0 * 1024.0),
-        );
-        all_points.push(to_point(
-            w,
-            h,
-            "monolithic",
-            run.dur,
-            run.tracked_bytes,
-            run.rss_bytes,
-            run.tiles,
-        ));
-
-        // Streaming + MapReduce share a budget chosen per-width so the
-        // tile-aligned minimum strip always fits.
-        let budget = streaming_budget_for(w, TILE_SIZE);
-
-        // Streaming
-        let run = run_streaming(&src, TILE_SIZE, budget);
-        print!(
-            "stream={:.0}ms/{:.1}MB(trk)  ",
-            run.dur.as_secs_f64() * 1000.0,
-            run.tracked_bytes as f64 / (1024.0 * 1024.0),
-        );
-        all_points.push(to_point(
-            w,
-            h,
-            "streaming",
-            run.dur,
-            run.tracked_bytes,
-            run.rss_bytes,
-            run.tiles,
-        ));
-
-        // MapReduce
-        let run = run_mapreduce(&src, TILE_SIZE, budget);
-        println!(
-            "mr={:.0}ms/{:.1}MB(trk)",
-            run.dur.as_secs_f64() * 1000.0,
-            run.tracked_bytes as f64 / (1024.0 * 1024.0),
-        );
-        all_points.push(to_point(
-            w,
-            h,
-            "mapreduce",
-            run.dur,
-            run.tracked_bytes,
-            run.rss_bytes,
-            run.tiles,
-        ));
     }
 
     // --- Generate charts ---

@@ -73,21 +73,19 @@ esac
 CONTAINER_NAME="libviprs-bench"
 IMAGE_NAME="libviprs-bench:local"
 
-# ---------------------------------------------------------------------------
-# Pre-flight
-# ---------------------------------------------------------------------------
-
-if ! docker info >/dev/null 2>&1; then
-    echo "Error: Docker is not running."
-    exit 1
-fi
+# Pinned measurement RUSTFLAGS. Recorded into every snapshot's provenance
+# (build.rs stamps $RUSTFLAGS) so the reported numbers carry the exact
+# codegen config they were measured under. Kept in lockstep with the
+# [profile.release] pin in Cargo.toml (issue #162).
+export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 
 # ---------------------------------------------------------------------------
-# Local mode (--no-build)
+# Local mode (--no-build) — runs on the host, no Docker required
 # ---------------------------------------------------------------------------
 
 if [ "$NO_BUILD" = true ]; then
-    echo "Running benchmark locally (--no-build)..."
+    echo "Running benchmark locally (--no-build, no Docker)..."
+    echo "RUSTFLAGS=${RUSTFLAGS}"
     echo ""
 
     # Check if libvips feature can be used
@@ -99,11 +97,24 @@ if [ "$NO_BUILD" = true ]; then
         echo "libvips not found — falling back to CLI comparison"
     fi
 
-    LIBRARY_PATH="$(pkg-config --libs-only-L vips 2>/dev/null | sed 's/-L//g' || true)"
-    export LIBRARY_PATH
+    # Point the linker at the libvips (and its glib) library directories so
+    # the FFI links against the system libvips.
+    LIBVIPS_LIBS="$(pkg-config --libs-only-L vips glib-2.0 2>/dev/null | sed 's/-L//g' | tr ' ' ':' || true)"
+    if [ -n "$LIBVIPS_LIBS" ]; then
+        export LIBRARY_PATH="${LIBVIPS_LIBS}${LIBRARY_PATH:+:$LIBRARY_PATH}"
+    fi
 
     cargo run --release $FEATURES --bin "$BENCH_CMD"
     exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-flight (Docker path only)
+# ---------------------------------------------------------------------------
+
+if ! docker info >/dev/null 2>&1; then
+    echo "Error: Docker is not running (needed unless --no-build)."
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -147,6 +158,7 @@ docker run --rm \
     --platform "$PLATFORM" \
     --name "$CONTAINER_NAME" \
     --memory="${MEMORY_MB}m" \
+    -e RUSTFLAGS="$RUSTFLAGS" \
     -v "$SCRIPT_DIR/report:/src/libviprs-bench/report" \
     "$IMAGE_NAME" \
     cargo run --release --features libvips --bin "$BENCH_CMD"
