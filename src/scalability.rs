@@ -417,12 +417,13 @@ fn main() {
 
     // Scalability series: generate gradient rasters at progressively larger
     // sizes. Uses 1.42:1 aspect ratio matching 43551_California_South.pdf
-    // (4608x3240 pts). The grid intentionally spans both the small "noise"
-    // regime (sub-megapixel) and several points well above the default
-    // small-image regime AND the large-image tail, so the log-log charts
-    // of a single dot per series. Memory: monolithic peak ≈ w×h×3×1.25
-    // bytes — capped here at ~1.7 GB so the default 4 GB Docker container
-    // still has headroom for libvips alongside.
+    // (4608x3240 pts). The grid intentionally spans the sub-megapixel
+    // "noise" regime (where fixed setup costs dominate) through ~280 MP, so
+    // the log-log charts (rendered by tools/charts/render.mjs; `--linear`
+    // selects linear axes) show a full trend rather than a cluster of dots.
+    // Memory: monolithic peak ≈ w×h×3×1.25 bytes — capped here at ~1.7 GB so
+    // the default 4 GB Docker container still has headroom for libvips
+    // alongside.
     let sizes: Vec<(u32, u32)> = vec![
         (512, 360),
         (1024, 720),

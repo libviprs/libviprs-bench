@@ -88,25 +88,29 @@ fn load_history_migrates_legacy_file() {
 }
 
 #[test]
-fn history_chart_filter_matches_migrated_labels() {
-    // The concrete regression: a migrated label must satisfy the exact
-    // `{w}x{h}_c{c}` prefix filter the history-trend pipeline groups runs by
-    // (the SVG rendering itself now lives in tools/charts/render.mjs).
+fn history_chart_grouping_fields_survive_migration() {
+    // The history-trend pipeline (tools/charts/render.mjs `configsOf` /
+    // `historyPointsFor`) buckets runs by the STRUCTURED width/height/
+    // concurrency fields, not by the run label. The concrete regression this
+    // guards: those numeric fields must survive the legacy-history migration
+    // so the JS grouping key still resolves (the label is no longer read by
+    // any chart code).
     let dir = std::env::temp_dir().join(format!("libviprs_hist2_{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("benchmark_history.json");
     std::fs::write(&path, LEGACY).unwrap();
     let history = load_history(&path).unwrap();
 
-    let prefix = "1024x1024_c0";
+    // The 1024x1024 c0 config render.mjs groups on must be present via the
+    // numeric fields (width == 1024 && height == 1024 && concurrency == 0).
     let matched = history
         .iter()
         .flat_map(|s| &s.runs)
-        .filter(|r| r.label.starts_with(prefix))
+        .filter(|r| r.width == 1024 && r.height == 1024 && r.concurrency == 0)
         .count();
     assert!(
         matched > 0,
-        "migrated labels must match the history-chart prefix filter"
+        "migrated runs must expose the numeric width/height/concurrency the JS pipeline groups by"
     );
 
     let _ = std::fs::remove_dir_all(&dir);

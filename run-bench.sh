@@ -119,17 +119,23 @@ export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 # the local and Docker paths can locate report/ and the JS chart renderer.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Regenerate the history + scalability SVGs from the JSON the Rust harness
-# just wrote, using the causl-bench JS chart library (tools/charts/render.mjs).
-# The Rust binaries only emit JSON now; charts are rendered here so a single
-# run always refreshes report/*.svg. Skipped with a hint if node is missing —
-# the JSON is the source of truth and can be re-rendered later.
+# Regenerate the report SVGs from whatever JSON is in report/, using the
+# causl-bench JS chart library (tools/charts/render.mjs). The Rust binaries
+# only emit JSON now. This is a WHOLE-REPORT, idempotent regeneration from the
+# JSON on disk: render.mjs is deterministic, so re-rendering a family whose
+# JSON this run did not touch just rewrites byte-identical SVGs (no staleness
+# introduced). Skipped with a hint if node is missing.
+#
+# Rendering is NON-FATAL under `set -e`: the measurement JSON is the source of
+# truth, so a chart-side failure must never discard it — the run reports the
+# failure and leaves the JSON intact to re-render later.
 regenerate_charts() {
     local report_dir="$1"
     if command -v node >/dev/null 2>&1; then
         echo ""
         echo "Regenerating SVG charts from JSON (tools/charts/render.mjs)..."
-        node "$SCRIPT_DIR/tools/charts/render.mjs" --report-dir "$report_dir"
+        node "$SCRIPT_DIR/tools/charts/render.mjs" --report-dir "$report_dir" \
+            || echo "chart render failed; JSON is intact — re-run tools/charts/render.mjs later"
     else
         echo ""
         echo "node not found — skipping SVG chart regeneration."

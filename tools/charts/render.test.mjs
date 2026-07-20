@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { renderAll } from './render.mjs';
+import { renderAll, historyShapeOk, scalabilityShapeOk } from './render.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, 'fixtures');
@@ -80,8 +80,9 @@ test('the history time chart reflects the fixture gap (streaming broken)', () =>
   const outDir = freshOut();
   renderAll({ historyPath: HISTORY, scalabilityPath: SCAL, outDir });
   const svg = readFileSync(join(outDir, 'chart_history_1024x1024_c0_time.svg'), 'utf8');
+  // Legends show the title-cased label, so match case-insensitively.
   for (const engine of ['monolithic', 'streaming', 'mapreduce', 'libvips']) {
-    assert.ok(svg.includes(engine), `history chart legends ${engine}`);
+    assert.ok(svg.toLowerCase().includes(engine), `history chart legends ${engine}`);
   }
   assert.ok(svg.includes('0.3.0') && svg.includes('0.3.3'), 'version ticks present');
   // streaming is absent from snapshot 2 → its line is broken (>1 segment).
@@ -106,6 +107,26 @@ test('history-only input still renders the history charts', () => {
   const names = written.map((p) => basename(p));
   assert.ok(names.includes('chart_history_1024x1024_c0_time.svg'));
   assert.ok(!names.some((n) => n.startsWith('scalability_')), 'no scalability charts without its JSON');
+});
+
+test('shape probes tell field-drift apart from absent/empty/valid data', () => {
+  // Absent / empty inputs are NOT a shape signal.
+  assert.equal(historyShapeOk(null), true);
+  assert.equal(historyShapeOk([]), true);
+  assert.equal(scalabilityShapeOk([]), true);
+  // Well-shaped records pass.
+  assert.equal(historyShapeOk([{ runs: [{ engine: 'x', wall_time: {}, width: 1 }] }]), true);
+  assert.equal(scalabilityShapeOk([{ engine: 'x', megapixels: 1, wall_time_ms: 2 }]), true);
+  // Records present but missing the load-bearing fields → drift → false.
+  assert.equal(historyShapeOk([{ runs: [{ engine: 'x', wall_time_ns: 5 }] }]), false);
+  assert.equal(scalabilityShapeOk([{ engine: 'x', mp: 1 }]), false);
+});
+
+test('the committed fixtures match the shapes render.mjs reads', () => {
+  const history = JSON.parse(readFileSync(HISTORY, 'utf8'));
+  const scal = JSON.parse(readFileSync(SCAL, 'utf8'));
+  assert.equal(historyShapeOk(history), true, 'sample_history matches the RunMetrics shape');
+  assert.equal(scalabilityShapeOk(scal), true, 'sample_scalability matches the ScalabilityPoint shape');
 });
 
 test('--linear option changes the scalability rendering', () => {

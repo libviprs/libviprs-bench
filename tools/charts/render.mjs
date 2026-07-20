@@ -100,7 +100,16 @@ export function buildHistoryCharts(snapshots) {
   if (!Array.isArray(snapshots) || snapshots.length < 2) return out;
   const metrics = [
     { suffix: 'time', label: 'Wall Time', unitSuffix: 'ms', valueOf: (r) => durationMs(r.wall_time) },
-    { suffix: 'memory', label: 'Peak RSS', unitSuffix: 'MB', valueOf: (r) => (r.peak_rss_bytes ?? 0) / BYTES_PER_MB },
+    {
+      suffix: 'memory',
+      label: 'Peak RSS',
+      unitSuffix: 'MB',
+      // `peak_rss_bytes` is `#[serde(default)] = 0`, where 0 means UNKNOWN
+      // (legacy history predating the field), not a real zero-memory run.
+      // Return NaN for 0/absent so the point is skipped and the gap logic
+      // breaks the line rather than drawing a misleading flat-zero trend.
+      valueOf: (r) => (r.peak_rss_bytes > 0 ? r.peak_rss_bytes / BYTES_PER_MB : Number.NaN),
+    },
   ];
   for (const config of configsOf(snapshots)) {
     for (const metric of metrics) {
@@ -126,11 +135,14 @@ export function buildScalabilityCharts(points, { linear = false } = {}) {
   const out = [];
   if (!Array.isArray(points) || points.length === 0) return out;
   const metrics = [
-    { suffix: 'wall_time', title: 'Wall Time Scalability', yLabel: 'Time (ms)', unitSuffix: 'ms', field: 'wall_time_ms' },
-    { suffix: 'peak_memory', title: 'Peak RSS Scalability', yLabel: 'Peak RSS (MB)', unitSuffix: 'MB', field: 'peak_rss_mb' },
-    { suffix: 'throughput', title: 'Throughput Scalability', yLabel: 'Tiles/s', unitSuffix: '', field: 'tiles_per_second' },
-    { suffix: 'efficiency', title: 'Memory Efficiency — Tiles/s per RSS-MB', yLabel: 'Tiles/s/RSS-MB', unitSuffix: '', field: 'tiles_per_second_per_mb' },
-    { suffix: 'resource_cost', title: 'Resource Cost — RSS-MB·s per Tile', yLabel: 'RSS-MB·s/tile', unitSuffix: '', field: 'resource_cost' },
+    { suffix: 'wall_time', title: 'Wall Time Scalability', yLabel: 'Time (ms)', unitSuffix: 'ms', valueOf: (p) => p.wall_time_ms },
+    // `peak_rss_mb ?? peak_memory_mb` mirrors the Rust
+    // `#[serde(alias = "peak_memory_mb")]` so pre-#153 scalability JSON that
+    // still uses the old field name is read, not silently dropped.
+    { suffix: 'peak_memory', title: 'Peak RSS Scalability', yLabel: 'Peak RSS (MB)', unitSuffix: 'MB', valueOf: (p) => p.peak_rss_mb ?? p.peak_memory_mb },
+    { suffix: 'throughput', title: 'Throughput Scalability', yLabel: 'Tiles/s', unitSuffix: '', valueOf: (p) => p.tiles_per_second },
+    { suffix: 'efficiency', title: 'Memory Efficiency — Tiles/s per RSS-MB', yLabel: 'Tiles/s/RSS-MB', unitSuffix: '', valueOf: (p) => p.tiles_per_second_per_mb },
+    { suffix: 'resource_cost', title: 'Resource Cost — RSS-MB·s per Tile', yLabel: 'RSS-MB·s/tile', unitSuffix: '', valueOf: (p) => p.resource_cost },
   ];
   const concs = [...new Set(points.map((p) => p.concurrency ?? 0))].sort((a, b) => a - b);
   for (const conc of concs) {
@@ -139,7 +151,7 @@ export function buildScalabilityCharts(points, { linear = false } = {}) {
       const chartPoints = subset.map((p) => ({
         engine: p.engine,
         megapixels: p.megapixels,
-        value: p[metric.field],
+        value: metric.valueOf(p),
       }));
       const svg = renderScalabilityChart(chartPoints, {
         title: `${metric.title} — synthetic gradient (${threadCap(conc)})`,
@@ -166,6 +178,28 @@ function readJson(path) {
     process.stderr.write(`render.mjs: skipping unreadable ${path}: ${e.message}\n`);
     return null;
   }
+}
+
+/**
+ * Probe the load-bearing fields the history extractors read. Returns `true`
+ * for absent/empty data (that is not a shape signal) and for well-shaped
+ * runs; `false` only when non-empty records are present but a run lacks the
+ * fields we depend on — i.e. the Rust `RunMetrics` shape drifted from what
+ * this consumer reads. Used to tell "field-shape mismatch" apart from
+ * "legitimately no charts yet" (a single snapshot has no trend).
+ */
+export function historyShapeOk(data) {
+  if (!Array.isArray(data) || data.length === 0) return true;
+  const run = data.find((s) => Array.isArray(s?.runs) && s.runs.length > 0)?.runs?.[0];
+  if (!run) return true; // snapshots without runs — not a field-shape signal
+  return 'engine' in run && ('wall_time' in run || 'peak_rss_bytes' in run) && 'width' in run;
+}
+
+/** As {@link historyShapeOk}, for the scalability `ScalabilityPoint` shape. */
+export function scalabilityShapeOk(data) {
+  if (!Array.isArray(data) || data.length === 0) return true;
+  const p = data[0];
+  return !!p && 'engine' in p && 'megapixels' in p && 'wall_time_ms' in p;
 }
 
 /**
@@ -200,21 +234,48 @@ export function renderAll(opts = {}) {
 /* CLI                                                                        */
 /* -------------------------------------------------------------------------- */
 
+const HELP = `Usage: render.mjs [options]
+
+Renders the benchmark SVGs from the harness JSON in the report dir:
+  benchmark_history.json   (Vec<BenchmarkSnapshot>)  -> chart_history_*.svg
+  scalability_results.json (Vec<ScalabilityPoint>)   -> scalability_*.svg
+
+Options:
+  --report-dir DIR    Dir holding the input JSON and receiving the SVGs
+                      (default: ../../report relative to tools/charts).
+  --out-dir DIR       Write SVGs here instead of the report dir.
+  --history FILE      Override the history JSON path.
+  --scalability FILE  Override the scalability JSON path.
+  --linear            Linear scalability axes (default: log-log).
+  -h, --help          Show this help.
+
+Missing input files are skipped, not fatal. Output is deterministic.
+`;
+
 function parseArgs(argv) {
   const opts = {};
+  // A value-taking flag must be followed by a real value, not the next flag
+  // or end-of-args — otherwise `--report-dir --linear` would silently swallow
+  // the flag as the path and fall back to the default dir.
+  const takeValue = (flag, i) => {
+    const v = argv[i + 1];
+    if (v === undefined || v.startsWith('-')) {
+      process.stderr.write(`render.mjs: ${flag} needs a value\n`);
+      process.exit(2);
+    }
+    return v;
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     switch (a) {
-      case '--report-dir': opts.reportDir = argv[++i]; break;
-      case '--out-dir': opts.outDir = argv[++i]; break;
-      case '--history': opts.historyPath = argv[++i]; break;
-      case '--scalability': opts.scalabilityPath = argv[++i]; break;
+      case '--report-dir': opts.reportDir = takeValue(a, i); i++; break;
+      case '--out-dir': opts.outDir = takeValue(a, i); i++; break;
+      case '--history': opts.historyPath = takeValue(a, i); i++; break;
+      case '--scalability': opts.scalabilityPath = takeValue(a, i); i++; break;
       case '--linear': opts.linear = true; break;
       case '-h':
       case '--help':
-        process.stdout.write(
-          'Usage: render.mjs [--report-dir DIR] [--out-dir DIR] [--history FILE] [--scalability FILE] [--linear]\n',
-        );
+        process.stdout.write(HELP);
         process.exit(0);
         break;
       default:
@@ -226,13 +287,46 @@ function parseArgs(argv) {
 }
 
 function main() {
-  const written = renderAll(parseArgs(process.argv.slice(2)));
-  if (written.length === 0) {
+  const opts = parseArgs(process.argv.slice(2));
+  const reportDir = opts.reportDir ?? DEFAULT_REPORT_DIR;
+  const historyPath = opts.historyPath ?? join(reportDir, 'benchmark_history.json');
+  const scalabilityPath = opts.scalabilityPath ?? join(reportDir, 'scalability_results.json');
+
+  const written = renderAll(opts);
+  if (written.length > 0) {
+    for (const p of written) process.stdout.write(`wrote ${p}\n`);
+    process.stdout.write(`render.mjs: ${written.length} chart(s) written.\n`);
+    return;
+  }
+
+  // Nothing written. Tell three cases apart:
+  //   (1) no input files          → benign, nothing to do
+  //   (2) inputs present, but a record shape we don't recognise → LOUD:
+  //       likely producer/consumer field-shape drift; exit non-zero so
+  //       run-bench.sh surfaces it.
+  //   (3) inputs present + well-shaped but too little data (e.g. a single
+  //       snapshot has no trend) → informational, exit 0.
+  const present = [historyPath, scalabilityPath].filter((p) => existsSync(p));
+  if (present.length === 0) {
     process.stdout.write('render.mjs: no benchmark JSON found — nothing to render.\n');
     return;
   }
-  for (const p of written) process.stdout.write(`wrote ${p}\n`);
-  process.stdout.write(`render.mjs: ${written.length} chart(s) written.\n`);
+  const drift = [];
+  if (existsSync(historyPath) && !historyShapeOk(readJson(historyPath))) drift.push(historyPath);
+  if (existsSync(scalabilityPath) && !scalabilityShapeOk(readJson(scalabilityPath))) {
+    drift.push(scalabilityPath);
+  }
+  if (drift.length > 0) {
+    process.stderr.write(
+      `render.mjs: parsed input but produced 0 charts — field-shape mismatch between ` +
+        `the Rust harness JSON and the chart extractors? Check: ${drift.join(', ')}\n`,
+    );
+    process.exit(1);
+  }
+  process.stdout.write(
+    'render.mjs: inputs present but produced no charts ' +
+      '(a history trend needs >= 2 snapshots; scalability needs >= 1 point).\n',
+  );
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

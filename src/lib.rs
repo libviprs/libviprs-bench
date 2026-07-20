@@ -1575,10 +1575,20 @@ pub fn create_snapshot_for(
 // ---------------------------------------------------------------------------
 // SVG chart generation via plotters
 // ---------------------------------------------------------------------------
+//
+// Scope note (issue #20/#21 charting rework): the history-trend and
+// scalability SVGs are now rendered in JS (`tools/charts/chart.mjs` +
+// `render.mjs`) from the harness JSON. The six grouped-bar `chart_*.svg`
+// comparison charts below (`generate_charts`) remain Rust-owned via plotters
+// for now; porting them to JS and dropping the plotters dependency is tracked
+// as follow-up work. Until then the engine palette here is intentionally
+// MIRRORED by `COLORS` in `tools/charts/chart.mjs` (same RGB values) and the
+// two must be kept in lockstep.
 
 use plotters::prelude::*;
 
-/// Color palette for the four engines.
+/// Color palette for the four engines. Mirrored — keep in lockstep — with the
+/// `COLORS` map in `tools/charts/chart.mjs` (the JS history/scalability charts).
 const COLOR_VIPS: RGBColor = RGBColor(156, 39, 176); // purple — libvips
 const COLOR_MONO: RGBColor = RGBColor(66, 133, 244); // blue   — monolithic
 const COLOR_STREAM: RGBColor = RGBColor(52, 168, 83); // green  — streaming
