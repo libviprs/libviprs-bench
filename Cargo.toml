@@ -28,7 +28,15 @@ codegen-units = 1
 [dependencies]
 libviprs = { path = "../libviprs" }
 chrono = { version = "0.4", features = ["serde"] }
-criterion = { version = "0.5", features = ["html_reports"] }
+# NOTE: criterion is deliberately a [dev-dependency] ONLY (below), never a
+# normal dependency. Nothing under src/ uses it — it is consumed solely by
+# `benches/engine_comparison.rs` (dev scope). Its `html_reports` feature drags
+# in `plotters` (plus plotters-svg / plotters-backend); listing criterion here
+# as a normal dep would keep plotters in the NORMAL build graph, so every
+# `cargo build --bin report` would still compile it — defeating the whole point
+# of #42 (drop plotters from the shipped binaries). Keeping it dev-only means
+# `cargo tree -i plotters -e normal` is empty; plotters survives only in the
+# criterion micro-benchmark's own graph. tests/chart_shape_drift.rs asserts it.
 image = "0.25"
 inferno = "0.12"
 libc = "0.2"
@@ -38,7 +46,6 @@ libc = "0.2"
 # libvips series through a different-series binding is its own mismatched
 # oracle (issue #33); `tests/libvips_provenance.rs` asserts they stay aligned.
 libvips-rs = { version = "8.18", optional = true }
-plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series"] }
 polars = { version = "0.50", optional = true, default-features = false, features = [
     "lazy",
     "csv",

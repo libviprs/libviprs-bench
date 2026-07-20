@@ -884,3 +884,54 @@ fn main() {
     );
     println!("JSON written to {}", json_path.display());
 }
+
+#[cfg(test)]
+mod shape_tests {
+    use super::ScalabilityPoint;
+
+    /// PRODUCER half of the #44 drift guard for the `scalability`-binary-private
+    /// [`ScalabilityPoint`]: the committed `golden_scalability.json` must carry
+    /// exactly the field names this struct serializes, so a rename here without
+    /// updating the golden (and `tools/charts/render.mjs`, its consumer) fails.
+    /// `ScalabilityPoint` is flat (all scalars), so a sorted key-set comparison
+    /// captures the whole shape.
+    #[test]
+    fn golden_scalability_matches_the_serializer_shape() {
+        let point = ScalabilityPoint {
+            width: 1000,
+            height: 1000,
+            megapixels: 1.0,
+            engine: "monolithic".to_string(),
+            concurrency: 1,
+            wall_time_ms: 10.0,
+            tracked_memory_mb: 2.0,
+            peak_rss_mb: 10.0,
+            tiles_produced: 16,
+            tiles_per_second: 1600.0,
+            tiles_per_second_per_mb: 160.0,
+            resource_cost: 0.006_25,
+        };
+        let serialized = serde_json::to_value(&point).unwrap();
+        let mut got: Vec<String> = serialized.as_object().unwrap().keys().cloned().collect();
+        got.sort();
+
+        let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tools/charts/fixtures/golden_scalability.json");
+        let text = std::fs::read_to_string(&golden_path).unwrap();
+        let golden: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let mut want: Vec<String> = golden.as_array().unwrap()[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        want.sort();
+
+        assert_eq!(
+            got, want,
+            "golden_scalability.json[0] must mirror the ScalabilityPoint serde field names; if \
+             this fails a ScalabilityPoint field changed — update the golden AND \
+             tools/charts/render.mjs to match."
+        );
+    }
+}

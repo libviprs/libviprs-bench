@@ -467,3 +467,46 @@ test('min/max over a large series does not overflow the stack', () => {
   const points = Array.from({ length: n }, () => ({ engine: 'monolithic', megapixels: 5, value: 10 }));
   assert.doesNotThrow(() => renderScalabilityChart(points, { title: 't', logScale: true }));
 });
+
+/* -------------------------------------------------------------------------- */
+/* #43 — large-image x-axis zoom (xMin) on the scalability renderer.          */
+/* The removed Rust `--crop` cropped the axis to the large-image regime by     */
+/* DEFAULT; the JS replacement is an opt-in xMin, and the full-range log-log   */
+/* chart stays the default.                                                    */
+/* -------------------------------------------------------------------------- */
+
+test('#43 xMin zooms into the large-image regime: filters out smaller sizes and rescales', () => {
+  const pts = [0.1, 1, 10, 100].map((mp) => ({ engine: 'monolithic', megapixels: mp, value: mp * 10 }));
+  const full = renderScalabilityChart(pts, { title: 't', logScale: true });
+  const zoom = renderScalabilityChart(pts, { title: 't', logScale: true, xMin: 10 });
+
+  const fullLine = segmentsFor(full, COLORS.monolithic)[0];
+  const zoomLine = segmentsFor(zoom, COLORS.monolithic)[0];
+  assert.equal(fullLine.length, 4, 'full-range plots every size');
+  assert.equal(zoomLine.length, 2, 'zoom keeps only the >= xMin sizes (10, 100 MP)');
+
+  // Lines are size-sorted, so index 2 is the 10 MP point in the full plot and
+  // index 0 is the 10 MP point after zoom. The rescale snaps it from mid-axis
+  // to the left frame (padding = 64), proving the axis was re-scaled, not just
+  // filtered.
+  const padding = 64;
+  assert.ok(Math.abs(zoomLine[0].x - padding) < 1e-3, '10 MP sits on the left frame after zoom');
+  assert.ok(fullLine[2].x - padding > 50, '10 MP sits mid-axis in the full-range plot');
+});
+
+test('#43 default (no xMin) leaves the full-range rendering unchanged', () => {
+  const pts = scalabilityPoints();
+  const opts = { title: 't', xLabel: 'MP', yLabel: 'ms', logScale: true };
+  assert.equal(
+    renderScalabilityChart(pts, opts),
+    renderScalabilityChart(pts, { ...opts, xMin: undefined }),
+    'omitting xMin and passing xMin:undefined render identically',
+  );
+});
+
+test('#43 an xMin above every size yields a safe placeholder (no throw / NaN)', () => {
+  const pts = [0.1, 1, 10].map((mp) => ({ engine: 'monolithic', megapixels: mp, value: mp * 10 }));
+  const svg = renderScalabilityChart(pts, { title: 'wall', logScale: true, xMin: 1000 });
+  expectValidSvg(svg);
+  assert.match(svg, /no data/);
+});
