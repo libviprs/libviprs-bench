@@ -250,6 +250,118 @@ fn to_point(
     }
 }
 
+/// Path to the committed real-content PDF fixture (issue #30), resolved against
+/// the crate manifest so it works regardless of the working directory.
+#[cfg(feature = "pdfium")]
+const PDF_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/fixtures/cc_licenses_mapping.pdf"
+);
+
+/// Cap the real-content PDF series at this many megapixels. The committed
+/// fixture is a ~1 MP vector page; driving it far past this is pure upsampling
+/// of fixed content at ever-higher DPI (e.g. a 65 KB page rendered at >1000
+/// DPI) — slow, and it adds no real-content signal the smaller points don't
+/// already show. The four gradient series still run the FULL sweep; only the
+/// PDF companion is capped. Overridable with `--pdf-max-mp <n>` (issue #22
+/// review).
+#[cfg(feature = "pdfium")]
+const DEFAULT_PDF_MAX_MP: f64 = 50.0;
+
+/// The committed fixture's page width in pixels at 72 DPI, read once from the
+/// source itself so the DPI-for-width mapping tracks the *actual* fixture
+/// rather than a hardcoded constant (issue #22 review). `None` when the source
+/// cannot be opened (e.g. libpdfium unavailable), in which case the whole
+/// real-content series is skipped up front with a single message instead of
+/// per-cell.
+#[cfg(feature = "pdfium")]
+fn pdf_base_width() -> Option<u32> {
+    use libviprs::StripSource;
+    match libviprs::PdfiumStripSource::new_streaming(PDF_FIXTURE, 1, 72) {
+        Ok(src) => Some(src.width()),
+        Err(e) => {
+            eprintln!(
+                "Real-content PDF series disabled: could not open {PDF_FIXTURE} at 72 DPI ({e}). \
+                 Set PDFIUM_PATH if libpdfium is not on the system library path."
+            );
+            None
+        }
+    }
+}
+
+/// Render DPI that scales the committed PDF fixture to approximately
+/// `target_width` pixels wide, given the fixture's own 72-DPI width in pixels
+/// (`base_width`, derived once at startup by [`pdf_base_width`]).
+///
+/// Scaling linearly from the fixture's *actual* 72-DPI width — instead of a
+/// hardcoded page size — lands the rasterized-PDF series at the same image
+/// sizes as the synthetic-gradient sweep, keeping the two workloads comparable
+/// on the shared megapixel x-axis (issue #31) and staying correct even if the
+/// committed fixture is later replaced with a differently-sized page (the
+/// scenario `fixtures/PROVENANCE.md` explicitly permits; issue #22 review).
+#[cfg(feature = "pdfium")]
+fn pdf_dpi_for_width(target_width: u32, base_width: u32) -> u32 {
+    let base = (base_width as f64).max(1.0);
+    let dpi = 72.0 * target_width as f64 / base;
+    (dpi.round() as u32).max(1)
+}
+
+/// Run the rasterized-PDF streaming workload for one sweep size and return its
+/// scalability point (engine series `"streaming-pdf"`), or `None` if the pdfium
+/// source could not be rendered (e.g. libpdfium unavailable) — the benchmark
+/// then simply omits the real-content series for that point rather than
+/// aborting the whole run.
+///
+/// The point is plotted at the PDF's *actual* rendered dimensions (from the
+/// returned metrics), so its megapixel x-position is honest even when pdfium
+/// rounds the page a pixel differently from the gradient target.
+#[cfg(feature = "pdfium")]
+fn run_pdf_streaming(
+    target_width: u32,
+    base_width: u32,
+    concurrency: usize,
+    tile_size: u32,
+) -> Option<ScalabilityPoint> {
+    let dpi = pdf_dpi_for_width(target_width, base_width);
+    let label = format!("pdf_{target_width}_c{concurrency}");
+    // Pass the streaming-regime FLOOR and let `bench_streaming_pdf` own the
+    // RGBA-correct budget: it raises the budget to fit the worst-case 4-bpp
+    // strip (wider than the 3-bpp gradient at the same width), so any
+    // width-derived value handed in here would just be dominated. Passing the
+    // floor makes that ownership explicit rather than dead input (issue #22
+    // review).
+    match libviprs_bench::bench_streaming_pdf(
+        std::path::Path::new(PDF_FIXTURE),
+        1,
+        dpi,
+        tile_size,
+        concurrency,
+        STREAMING_BUDGET_FLOOR,
+        &label,
+    ) {
+        Ok(m) => Some(to_point(
+            m.width,
+            m.height,
+            "streaming-pdf",
+            concurrency,
+            m.wall_time,
+            m.tracked_memory_bytes,
+            m.peak_rss_bytes,
+            m.tiles_produced,
+        )),
+        // libpdfium unavailable (or the fixture unreadable) — the ONE
+        // legitimately-skippable case: omit the real-content point and carry on.
+        Err(e @ libviprs_bench::PdfBenchError::SourceUnavailable(_)) => {
+            eprintln!("  [pdf] skipped {target_width}px @ {dpi} dpi: {e}");
+            None
+        }
+        // A planner/engine failure is a genuine regression this benchmark
+        // exists to catch — surface it loudly (the gradient runners' `.unwrap()`
+        // panic on engine failure too) instead of silently dropping the series.
+        Err(e) => panic!("real-content PDF workload failed at {target_width}px @ {dpi} dpi: {e}"),
+    }
+}
+
 fn draw_scalability_chart(
     path: &std::path::Path,
     title: &str,
@@ -262,6 +374,11 @@ fn draw_scalability_chart(
     // zoomed-in scale. When `None`, behaves like the original chart
     // (axis from 0, full series).
     x_min: Option<f64>,
+    // Optional disclosure drawn in a thin band below the plot. Used to note
+    // the rasterized-PDF series' confounds directly on the shared SVG so the
+    // deliverable stays honest even when a chart is viewed without the console
+    // caveat (issue #22 review). `None` keeps the original 700x450 canvas.
+    footnote: Option<&str>,
 ) {
     let x_lo = x_min.unwrap_or(0.0);
 
@@ -290,8 +407,20 @@ fn draw_scalability_chart(
         .fold(0.0f64, f64::max)
         * 1.15;
 
-    let root = SVGBackend::new(path, (700, 450)).into_drawing_area();
+    // Reserve a 36px band under the 450px plot for the footnote when present,
+    // so the disclosure never overlaps the axis.
+    let height = if footnote.is_some() { 486 } else { 450 };
+    let root = SVGBackend::new(path, (700, height)).into_drawing_area();
     root.fill(&WHITE).unwrap();
+
+    let plot_area = if let Some(note) = footnote {
+        let (upper, lower) = root.split_vertically(450);
+        let style = TextStyle::from(("sans-serif", 11).into_font()).color(&RGBColor(110, 110, 110));
+        lower.draw_text(note, &style, (12, 13)).unwrap();
+        upper
+    } else {
+        root.clone()
+    };
 
     let display_title: String = if x_min.is_some() {
         format!("{title}  (x ≥ {x_lo:.0} MP)")
@@ -299,7 +428,7 @@ fn draw_scalability_chart(
         title.to_string()
     };
 
-    let mut chart = ChartBuilder::on(&root)
+    let mut chart = ChartBuilder::on(&plot_area)
         .caption(display_title, ("sans-serif", 18).into_font())
         .margin(15)
         .x_label_area_size(40)
@@ -386,6 +515,9 @@ fn render_charts_for_conc(
     let mono_color = RGBColor(66, 133, 244);
     let stream_color = RGBColor(52, 168, 83);
     let mr_color = RGBColor(234, 67, 53);
+    // Orange — the real-content rasterized-PDF series, kept visually distinct
+    // from the four synthetic-gradient engine lines (issue #31).
+    let pdf_color = RGBColor(255, 152, 0);
 
     let extract_series = |engine: &str| -> Vec<(f64, f64, f64, f64, f64, f64)> {
         all_points
@@ -408,6 +540,15 @@ fn render_charts_for_conc(
     let mono_data = extract_series("monolithic");
     let stream_data = extract_series("streaming");
     let mr_data = extract_series("mapreduce");
+    // Real-content series (issue #31). Empty on a default build (no
+    // `streaming-pdf` points), in which case the chart is byte-for-byte what it
+    // was before and the titles keep saying "synthetic gradient".
+    let pdf_data = extract_series("streaming-pdf");
+    let workload = if pdf_data.is_empty() {
+        "synthetic gradient"
+    } else {
+        "gradient + rasterized PDF"
+    };
 
     // Helper to pull one metric (by tuple field index) from each engine's
     // (megapixels, m1, m2, m3, m4, m5) tuples.
@@ -420,39 +561,56 @@ fn render_charts_for_conc(
     // Per-chart definition: (filename, title, y-label, tuple-index for the
     // metric on each engine's series). Looping over this avoids repeating
     // the build-up boilerplate five times.
-    // NOTE: the workload is a SYNTHETIC gradient raster (see
-    // `gradient_raster`), sized to the 1.42:1 aspect of the California
-    // South page — the actual PDF fixture is not committed. Titles say so
-    // rather than implying a real rasterized blueprint was benchmarked
-    // (issue #161).
+    // NOTE: the four engine series (libvips/monolithic/streaming/mapreduce)
+    // are a SYNTHETIC gradient raster (see `gradient_raster`), sized to the
+    // 1.42:1 aspect of the California South page. Under the `pdfium` feature a
+    // fifth `streaming-pdf` series is added: the committed real-content fixture
+    // (`fixtures/cc_licenses_mapping.pdf`) rasterized via `PdfiumStripSource`
+    // (issues #30/#31). Titles name whichever workloads are actually present
+    // (`workload`) rather than implying a real blueprint when only the gradient
+    // ran (issue #161).
+    //
+    // The PDF line is NOT a like-for-like engine comparison and every title
+    // carries `workload` plus a per-chart `footnote` disclosing why (issue #22
+    // review): (1) it is end-to-end rasterize+pyramid — pdfium renders each
+    // strip *inside* the timed run — while the gradient series are pyramid-only
+    // over a pre-materialised raster, so its time/throughput/efficiency/cost
+    // include rasterization the others never pay; (2) its strips are RGBA
+    // (4 bpp) at a matched-but-larger budget and pdfium serialises every render,
+    // so it cannot exhibit strip-render parallelism; (3) peak RSS is a shared,
+    // process-wide monotonic high-water mark (see `RunMetrics::peak_rss_mb`),
+    // not a per-run figure — the per-run bounded footprint is the JSON's
+    // `tracked_memory_mb` column, not this chart.
     let charts: [(String, String, &str, u8); 5] = [
         (
             format!("scalability_wall_time_c{concurrency}.svg"),
-            format!("Wall Time Scalability — synthetic gradient ({thread_cap})"),
+            format!("Wall Time Scalability — {workload} ({thread_cap})"),
             "Time (ms)",
             1,
         ),
         (
             format!("scalability_peak_memory_c{concurrency}.svg"),
-            format!("Peak RSS Scalability — synthetic gradient ({thread_cap})"),
+            format!("Peak RSS Scalability — {workload} ({thread_cap})"),
             "Peak RSS (MB)",
             2,
         ),
         (
             format!("scalability_throughput_c{concurrency}.svg"),
-            format!("Throughput Scalability — synthetic gradient ({thread_cap})"),
+            format!("Throughput Scalability — {workload} ({thread_cap})"),
             "Tiles/s",
             3,
         ),
         (
             format!("scalability_efficiency_c{concurrency}.svg"),
-            format!("Memory Efficiency — Tiles/s per RSS-MB ({thread_cap})"),
+            format!("Memory Efficiency — Tiles/s per RSS-MB — {workload} ({thread_cap})"),
             "Tiles/s/RSS-MB",
             4,
         ),
         (
             format!("scalability_resource_cost_c{concurrency}.svg"),
-            format!("Resource Cost — RSS-MB\u{00b7}s per Tile, lower is better ({thread_cap})"),
+            format!(
+                "Resource Cost — RSS-MB\u{00b7}s per Tile — {workload} ({thread_cap}, lower is better)"
+            ),
             "RSS-MB\u{00b7}s / tile",
             5,
         ),
@@ -485,11 +643,33 @@ fn render_charts_for_conc(
         series.push(("Monolithic", mono_color, pts_for(&mono_data)));
         series.push(("Streaming", stream_color, pts_for(&stream_data)));
         series.push(("MapReduce", mr_color, pts_for(&mr_data)));
+        // The real-content series only when it was measured (pdfium build).
+        if !pdf_data.is_empty() {
+            series.push(("Streaming (PDF)", pdf_color, pts_for(&pdf_data)));
+        }
 
         let refs: Vec<(&str, RGBColor, &[(f64, f64)])> = series
             .iter()
             .map(|(n, c, d)| (*n, *c, d.as_slice()))
             .collect();
+
+        // Disclose the rasterized-PDF confound directly on the SVG (only when
+        // that series is present). The memory chart's confound (shared RSS
+        // high-water mark) differs from the others' (rasterize+pyramid vs
+        // pyramid-only), so pick the note by metric (issue #22 review).
+        let footnote: Option<&str> = if pdf_data.is_empty() {
+            None
+        } else if idx == 2 {
+            Some(
+                "Note: 'Streaming (PDF)' RSS is a shared in-process high-water mark, \
+                 not a per-run peak — see tracked_memory_mb in the JSON.",
+            )
+        } else {
+            Some(
+                "Note: 'Streaming (PDF)' is end-to-end rasterize+pyramid (RGBA, serialized \
+                 pdfium); the gradient series are pyramid-only.",
+            )
+        };
 
         draw_scalability_chart(
             &report_dir.join(filename),
@@ -498,6 +678,7 @@ fn render_charts_for_conc(
             y_label,
             &refs,
             x_min,
+            footnote,
         );
     }
 }
@@ -513,27 +694,57 @@ struct CliOpts {
     /// image regime and was only opt-in for zooming into the large-image
     /// tail.
     crop: bool,
+    /// Megapixel cap for the real-content PDF series (`--pdf-max-mp`, default
+    /// [`DEFAULT_PDF_MAX_MP`]). Only meaningful on a `pdfium` build; the four
+    /// gradient series always run the full sweep.
+    #[cfg(feature = "pdfium")]
+    pdf_max_mp: f64,
 }
 
 fn parse_cli() -> CliOpts {
     let mut replot = false;
     let mut crop = false;
-    for arg in std::env::args().skip(1) {
+    #[cfg(feature = "pdfium")]
+    let mut pdf_max_mp = DEFAULT_PDF_MAX_MP;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
         match arg.as_str() {
             "--replot" => replot = true,
             "--crop" => crop = true,
             // Back-compat no-ops: full range is now the default.
             "--no-crop" | "--full-x-range" => {}
+            "--pdf-max-mp" => {
+                let val = args.next();
+                #[cfg(feature = "pdfium")]
+                {
+                    pdf_max_mp = val
+                        .as_deref()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .filter(|v| *v > 0.0)
+                        .unwrap_or_else(|| {
+                            eprintln!("--pdf-max-mp needs a positive numeric megapixel value");
+                            std::process::exit(2);
+                        });
+                }
+                // On a non-pdfium build the flag is accepted but inert (there
+                // is no PDF series to cap); consume its value and move on.
+                #[cfg(not(feature = "pdfium"))]
+                let _ = val;
+            }
             "-h" | "--help" => {
-                println!("Usage: scalability [--replot] [--crop]");
+                println!("Usage: scalability [--replot] [--crop] [--pdf-max-mp <n>]");
                 println!();
-                println!("  --replot     Skip the bench; redraw SVGs from the existing");
-                println!("               report/scalability_results.json.");
+                println!("  --replot         Skip the bench; redraw SVGs from the existing");
+                println!("                   report/scalability_results.json.");
                 println!(
-                    "  --crop       Zoom the x-axis to >= {} MP (default is the full",
+                    "  --crop           Zoom the x-axis to >= {} MP (default is the full",
                     DEFAULT_X_AXIS_CROP_MP
                 );
-                println!("               range so the small-image regime is visible).");
+                println!("                   range so the small-image regime is visible).");
+                println!("  --pdf-max-mp <n>  Cap the real-content PDF series at n megapixels");
+                println!(
+                    "                   (pdfium builds only; the gradient series are uncapped)."
+                );
                 std::process::exit(0);
             }
             other => {
@@ -543,7 +754,12 @@ fn parse_cli() -> CliOpts {
             }
         }
     }
-    CliOpts { replot, crop }
+    CliOpts {
+        replot,
+        crop,
+        #[cfg(feature = "pdfium")]
+        pdf_max_mp,
+    }
 }
 
 fn main() {
@@ -611,9 +827,32 @@ fn main() {
 
     println!("=== Engine Scalability Benchmark ===");
     println!(
-        "Workload: SYNTHETIC gradient raster (not a rasterized PDF); aspect \
-         1.42:1 matches the California South page (4608x3240 pts)."
+        "Workload: SYNTHETIC gradient raster; aspect 1.42:1 matches the \
+         California South page (4608x3240 pts)."
     );
+    #[cfg(feature = "pdfium")]
+    {
+        println!(
+            "Real-content series: rasterized PDF fixture \
+             (fixtures/cc_licenses_mapping.pdf) via PdfiumStripSource streaming, \
+             charted as 'streaming-pdf'."
+        );
+        println!(
+            "  caveat: the PDF line is NOT a like-for-like engine comparison with the gradient series —"
+        );
+        println!(
+            "    * end-to-end rasterize+pyramid (pdfium renders each strip inside the timed run) \
+             vs the gradient's pyramid-only over a pre-materialised raster;"
+        );
+        println!(
+            "    * RGBA (4 bpp) strips at a matched-but-larger budget, and pdfium serialises every \
+             render (no strip-render parallelism);"
+        );
+        println!(
+            "    * peak RSS is a shared in-process high-water mark, not per-run — use the \
+             tracked_memory_mb column for the true per-run footprint."
+        );
+    }
     println!(
         "Sizes: {} points from 512x360 to {}x{}",
         sizes.len(),
@@ -645,6 +884,13 @@ fn main() {
     println!();
 
     let mut all_points: Vec<ScalabilityPoint> = Vec::new();
+
+    // Derive the fixture's 72-DPI page width ONCE, from the source itself, so
+    // the DPI-for-width mapping tracks the actual committed fixture. `None`
+    // means the source could not be opened (libpdfium unavailable) — the whole
+    // real-content series is then skipped up front (issue #22 review).
+    #[cfg(feature = "pdfium")]
+    let pdf_base = pdf_base_width();
 
     // Matched thread budgets: run EVERY engine — including libvips, via a
     // matched `VIPS_CONCURRENCY` — at both a single thread and all cores, so
@@ -771,6 +1017,35 @@ fn main() {
                 run.rss_bytes,
                 run.tiles,
             ));
+
+            // Real-content counterpart (issue #31): rasterize the committed PDF
+            // fixture to ~this width via PdfiumStripSource (streaming) and
+            // pyramid it through the streaming engine, as the separate
+            // "streaming-pdf" series. Feature-gated, so the default build is
+            // unaffected. Capped at `--pdf-max-mp` so the fixed vector page is
+            // not rendered at absurd DPI where it is pure upsampling (issue #22
+            // review).
+            #[cfg(feature = "pdfium")]
+            if let Some(base_w) = pdf_base {
+                if mp <= opts.pdf_max_mp {
+                    if let Some(p) = run_pdf_streaming(w, base_w, conc, TILE_SIZE) {
+                        println!(
+                            "        pdf={:.0}ms/{:.1}MB(rss)  ({}x{} @ {}dpi)",
+                            p.wall_time_ms,
+                            p.peak_rss_mb,
+                            p.width,
+                            p.height,
+                            pdf_dpi_for_width(w, base_w),
+                        );
+                        all_points.push(p);
+                    }
+                } else {
+                    println!(
+                        "        pdf=skipped (> {:.0} MP cap: pure upsampling of the fixed vector page)",
+                        opts.pdf_max_mp,
+                    );
+                }
+            }
         }
     }
 

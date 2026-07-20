@@ -9,6 +9,10 @@
 //!
 //! # Usage
 //!
+//! `--pdf` defaults to the committed real-content fixture
+//! (`fixtures/cc_licenses_mapping.pdf`, issue #30) so the bench runs
+//! out-of-the-box; pass `--pdf` to point it at any other PDF.
+//!
 //! ```sh
 //! cargo run --release --bin pdfium_strip_source_bench -- \
 //!     --pdf /path/to/blueprint.pdf \
@@ -124,8 +128,9 @@ fn parse_args() -> Args {
             }
             "-h" | "--help" => {
                 eprintln!(
-                    "usage: pdfium_strip_source_bench --pdf <path> [--page N] \
-                     [--dpis 72,150,300] [--strip-counts 4,16,64] [--output file.jsonl]"
+                    "usage: pdfium_strip_source_bench [--pdf <path>] [--page N] \
+                     [--dpis 72,150,300] [--strip-counts 4,16,64] [--output file.jsonl]\n\
+                     --pdf defaults to the committed fixtures/cc_licenses_mapping.pdf"
                 );
                 std::process::exit(0);
             }
@@ -136,9 +141,13 @@ fn parse_args() -> Args {
         }
     }
 
+    // Default to the committed real-content fixture (issue #30) so the bench is
+    // runnable out-of-the-box; `--pdf` overrides it with any other PDF.
     let pdf_path = pdf_path.unwrap_or_else(|| {
-        eprintln!("--pdf is required");
-        std::process::exit(2);
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/cc_licenses_mapping.pdf"
+        ))
     });
 
     Args {
