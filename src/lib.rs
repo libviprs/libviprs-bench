@@ -15,6 +15,16 @@ use libviprs::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod harness;
+pub mod provenance;
+
+/// Current on-disk schema version for [`BenchmarkSnapshot`] /
+/// [`RunMetrics`]. Bump whenever a field is renamed or its meaning
+/// changes so [`load_history`] can migrate older files forward. History
+/// written before this field existed deserializes as `0` (via
+/// `#[serde(default)]`) and is normalized on load.
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+
 /// The single tile codec used on **both** sides of the cross-engine
 /// comparison. The libviprs engines encode their tiles in this format via
 /// [`FsSink`], and libvips `dzsave` is invoked with the matching `--suffix`,
@@ -30,6 +40,19 @@ pub const BENCH_TILE_SUFFIX: &str = ".png";
 /// tracked across releases. Each run appends one entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkSnapshot {
+    /// On-disk schema version. `0` for files written before this field
+    /// existed; [`load_history`] migrates those to [`CURRENT_SCHEMA_VERSION`]
+    /// in memory (normalizing legacy run labels and mapping the old
+    /// `peak_memory_bytes` field onto `tracked_memory_bytes`).
+    #[serde(default)]
+    pub schema_version: u32,
+    /// Environment fingerprint under which this snapshot was measured:
+    /// libvips version, host CPU/OS/arch, container flag, rustc, and the
+    /// bench build profile. Deltas across snapshots with *different*
+    /// fingerprints are not apples-to-apples; `cross_version` flags them.
+    /// Defaults to an "unknown" fingerprint for pre-provenance history.
+    #[serde(default)]
+    pub provenance: provenance::Provenance,
     /// Version of the *measured* `libviprs` core crate, captured at
     /// build time from `../libviprs/Cargo.toml`. This is the engine the
     /// numbers describe, not this harness's own `CARGO_PKG_VERSION`
@@ -60,7 +83,15 @@ pub struct RunMetrics {
     pub height: u32,
     /// Engine used.
     pub engine: String,
-    /// Wall-clock time for pyramid generation.
+    /// How the libvips number was obtained: `"ffi"` (in-process
+    /// `vips_dzsave`) or `"cli"` (`vips dzsave` child). Empty for the
+    /// libviprs engines (always in-process). Recorded so a libvips row's
+    /// measurement path is never a hidden variable. Defaults to empty for
+    /// pre-provenance history.
+    #[serde(default)]
+    pub measurement_path: String,
+    /// Wall-clock time for pyramid generation. When [`RunMetrics::stats`]
+    /// is present this is the *median* iteration's wall time.
     pub wall_time: Duration,
     /// Peak engine-tracked working set in bytes (raster buffers the engine
     /// accounts for during the run). This is a per-run figure, reset for each
@@ -68,14 +99,35 @@ pub struct RunMetrics {
     /// not expose an equivalent internal counter, so it is reported as `0`
     /// there — the two figures are kept in **separate** columns rather than
     /// being compared against each other (issue #153).
+    ///
+    /// The `peak_memory_bytes` alias lets history files written under the
+    /// pre-#153 schema (which used that name for the same quantity)
+    /// deserialize unchanged.
+    #[serde(alias = "peak_memory_bytes")]
     pub tracked_memory_bytes: u64,
     /// Peak resident set size (RSS) in bytes — the OS-level high-water mark.
-    /// This is measured the same way for every engine (via `getrusage` for
-    /// in-process engines, `/usr/bin/time` for the libvips CLI child), so it
-    /// is the one memory basis that is directly comparable across libviprs
-    /// and libvips. See [`RunMetrics::peak_rss_mb`] for the shared-process
-    /// caveat.
+    ///
+    /// Measured on a single, per-run basis for **every** engine: the suite
+    /// runs each (engine, size, concurrency) cell in its own child process
+    /// and reads that child's `ru_maxrss` via `wait4` /
+    /// `getrusage(RUSAGE_CHILDREN)` in the parent (see [`harness`]). Because
+    /// the watermark is scoped to a fresh process per cell, it is a true
+    /// per-run peak rather than the monotonic process-wide high-water mark
+    /// that the old in-process path reported. `0` means unknown (older
+    /// history predating this field).
+    #[serde(default)]
     pub peak_rss_bytes: u64,
+    /// Multi-iteration statistics for this cell (median/min/IQR/CI over
+    /// at least 7 timed iterations after a discarded warm-up). `None` for a
+    /// single-shot measurement (e.g. a child `--single` cell, or legacy
+    /// history predating the statistics rework).
+    #[serde(default)]
+    pub stats: Option<RunStats>,
+    /// PNG tiles produced per pyramid level, ordered by level directory
+    /// name. Drives the cross-engine output-equivalence gate (equal level
+    /// count + per-level grid). Empty for legacy history.
+    #[serde(default)]
+    pub per_level_tiles: Vec<u64>,
     /// Total tiles produced.
     pub tiles_produced: u64,
     /// Levels processed.
@@ -92,6 +144,85 @@ pub struct RunMetrics {
     pub concurrency: usize,
     /// Memory budget in bytes (streaming/mapreduce only, 0 for monolithic).
     pub memory_budget_bytes: u64,
+}
+
+/// Multi-iteration statistics for one benchmark cell.
+///
+/// Populated by [`harness::measure_cell`], which runs each cell in a fresh
+/// child process >= 7 times (after >= 1 discarded warm-up), interleaving
+/// engine order within a size. Both wall time and per-run child RSS are
+/// summarized so charts can draw error bars and `cross_version` can gate
+/// regression calls on confidence-interval overlap rather than raw
+/// single-sample deltas.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunStats {
+    /// Number of timed iterations (excludes the discarded warm-up).
+    pub n: u32,
+    /// Wall time, milliseconds.
+    pub wall_ms_median: f64,
+    pub wall_ms_min: f64,
+    /// Interquartile range (p75 − p25) of wall time, ms.
+    pub wall_ms_iqr: f64,
+    /// Half-width of the 95% CI of the mean wall time, ms (`1.96·σ/√n`).
+    pub wall_ms_ci95: f64,
+    /// Peak child RSS, MB.
+    pub rss_mb_median: f64,
+    pub rss_mb_min: f64,
+    pub rss_mb_iqr: f64,
+    pub rss_mb_ci95: f64,
+}
+
+impl RunStats {
+    /// Summarize paired (wall_ms, rss_mb) samples. `samples` must be
+    /// non-empty.
+    pub fn from_samples(samples: &[(f64, f64)]) -> RunStats {
+        let mut wall: Vec<f64> = samples.iter().map(|s| s.0).collect();
+        let mut rss: Vec<f64> = samples.iter().map(|s| s.1).collect();
+        wall.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        rss.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let (wm, wmin, wiqr, wci) = Self::summ(&wall);
+        let (rm, rmin, riqr, rci) = Self::summ(&rss);
+        RunStats {
+            n: samples.len() as u32,
+            wall_ms_median: wm,
+            wall_ms_min: wmin,
+            wall_ms_iqr: wiqr,
+            wall_ms_ci95: wci,
+            rss_mb_median: rm,
+            rss_mb_min: rmin,
+            rss_mb_iqr: riqr,
+            rss_mb_ci95: rci,
+        }
+    }
+
+    /// Returns (median, min, iqr, ci95_halfwidth) for a *sorted* slice.
+    fn summ(sorted: &[f64]) -> (f64, f64, f64, f64) {
+        let n = sorted.len();
+        if n == 0 {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        let pct = |p: f64| -> f64 {
+            if n == 1 {
+                return sorted[0];
+            }
+            let rank = p * (n - 1) as f64;
+            let lo = rank.floor() as usize;
+            let hi = rank.ceil() as usize;
+            let frac = rank - lo as f64;
+            sorted[lo] * (1.0 - frac) + sorted[hi] * frac
+        };
+        let median = pct(0.5);
+        let min = sorted[0];
+        let iqr = pct(0.75) - pct(0.25);
+        let mean = sorted.iter().sum::<f64>() / n as f64;
+        let var = if n > 1 {
+            sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (n - 1) as f64
+        } else {
+            0.0
+        };
+        let ci95 = 1.96 * var.sqrt() / (n as f64).sqrt();
+        (median, min, iqr, ci95)
+    }
 }
 
 impl RunMetrics {
@@ -225,6 +356,7 @@ pub fn bench_monolithic(
         .unwrap();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
+    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
     let _ = std::fs::remove_dir_all(&out_dir);
 
     RunMetrics {
@@ -232,9 +364,12 @@ pub fn bench_monolithic(
         width: src.width(),
         height: src.height(),
         engine: "monolithic".to_string(),
+        measurement_path: String::new(),
         wall_time,
         tracked_memory_bytes: result.peak_memory_bytes,
         peak_rss_bytes,
+        stats: None,
+        per_level_tiles,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -270,6 +405,7 @@ pub fn bench_streaming(
         .unwrap();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
+    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
     let _ = std::fs::remove_dir_all(&out_dir);
 
     let strips = observer
@@ -283,9 +419,12 @@ pub fn bench_streaming(
         width: src.width(),
         height: src.height(),
         engine: "streaming".to_string(),
+        measurement_path: String::new(),
         wall_time,
         tracked_memory_bytes: result.peak_memory_bytes,
         peak_rss_bytes,
+        stats: None,
+        per_level_tiles,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -293,7 +432,7 @@ pub fn bench_streaming(
         batches: 0,
         inflight_strips: 0,
         concurrency,
-        memory_budget_bytes: memory_budget_bytes,
+        memory_budget_bytes,
     }
 }
 
@@ -325,6 +464,7 @@ pub fn bench_mapreduce(
         .unwrap();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
+    let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
     let _ = std::fs::remove_dir_all(&out_dir);
 
     let events = observer.events();
@@ -363,9 +503,12 @@ pub fn bench_mapreduce(
         width: src.width(),
         height: src.height(),
         engine: "mapreduce".to_string(),
+        measurement_path: String::new(),
         wall_time,
         tracked_memory_bytes: result.peak_memory_bytes,
         peak_rss_bytes,
+        stats: None,
+        per_level_tiles,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -525,26 +668,16 @@ pub fn bench_libvips(
             .unwrap_or(0)
     };
 
-    // Count output tiles
+    // Count output tiles — PNG only, so the libvips `vips-properties.xml`
+    // sidecar does not inflate the count (issue #158).
     let tiles_dir = out_dir.join("pyramid_files");
-    let tiles_produced = if tiles_dir.exists() {
-        walkdir(&tiles_dir)
+    let per_level_tiles = if tiles_dir.exists() {
+        per_level_png_tiles(&tiles_dir)
     } else {
-        0
+        Vec::new()
     };
-
-    // Count levels (subdirectories)
-    let levels_processed = if tiles_dir.exists() {
-        std::fs::read_dir(&tiles_dir)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_dir())
-                    .count() as u32
-            })
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let tiles_produced: u64 = per_level_tiles.iter().sum();
+    let levels_processed = per_level_tiles.len() as u32;
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&out_dir);
@@ -554,11 +687,14 @@ pub fn bench_libvips(
         width,
         height,
         engine: "libvips".to_string(),
+        measurement_path: "cli".to_string(),
         wall_time,
         // libvips exposes no engine-internal working-set counter, so the
         // tracked column is left at 0 and only the RSS column is populated.
         tracked_memory_bytes: 0,
         peak_rss_bytes: peak_memory_bytes,
+        stats: None,
+        per_level_tiles,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
@@ -715,25 +851,15 @@ pub fn bench_libvips_inprocess(
         return None;
     }
 
-    // Count tiles
+    // Count tiles — PNG only (issue #158).
     let tiles_dir = out_dir.join("pyramid_files");
-    let tiles_produced = if tiles_dir.exists() {
-        walkdir(&tiles_dir)
+    let per_level_tiles = if tiles_dir.exists() {
+        per_level_png_tiles(&tiles_dir)
     } else {
-        0
+        Vec::new()
     };
-
-    let levels_processed = if tiles_dir.exists() {
-        std::fs::read_dir(&tiles_dir)
-            .map(|rd| {
-                rd.filter_map(|e| e.ok())
-                    .filter(|e| e.path().is_dir())
-                    .count() as u32
-            })
-            .unwrap_or(0)
-    } else {
-        0
-    };
+    let tiles_produced: u64 = per_level_tiles.iter().sum();
+    let levels_processed = per_level_tiles.len() as u32;
 
     // Measure peak RSS of the current process. This is a process-wide
     // high-water mark (see `RunMetrics::peak_rss_mb`), and libvips exposes no
@@ -747,9 +873,12 @@ pub fn bench_libvips_inprocess(
         width: src.width(),
         height: src.height(),
         engine: "libvips".to_string(),
+        measurement_path: "ffi".to_string(),
         wall_time,
         tracked_memory_bytes: 0,
         peak_rss_bytes,
+        stats: None,
+        per_level_tiles,
         tiles_produced,
         levels_processed,
         tiles_skipped: 0,
@@ -761,8 +890,8 @@ pub fn bench_libvips_inprocess(
     })
 }
 
-/// Get current process peak RSS in bytes.
-fn get_peak_rss() -> u64 {
+/// Get current process peak RSS in bytes (`getrusage(RUSAGE_SELF)`).
+pub fn get_peak_rss() -> u64 {
     #[cfg(target_os = "macos")]
     {
         use std::mem::MaybeUninit;
@@ -795,20 +924,54 @@ fn get_peak_rss() -> u64 {
     }
 }
 
-/// Recursively count files in a directory.
-fn walkdir(dir: &std::path::Path) -> u64 {
+/// Recursively count only `*.png` tiles under `dir`.
+///
+/// The DeepZoom `_files` tree that both libvips `dzsave` and the libviprs
+/// [`FsSink`] emit also contains non-tile sidecars — libvips writes a
+/// `vips-properties.xml` per output. Counting every file (the old
+/// behaviour) inflated the libvips tile count by those sidecars, so the
+/// libvips "tiles produced" — and every throughput/efficiency figure
+/// derived from it — was overstated (issue #158). Restricting the walk to
+/// the actual tile codec ([`BENCH_TILE_SUFFIX`]) puts every engine on the
+/// same tile basis.
+pub fn count_png_tiles(dir: &std::path::Path) -> u64 {
     let mut count = 0u64;
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                count += walkdir(&path);
-            } else {
+                count += count_png_tiles(&path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("png") {
                 count += 1;
             }
         }
     }
     count
+}
+
+/// PNG tiles produced per pyramid level, ordered by numeric level name.
+///
+/// `tiles_dir` is the DeepZoom `<name>_files` directory. Each immediate
+/// subdirectory is one pyramid level (`0`, `1`, `2`, …); the returned vec
+/// is the `*.png` tile count of each, sorted by level index. This is the
+/// per-level grid the cross-engine output-equivalence gate compares.
+pub fn per_level_png_tiles(tiles_dir: &std::path::Path) -> Vec<u64> {
+    let mut levels: Vec<(u32, u64)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(tiles_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let idx = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(|n| n.parse::<u32>().ok())
+                    .unwrap_or(u32::MAX);
+                levels.push((idx, count_png_tiles(&path)));
+            }
+        }
+    }
+    levels.sort_by_key(|(idx, _)| *idx);
+    levels.into_iter().map(|(_, c)| c).collect()
 }
 
 /// Run all four engines across a matrix of image sizes and concurrency levels.
@@ -863,7 +1026,9 @@ pub fn comparison_suite(
             );
             results.push(mr);
 
-            // libvips: prefer in-process FFI when available, fall back to CLI
+            // libvips: prefer in-process FFI when available, fall back to CLI.
+            // `vips_done` is only reassigned under the `libvips` feature.
+            #[cfg_attr(not(feature = "libvips"), allow(unused_mut))]
             let mut vips_done = false;
             #[cfg(feature = "libvips")]
             {
@@ -951,14 +1116,50 @@ pub fn grouped_results(results: &[RunMetrics]) -> Vec<Vec<&RunMetrics>> {
 /// must treat `Err` as "leave the existing file untouched".
 pub fn load_history(path: &std::path::Path) -> Result<Vec<BenchmarkSnapshot>, String> {
     match std::fs::read_to_string(path) {
-        Ok(json) => serde_json::from_str(&json)
-            .map_err(|e| format!("couldn't parse benchmark history {}: {e}", path.display())),
+        Ok(json) => {
+            let mut history: Vec<BenchmarkSnapshot> = serde_json::from_str(&json)
+                .map_err(|e| format!("couldn't parse benchmark history {}: {e}", path.display()))?;
+            for snap in &mut history {
+                migrate_snapshot(snap);
+            }
+            Ok(history)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(e) => Err(format!(
             "couldn't read benchmark history {}: {e}",
             path.display()
         )),
     }
+}
+
+/// Migrate a just-deserialized snapshot forward to
+/// [`CURRENT_SCHEMA_VERSION`] in place.
+///
+/// Older history files (schema 0) used the field name `peak_memory_bytes`
+/// for what is now `tracked_memory_bytes` (handled by the serde alias) and
+/// had **no** RSS column, so `peak_rss_bytes` defaults to 0 ("unknown").
+/// They also wrote run labels space-separated ("1024x1024 c0 monolithic")
+/// rather than the current underscore form ("1024x1024_c0_monolithic"),
+/// which broke every `starts_with("{w}x{h}_c{c}")` filter in the
+/// history/cross-version pipeline. Normalize both here so a single load
+/// path serves every file version.
+pub fn migrate_snapshot(snap: &mut BenchmarkSnapshot) {
+    for run in &mut snap.runs {
+        run.label = normalize_run_label(&run.label);
+    }
+    if snap.schema_version < CURRENT_SCHEMA_VERSION {
+        snap.schema_version = CURRENT_SCHEMA_VERSION;
+    }
+}
+
+/// Normalize a legacy space-separated run label to the current
+/// underscore form. `"1024x1024 c0 monolithic"` → `"1024x1024_c0_monolithic"`.
+/// Labels already in the current form (no spaces) pass through unchanged.
+pub fn normalize_run_label(label: &str) -> String {
+    if !label.contains(' ') {
+        return label.to_string();
+    }
+    label.split_whitespace().collect::<Vec<_>>().join("_")
 }
 
 /// Version of the *measured* `libviprs` core crate, captured at build
@@ -987,6 +1188,8 @@ pub fn create_snapshot(
     memory_budget_bytes: u64,
 ) -> BenchmarkSnapshot {
     BenchmarkSnapshot {
+        schema_version: CURRENT_SCHEMA_VERSION,
+        provenance: provenance::Provenance::capture(),
         version: core_version().to_string(),
         git_sha: core_git_sha().to_string(),
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -1008,15 +1211,24 @@ const COLOR_MONO: RGBColor = RGBColor(66, 133, 244); // blue   — monolithic
 const COLOR_STREAM: RGBColor = RGBColor(52, 168, 83); // green  — streaming
 const COLOR_MR: RGBColor = RGBColor(234, 67, 53); // red    — mapreduce
 
+/// One bar: value, error half-width (0 when unknown), engine name, colour.
+type Bar = (f64, f64, &'static str, RGBColor);
+
 /// Grouped bar chart data.
 struct ChartGroup {
     label: String,
-    values: Vec<(f64, &'static str, RGBColor)>,
+    values: Vec<Bar>,
 }
 
 /// Extract chart groups from results. Groups by (width, height, concurrency).
-/// Each group contains one bar per engine found.
-fn extract_groups(results: &[RunMetrics], metric: fn(&RunMetrics) -> f64) -> Vec<ChartGroup> {
+/// Each group contains one bar per engine found. `error` yields the error
+/// bar half-width for each bar (e.g. CI95 of the plotted metric); return `0`
+/// to suppress the whisker.
+fn extract_groups(
+    results: &[RunMetrics],
+    metric: fn(&RunMetrics) -> f64,
+    error: fn(&RunMetrics) -> f64,
+) -> Vec<ChartGroup> {
     // Group results by config key
     let mut map: std::collections::BTreeMap<String, Vec<&RunMetrics>> =
         std::collections::BTreeMap::new();
@@ -1025,11 +1237,11 @@ fn extract_groups(results: &[RunMetrics], metric: fn(&RunMetrics) -> f64) -> Vec
         map.entry(key).or_default().push(r);
     }
 
-    map.into_iter()
-        .map(|(_, runs)| {
+    map.into_values()
+        .map(|runs| {
             let first = runs[0];
             let label = format!("{}x{}\nc{}", first.width, first.height, first.concurrency);
-            let values: Vec<(f64, &'static str, RGBColor)> = runs
+            let values: Vec<Bar> = runs
                 .iter()
                 .filter_map(|r| {
                     let (name, color) = match r.engine.as_str() {
@@ -1039,12 +1251,17 @@ fn extract_groups(results: &[RunMetrics], metric: fn(&RunMetrics) -> f64) -> Vec
                         "mapreduce" => ("MapReduce", COLOR_MR),
                         _ => return None,
                     };
-                    Some((metric(r), name, color))
+                    Some((metric(r), error(r), name, color))
                 })
                 .collect();
             ChartGroup { label, values }
         })
         .collect()
+}
+
+/// No error bars (for metrics without a meaningful CI, e.g. tile counts).
+fn no_error(_: &RunMetrics) -> f64 {
+    0.0
 }
 
 fn draw_grouped_bar_chart(
@@ -1055,7 +1272,7 @@ fn draw_grouped_bar_chart(
 ) {
     let max_val = groups
         .iter()
-        .flat_map(|g| g.values.iter().map(|(v, _, _)| *v))
+        .flat_map(|g| g.values.iter().map(|(v, e, _, _)| *v + *e))
         .fold(0.0f64, f64::max)
         * 1.15;
 
@@ -1108,7 +1325,7 @@ fn draw_grouped_bar_chart(
     // Draw bars for each group
     for (i, group) in groups.iter().enumerate() {
         let x = i as f64;
-        for (j, (val, _name, color)) in group.values.iter().enumerate() {
+        for (j, (val, err, _name, color)) in group.values.iter().enumerate() {
             let bx = x + gap + j as f64 * (bar_w + gap);
             chart
                 .draw_series(std::iter::once(Rectangle::new(
@@ -1117,7 +1334,31 @@ fn draw_grouped_bar_chart(
                 )))
                 .unwrap();
 
-            // Value label above bar
+            // Error whisker (± half-width, e.g. 95% CI) when available.
+            if *err > 0.0 {
+                let cx = bx + bar_w / 2.0;
+                let cap = bar_w * 0.25;
+                chart
+                    .draw_series(std::iter::once(PathElement::new(
+                        vec![(cx, val - err), (cx, val + err)],
+                        BLACK.stroke_width(1),
+                    )))
+                    .unwrap();
+                chart
+                    .draw_series(std::iter::once(PathElement::new(
+                        vec![(cx - cap, val + err), (cx + cap, val + err)],
+                        BLACK.stroke_width(1),
+                    )))
+                    .unwrap();
+                chart
+                    .draw_series(std::iter::once(PathElement::new(
+                        vec![(cx - cap, val - err), (cx + cap, val - err)],
+                        BLACK.stroke_width(1),
+                    )))
+                    .unwrap();
+            }
+
+            // Value label above bar (above the whisker when present)
             let label = if *val >= 100.0 {
                 format!("{:.0}", val)
             } else if *val >= 1.0 {
@@ -1128,7 +1369,7 @@ fn draw_grouped_bar_chart(
             chart
                 .draw_series(std::iter::once(Text::new(
                     label,
-                    (bx + bar_w / 2.0, val + max_val * 0.01),
+                    (bx + bar_w / 2.0, val + err + max_val * 0.01),
                     ("sans-serif", 9).into_font().color(&BLACK),
                 )))
                 .unwrap();
@@ -1139,7 +1380,7 @@ fn draw_grouped_bar_chart(
     let mut seen = std::collections::HashSet::new();
     let legend_entries: Vec<(&str, RGBColor)> = groups
         .iter()
-        .flat_map(|g| g.values.iter().map(|(_, name, color)| (*name, *color)))
+        .flat_map(|g| g.values.iter().map(|(_, _, name, color)| (*name, *color)))
         .filter(|(name, _)| seen.insert(*name))
         .collect();
 
@@ -1167,27 +1408,35 @@ fn draw_grouped_bar_chart(
 
 /// Generate all benchmark charts as SVG files in the report directory.
 pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
-    // Wall time chart
-    let groups = extract_groups(results, |r| r.wall_time_ms());
+    // Wall time chart — error bars are the 95% CI of the wall-time samples.
+    let groups = extract_groups(
+        results,
+        |r| r.wall_time_ms(),
+        |r| r.stats.as_ref().map(|s| s.wall_ms_ci95).unwrap_or(0.0),
+    );
     draw_grouped_bar_chart(
         &report_dir.join("chart_wall_time.svg"),
-        "Wall Time (lower is better)",
+        "Wall Time (lower is better; whiskers = 95% CI)",
         "Time (ms)",
         &groups,
     );
 
     // Peak RSS chart — the cross-engine-comparable memory basis.
-    let groups = extract_groups(results, |r| r.peak_rss_mb());
+    let groups = extract_groups(
+        results,
+        |r| r.peak_rss_mb(),
+        |r| r.stats.as_ref().map(|s| s.rss_mb_ci95).unwrap_or(0.0),
+    );
     draw_grouped_bar_chart(
         &report_dir.join("chart_peak_memory.svg"),
-        "Peak RSS (lower is better)",
+        "Peak RSS (lower is better; whiskers = 95% CI)",
         "Peak RSS (MB)",
         &groups,
     );
 
     // Engine-tracked working set — a libviprs-only, per-run figure kept in a
     // separate chart so it is never confused with the RSS basis above.
-    let groups = extract_groups(results, |r| r.tracked_memory_mb());
+    let groups = extract_groups(results, |r| r.tracked_memory_mb(), no_error);
     draw_grouped_bar_chart(
         &report_dir.join("chart_tracked_memory.svg"),
         "Engine-Tracked Working Set (libviprs engines; lower is better)",
@@ -1196,7 +1445,7 @@ pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
     );
 
     // Raw throughput chart
-    let groups = extract_groups(results, |r| r.tiles_per_second());
+    let groups = extract_groups(results, |r| r.tiles_per_second(), no_error);
     draw_grouped_bar_chart(
         &report_dir.join("chart_throughput.svg"),
         "Raw Throughput (higher is better)",
@@ -1205,7 +1454,7 @@ pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
     );
 
     // Memory-normalised throughput: tiles/s per MB
-    let groups = extract_groups(results, |r| r.tiles_per_second_per_mb());
+    let groups = extract_groups(results, |r| r.tiles_per_second_per_mb(), no_error);
     draw_grouped_bar_chart(
         &report_dir.join("chart_efficiency.svg"),
         "Memory Efficiency — Tiles/s per RSS-MB (higher is better)",
@@ -1214,7 +1463,7 @@ pub fn generate_charts(results: &[RunMetrics], report_dir: &std::path::Path) {
     );
 
     // Resource cost: MB-seconds per tile (lower is better)
-    let groups = extract_groups(results, |r| r.resource_cost_per_tile());
+    let groups = extract_groups(results, |r| r.resource_cost_per_tile(), no_error);
     draw_grouped_bar_chart(
         &report_dir.join("chart_resource_cost.svg"),
         "Resource Cost — RSS-MB\u{00b7}s per Tile (lower is better)",
@@ -1430,6 +1679,90 @@ pub fn generate_history_chart(
     root.present().unwrap();
 }
 
+/// Build the executive verdict table.
+///
+/// For each `(w × h, concurrency)` configuration: which engine wins on wall
+/// time, peak RSS, and memory efficiency, and every engine's ratio versus
+/// libvips **in the same snapshot** (so the comparison is never against a
+/// libvips number measured on a different day/machine). A ratio < 1 on wall
+/// time / RSS means "faster / leaner than libvips"; > 1 on efficiency means
+/// "more tiles/s/MB than libvips".
+pub fn executive_verdict(results: &[RunMetrics]) -> String {
+    use std::fmt::Write as _;
+    let groups = grouped_results(results);
+    let mut out = String::new();
+    out.push_str("=== Executive verdict (per configuration) ===\n");
+    out.push_str(
+        "Ratios are vs libvips in the SAME snapshot. wall/RSS: <1 beats libvips; \
+         eff: >1 beats libvips.\n\n",
+    );
+    out.push_str(&format!(
+        "{:<16} {:<12} {:>12} {:>12} {:>12} {:>12} {:>12}\n",
+        "Config", "Engine", "wall ms", "RSS MB", "eff", "wall/vips", "RSS/vips",
+    ));
+    out.push_str(&format!("{}\n", "-".repeat(92)));
+
+    for group in &groups {
+        let cfg = format!(
+            "{}x{} c{}",
+            group[0].width, group[0].height, group[0].concurrency
+        );
+        let vips = group.iter().find(|r| r.engine == "libvips");
+        let vips_wall = vips.map(|v| v.wall_time_ms()).filter(|v| *v > 0.0);
+        let vips_rss = vips.map(|v| v.peak_rss_mb()).filter(|v| *v > 0.0);
+
+        // Winners on each axis.
+        let win_wall = group
+            .iter()
+            .min_by(|a, b| a.wall_time_ms().partial_cmp(&b.wall_time_ms()).unwrap())
+            .map(|r| r.engine.as_str())
+            .unwrap_or("-");
+        let win_rss = group
+            .iter()
+            .filter(|r| r.peak_rss_mb() > 0.0)
+            .min_by(|a, b| a.peak_rss_mb().partial_cmp(&b.peak_rss_mb()).unwrap())
+            .map(|r| r.engine.as_str())
+            .unwrap_or("-");
+        let win_eff = group
+            .iter()
+            .max_by(|a, b| {
+                a.tiles_per_second_per_mb()
+                    .partial_cmp(&b.tiles_per_second_per_mb())
+                    .unwrap()
+            })
+            .map(|r| r.engine.as_str())
+            .unwrap_or("-");
+
+        for (i, r) in group.iter().enumerate() {
+            let cfg_col = if i == 0 { cfg.as_str() } else { "" };
+            let wall_ratio = vips_wall
+                .map(|v| format!("{:.2}", r.wall_time_ms() / v))
+                .unwrap_or_else(|| "-".to_string());
+            let rss_ratio = match (vips_rss, r.peak_rss_mb() > 0.0) {
+                (Some(v), true) => format!("{:.2}", r.peak_rss_mb() / v),
+                _ => "-".to_string(),
+            };
+            let _ = writeln!(
+                out,
+                "{:<16} {:<12} {:>12.1} {:>12.2} {:>12.1} {:>12} {:>12}",
+                cfg_col,
+                r.engine,
+                r.wall_time_ms(),
+                r.peak_rss_mb(),
+                r.tiles_per_second_per_mb(),
+                wall_ratio,
+                rss_ratio,
+            );
+        }
+        let _ = writeln!(
+            out,
+            "  -> winners: wall={win_wall}  RSS={win_rss}  efficiency={win_eff}",
+        );
+        out.push('\n');
+    }
+    out
+}
+
 /// Print a summary comparing all engines.
 ///
 /// Shows each engine's memory efficiency and resource cost side-by-side.
@@ -1532,6 +1865,43 @@ mod history_tests {
         assert_eq!(after, corrupt);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn label_normalization_maps_legacy_form() {
+        assert_eq!(
+            normalize_run_label("1024x1024 c0 monolithic"),
+            "1024x1024_c0_monolithic"
+        );
+        // Already-current labels pass through unchanged.
+        assert_eq!(normalize_run_label("512x512_c4_vips"), "512x512_c4_vips");
+        // Collapses runs of whitespace.
+        assert_eq!(normalize_run_label("2048x2048  c4  mr"), "2048x2048_c4_mr");
+    }
+
+    #[test]
+    fn run_stats_summarize_samples() {
+        // Wall samples 1..=9 ms, rss constant 10 MB.
+        let samples: Vec<(f64, f64)> = (1..=9).map(|i| (i as f64, 10.0)).collect();
+        let s = RunStats::from_samples(&samples);
+        assert_eq!(s.n, 9);
+        assert_eq!(s.wall_ms_median, 5.0);
+        assert_eq!(s.wall_ms_min, 1.0);
+        assert!((s.wall_ms_iqr - 4.0).abs() < 1e-9, "iqr {}", s.wall_ms_iqr);
+        assert!(s.wall_ms_ci95 > 0.0);
+        // Constant RSS → zero spread.
+        assert_eq!(s.rss_mb_median, 10.0);
+        assert_eq!(s.rss_mb_iqr, 0.0);
+        assert_eq!(s.rss_mb_ci95, 0.0);
+    }
+
+    #[test]
+    fn migrate_snapshot_is_idempotent_on_current_labels() {
+        let mut snap = create_snapshot(Vec::new(), 256, 1_000_000);
+        let before = snap.schema_version;
+        migrate_snapshot(&mut snap);
+        assert_eq!(snap.schema_version, before);
+        assert_eq!(snap.schema_version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]

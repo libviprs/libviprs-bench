@@ -33,6 +33,15 @@ fn main() {
     println!("cargo:rustc-env=LIBVIPRS_CORE_VERSION={version}");
     println!("cargo:rustc-env=LIBVIPRS_CORE_GIT_SHA={sha}");
 
+    // Stamp the toolchain + the pinned bench build knobs into the binary so
+    // every snapshot's provenance records the environment it was measured
+    // in (issue #159). RUSTFLAGS is echoed so the LTO/codegen-units pin from
+    // run-bench.sh is visible in the recorded fingerprint.
+    let rustc_version = rustc_version().unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=BENCH_RUSTC_VERSION={rustc_version}");
+    let build_flags = std::env::var("RUSTFLAGS").unwrap_or_default();
+    println!("cargo:rustc-env=BENCH_BUILD_FLAGS={build_flags}");
+
     // Re-run when the core manifest changes so the stamped version keeps
     // pace with a core version bump without a manual clean.
     println!("cargo:rerun-if-changed={}", manifest.display());
@@ -62,6 +71,18 @@ fn read_package_version(manifest: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// The compiling rustc's version string (`rustc 1.89.0 (… )`), via the
+/// `RUSTC` cargo exposes to build scripts. `None` if it cannot be run.
+fn rustc_version() -> Option<String> {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".to_string());
+    let output = Command::new(rustc).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let v = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    if v.is_empty() { None } else { Some(v) }
 }
 
 /// Short git SHA of the core checkout, or `None` if git can't resolve it

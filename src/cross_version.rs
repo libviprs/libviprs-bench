@@ -80,13 +80,16 @@ fn main() {
 }
 
 fn load_history(path: &Path) -> Result<Vec<BenchmarkSnapshot>, String> {
-    let raw = fs::read_to_string(path).map_err(|e| {
-        format!(
-            "couldn't read {}: {e}",
-            path.display()
-        )
-    })?;
-    serde_json::from_str(&raw).map_err(|e| format!("couldn't parse {}: {e}", path.display()))
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("couldn't read {}: {e}", path.display()))?;
+    let mut history: Vec<BenchmarkSnapshot> = serde_json::from_str(&raw)
+        .map_err(|e| format!("couldn't parse {}: {e}", path.display()))?;
+    // Same forward-migration the report binary applies: normalize legacy
+    // labels and map old field names so a mixed-schema history file loads.
+    for snap in &mut history {
+        libviprs_bench::migrate_snapshot(snap);
+    }
+    Ok(history)
 }
 
 /// Flatten the snapshot list into a long-form polars DataFrame. One
@@ -95,6 +98,9 @@ fn build_dataframe(history: &[BenchmarkSnapshot]) -> PolarsResult<DataFrame> {
     let total: usize = history.iter().map(|s| s.runs.len()).sum();
 
     let mut version: Vec<String> = Vec::with_capacity(total);
+    let mut fingerprint: Vec<String> = Vec::with_capacity(total);
+    let mut wall_ci95: Vec<f64> = Vec::with_capacity(total);
+    let mut rss_ci95: Vec<f64> = Vec::with_capacity(total);
     let mut timestamp: Vec<String> = Vec::with_capacity(total);
     let mut snapshot_tile_size: Vec<u32> = Vec::with_capacity(total);
     let mut snapshot_memory_budget: Vec<u64> = Vec::with_capacity(total);
@@ -112,8 +118,12 @@ fn build_dataframe(history: &[BenchmarkSnapshot]) -> PolarsResult<DataFrame> {
     let mut tiles_per_second_per_mb: Vec<f64> = Vec::with_capacity(total);
 
     for snap in history {
+        let fp = snap.provenance.fingerprint();
         for run in &snap.runs {
             version.push(snap.version.clone());
+            fingerprint.push(fp.clone());
+            wall_ci95.push(run.stats.as_ref().map(|s| s.wall_ms_ci95).unwrap_or(0.0));
+            rss_ci95.push(run.stats.as_ref().map(|s| s.rss_mb_ci95).unwrap_or(0.0));
             timestamp.push(snap.timestamp.clone());
             snapshot_tile_size.push(snap.tile_size);
             snapshot_memory_budget.push(snap.memory_budget_bytes);
@@ -134,6 +144,9 @@ fn build_dataframe(history: &[BenchmarkSnapshot]) -> PolarsResult<DataFrame> {
 
     df!(
         "version" => version,
+        "fingerprint" => fingerprint,
+        "wall_ci95" => wall_ci95,
+        "rss_ci95" => rss_ci95,
         "timestamp" => timestamp,
         "snapshot_tile_size" => snapshot_tile_size,
         "snapshot_memory_budget_bytes" => snapshot_memory_budget,
@@ -187,19 +200,31 @@ fn write_markdown_report(df: &DataFrame, path: &PathBuf) {
 
     for (w, h, c) in &sizes {
         let mp = (*w as f64) * (*h as f64) / 1_000_000.0;
-        out.push_str(&format!(
-            "## {w}×{h} ({mp:.1} MP), concurrency = {c}\n\n",
-        ));
+        out.push_str(&format!("## {w}×{h} ({mp:.1} MP), concurrency = {c}\n\n",));
         for metric in [
-            ("wall_time_ms", "Wall time (ms)", false),
-            ("tracked_memory_mb", "Tracked working set (MB)", false),
-            ("peak_rss_mb", "Peak RSS (MB)", false),
-            ("tiles_per_second", "Throughput (tiles/s)", true),
-            ("tiles_per_second_per_mb", "Efficiency (tiles/s/RSS-MB)", true),
+            ("wall_time_ms", "Wall time (ms)", false, "wall_ci95"),
+            ("tracked_memory_mb", "Tracked working set (MB)", false, ""),
+            ("peak_rss_mb", "Peak RSS (MB)", false, "rss_ci95"),
+            ("tiles_per_second", "Throughput (tiles/s)", true, ""),
+            (
+                "tiles_per_second_per_mb",
+                "Efficiency (tiles/s/RSS-MB)",
+                true,
+                "",
+            ),
         ] {
-            let (col, title, higher_is_better) = metric;
+            let (col, title, higher_is_better, ci_col) = metric;
             out.push_str(&format!("### {title}\n\n"));
-            out.push_str(&render_metric_table(df, *w, *h, *c, col, &versions, higher_is_better));
+            out.push_str(&render_metric_table(
+                df,
+                *w,
+                *h,
+                *c,
+                col,
+                ci_col,
+                &versions,
+                higher_is_better,
+            ));
             out.push('\n');
         }
     }
@@ -210,11 +235,11 @@ fn write_markdown_report(df: &DataFrame, path: &PathBuf) {
 
 fn unique_size_concurrency_combos(df: &DataFrame) -> Vec<(u32, u32, u32)> {
     // Use lazy + group_by to get distinct triples, then materialise.
-    let lf = df.clone().lazy().select([
-        col("width"),
-        col("height"),
-        col("concurrency"),
-    ]).unique(None, UniqueKeepStrategy::Any);
+    let lf = df
+        .clone()
+        .lazy()
+        .select([col("width"), col("height"), col("concurrency")])
+        .unique(None, UniqueKeepStrategy::Any);
     let frame = lf
         .sort_by_exprs(
             [col("width"), col("height"), col("concurrency")],
@@ -226,34 +251,40 @@ fn unique_size_concurrency_combos(df: &DataFrame) -> Vec<(u32, u32, u32)> {
     let heights = frame.column("height").unwrap().u32().unwrap();
     let concs = frame.column("concurrency").unwrap().u32().unwrap();
     (0..frame.height())
-        .filter_map(|i| {
-            Some((widths.get(i)?, heights.get(i)?, concs.get(i)?))
-        })
+        .filter_map(|i| Some((widths.get(i)?, heights.get(i)?, concs.get(i)?)))
         .collect()
 }
 
 fn unique_string_column(df: &DataFrame, name: &str) -> Vec<String> {
-    let s = df
-        .column(name)
-        .unwrap()
-        .unique_stable()
-        .expect("unique");
+    let s = df.column(name).unwrap().unique_stable().expect("unique");
     let chunked = s.str().expect("str column");
     chunked.into_iter().flatten().map(String::from).collect()
 }
 
 /// Render one metric as a markdown table for a fixed (w, h, c). Rows
 /// are engines; columns are versions; cells are `value (Δ%)`.
+#[allow(clippy::too_many_arguments)]
 fn render_metric_table(
     df: &DataFrame,
     w: u32,
     h: u32,
     c: u32,
     metric_col: &str,
+    ci_col: &str,
     versions: &[String],
     higher_is_better: bool,
 ) -> String {
-    // Filter to the (w, h, c) slice; keep only the metric + grouping cols.
+    // Filter to the (w, h, c) slice; keep the metric, CI, fingerprint, and
+    // grouping cols.
+    let mut cols = vec![
+        col("engine"),
+        col("version"),
+        col("fingerprint"),
+        col(metric_col),
+    ];
+    if !ci_col.is_empty() {
+        cols.push(col(ci_col));
+    }
     let filtered = df
         .clone()
         .lazy()
@@ -263,7 +294,7 @@ fn render_metric_table(
                 .and(col("height").eq(lit(h)))
                 .and(col("concurrency").eq(lit(c))),
         )
-        .select([col("engine"), col("version"), col(metric_col)])
+        .select(cols)
         .collect()
         .expect("filter slice");
 
@@ -284,23 +315,29 @@ fn render_metric_table(
 
     for engine in &engines {
         out.push_str(&format!("| {engine} "));
-        let mut prev: Option<f64> = None;
+        // Track the previous version's value, CI, and environment so a
+        // delta is only a *regression call* when the change clears both
+        // versions' confidence intervals AND was measured in the same
+        // environment (issues #155, #159).
+        let mut prev: Option<(f64, f64, String)> = None;
         for v in versions {
-            let cell = lookup_metric(&filtered, engine, v, metric_col);
+            let cell = lookup_row(&filtered, engine, v, metric_col, ci_col);
             match cell {
-                Some(value) => {
-                    let delta = match prev {
-                        Some(p) if p != 0.0 => Some(((value - p) / p) * 100.0),
-                        _ => None,
-                    };
-                    let delta_str = match delta {
-                        Some(d) => {
+                Some((value, ci, fp)) => {
+                    let delta_str = match &prev {
+                        Some((p, prev_ci, prev_fp)) if *p != 0.0 => {
+                            let d = ((value - p) / p) * 100.0;
                             let sign = if d >= 0.0 { "+" } else { "" };
-                            // Sub-0.05% deltas are noise from rounding —
-                            // don't decorate. Otherwise mark the side
-                            // that's better for the metric.
-                            let arrow = if d.abs() < 0.05 {
+                            let abs_delta = (value - p).abs();
+                            let ci_sum = ci + prev_ci;
+                            let arrow = if prev_fp != &fp {
+                                // Cross-environment: not apples-to-apples.
+                                " (env≠)"
+                            } else if d.abs() < 0.05 {
                                 ""
+                            } else if ci_sum > 0.0 && abs_delta <= ci_sum {
+                                // Within combined CI — statistically a tie.
+                                " ≈"
                             } else if (d > 0.0) == higher_is_better {
                                 " ✅"
                             } else {
@@ -308,10 +345,10 @@ fn render_metric_table(
                             };
                             format!(" ({sign}{d:.1}%{arrow})")
                         }
-                        None => String::new(),
+                        _ => String::new(),
                     };
                     out.push_str(&format!("| {value:.2}{delta_str} "));
-                    prev = Some(value);
+                    prev = Some((value, ci, fp));
                 }
                 None => out.push_str("| — "),
             }
@@ -321,12 +358,15 @@ fn render_metric_table(
     out
 }
 
-fn lookup_metric(
+/// Look up (metric value, CI half-width, environment fingerprint) for one
+/// (engine, version) cell. CI is 0 when the metric has no CI column.
+fn lookup_row(
     df: &DataFrame,
     engine: &str,
     version: &str,
     metric_col: &str,
-) -> Option<f64> {
+    ci_col: &str,
+) -> Option<(f64, f64, String)> {
     let frame = df
         .clone()
         .lazy()
@@ -335,14 +375,28 @@ fn lookup_metric(
                 .eq(lit(engine))
                 .and(col("version").eq(lit(version))),
         )
-        .select([col(metric_col)])
         .collect()
         .ok()?;
     if frame.height() == 0 {
         return None;
     }
-    let s = frame.column(metric_col).ok()?;
-    s.f64().ok()?.get(0)
+    let value = frame.column(metric_col).ok()?.f64().ok()?.get(0)?;
+    let ci = if ci_col.is_empty() {
+        0.0
+    } else {
+        frame
+            .column(ci_col)
+            .ok()
+            .and_then(|s| s.f64().ok().and_then(|c| c.get(0)))
+            .unwrap_or(0.0)
+    };
+    let fp = frame
+        .column("fingerprint")
+        .ok()
+        .and_then(|s| s.str().ok().and_then(|c| c.get(0)))
+        .unwrap_or("unknown")
+        .to_string();
+    Some((value, ci, fp))
 }
 
 // Suppress an unused import warning when both items get used inside a

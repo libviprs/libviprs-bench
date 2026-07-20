@@ -18,13 +18,24 @@
 use std::fs;
 use std::path::Path;
 
+use libviprs_bench::harness::{self, Engine};
+use libviprs_bench::provenance::Provenance;
 use libviprs_bench::{
-    comparison_suite, core_git_sha, core_version, create_snapshot, generate_charts,
+    core_git_sha, core_version, create_snapshot, executive_verdict, generate_charts,
     generate_history_chart, load_history, print_comparison_table, print_savings_summary,
-    save_history,
+    save_history, vips_available,
 };
 
 fn main() {
+    // Hidden per-cell child subcommand (`--single …`). When invoked this
+    // way the process runs exactly one cell and prints its metrics as JSON;
+    // the parent harness spawns these and reads each child's true per-run
+    // RSS via wait4 (issue #157). Not a `--single` invocation → fall through
+    // to the normal report run.
+    if let Some(code) = harness::maybe_run_single_subcommand() {
+        std::process::exit(code);
+    }
+
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
     fs::create_dir_all(&report_dir).unwrap();
 
@@ -33,15 +44,32 @@ fn main() {
     let tile_size: u32 = 256;
     let streaming_budget: u64 = 1_000_000; // 1 MB
 
-    println!("=== libviprs engine comparison benchmark (monolithic / streaming / mapreduce) ===");
+    // Statistics: >= 7 timed iterations after a discarded warm-up, each cell
+    // in its own child process, engine order interleaved within a size
+    // (issue #155). Override with BENCH_ITERS / BENCH_WARMUP for a fast
+    // smoke run.
+    let iters: u32 = std::env::var("BENCH_ITERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(harness::DEFAULT_ITERS);
+    let warmup: u32 = std::env::var("BENCH_WARMUP")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(harness::DEFAULT_WARMUP);
+
+    let prov = Provenance::capture();
+    println!("=== libviprs vs libvips comparison benchmark ===");
     println!(
         "    measured libviprs core: {} ({})",
         core_version(),
         core_git_sha()
     );
     println!("    bench harness: {}", env!("CARGO_PKG_VERSION"));
+    println!("    environment:  {}", prov.fingerprint());
+    println!("    cpu: {} ({} cpus)", prov.host.cpu_model, prov.host.ncpu);
     println!();
     println!("Tile size: {tile_size}, memory budget: {streaming_budget} bytes");
+    println!("Iterations: {iters} timed + {warmup} warm-up per cell (child-isolated)");
     println!(
         "Image sizes: {:?}",
         sizes
@@ -52,13 +80,39 @@ fn main() {
     println!("Concurrency levels: {concurrency_levels:?}");
     println!();
 
-    let results = comparison_suite(sizes, concurrency_levels, tile_size, streaming_budget);
+    // Engine set: libviprs engines always; libvips only when present.
+    let mut engines = vec![Engine::Monolithic, Engine::Streaming, Engine::MapReduce];
+    if vips_available() {
+        eprintln!("libvips detected — including in benchmarks");
+        engines.push(Engine::Libvips);
+    } else {
+        eprintln!("libvips not found — skipping libvips benchmarks");
+    }
+
+    let exe = harness::current_exe();
+    let results = harness::run_isolated_suite(
+        &exe,
+        sizes,
+        concurrency_levels,
+        &engines,
+        tile_size,
+        streaming_budget,
+        iters,
+        warmup,
+    );
 
     // Print full table
     print_comparison_table(&results);
 
     // Print savings summary
     print_savings_summary(&results);
+
+    // Executive verdict: per size, the winning engine on each axis plus
+    // every engine's ratio vs libvips in the *same* snapshot (issue #160).
+    let verdict = executive_verdict(&results);
+    println!();
+    print!("{verdict}");
+    fs::write(report_dir.join("verdict_table.txt"), &verdict).unwrap();
 
     // Write JSON for this run
     let json_path = report_dir.join("benchmark_results.json");

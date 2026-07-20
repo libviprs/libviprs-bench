@@ -17,6 +17,8 @@ Cargo.lock
 report/*.svg
 report/*.json
 report/*.txt
+report/*.csv
+report/*.md
 
 # Generated scalability charts (copied to libviprs-org for publishing)
 scalability_*.svg
