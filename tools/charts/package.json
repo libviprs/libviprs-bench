@@ -1,0 +1,10 @@
+{
+  "name": "@libviprs-bench/charts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SVG chart renderers for the libviprs benchmark report (history trend + scalability), rendered from the Rust harness JSON.",
+  "scripts": {
+    "test": "node --test '*.test.mjs'"
+  }
+}

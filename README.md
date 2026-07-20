@@ -49,10 +49,12 @@ The harness produces:
 ## Running benchmarks
 
 ```bash
-# Scalability sweep (default) — writes report/scalability_*.svg + scalability_results.json
+# Scalability sweep (default) — writes report/scalability_results.json, then
+# renders report/scalability_*.svg from it (see "Charts" below)
 ./run-bench.sh
 
-# Full comparison matrix — writes report/chart_*.svg + benchmark_results.json + benchmark_history.json
+# Full comparison matrix — writes benchmark_results.json + benchmark_history.json,
+# then renders report/chart_*.svg + chart_history_*.svg
 ./run-bench.sh report
 
 # Force architecture
@@ -66,7 +68,22 @@ The harness produces:
 ./run-bench.sh --no-build
 ```
 
-Output is written to `report/`. Each run of the `report` command appends an entry to `benchmark_history.json`; once two or more entries exist, the binary also produces trend charts (`chart_history_*.svg`) showing wall time and peak memory across versions.
+Output is written to `report/`. Each run of the `report` command appends an entry to `benchmark_history.json`; once two or more entries exist, the trend charts (`chart_history_*.svg`) showing wall time and peak memory across versions are rendered from it.
+
+### Charts
+
+The history-trend and scalability SVGs are rendered by a small JS chart library (`tools/charts/`), not by the Rust binaries. `run-bench.sh` invokes it automatically after the harness writes its JSON, so a normal run refreshes the SVGs for you. This requires **Node** (any recent LTS) on the host; if Node is missing the run still completes and leaves the JSON, printing the command to render later.
+
+Running a binary directly (`cargo run --bin scalability` / `--bin report`) emits **JSON only**. To (re)render the SVGs from JSON already on disk:
+
+```bash
+node tools/charts/render.mjs --report-dir report            # log-log scalability axes (default)
+node tools/charts/render.mjs --report-dir report --linear   # linear scalability axes
+```
+
+`render.mjs` is deterministic (same JSON → byte-identical SVGs) and idempotent — it re-renders the whole report from whatever JSON is present. Its own tests run with `node --test '*.test.mjs'` from `tools/charts/` (or `npm test` there).
+
+The grouped-bar comparison charts (`chart_*.svg`) are still emitted by the Rust `report` binary itself.
 
 The criterion micro-benchmarks are run separately:
 
@@ -200,6 +217,7 @@ report/
 - Rust 1.85+ (edition 2024)
 - Docker (recommended, used by `run-bench.sh`)
 - For `--no-build`: `libvips-dev` and `pkg-config` on the host
+- **Node** (recent LTS) on the host to render the history/scalability SVGs (`tools/charts/render.mjs`); optional — without it the benchmark still writes its JSON
 
 ## See also
 

@@ -22,8 +22,8 @@ use libviprs_bench::harness::{self, Engine};
 use libviprs_bench::provenance::{OracleMatch, Provenance};
 use libviprs_bench::{
     BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, DEFAULT_CONCURRENCY, DEFAULT_SIZES, core_git_sha,
-    core_version, create_snapshot, executive_verdict, generate_charts, generate_history_chart,
-    load_history, print_comparison_table, print_savings_summary, save_history, vips_available,
+    core_version, create_snapshot, executive_verdict, generate_charts, load_history,
+    print_comparison_table, print_savings_summary, save_history, vips_available,
 };
 
 fn main() {
@@ -261,16 +261,16 @@ fn main() {
                         history_path.display()
                     );
 
-                    // Generate history trend charts if we have multiple versions
-                    if history.len() >= 2 {
-                        for &(w, h) in sizes {
-                            for &conc in concurrency_levels {
-                                generate_history_chart(&history, &report_dir, (w, h), conc);
-                            }
-                        }
-                        println!("History trend charts written to {}", report_dir.display());
-                    } else {
+                    // History trend SVGs are rendered from benchmark_history.json by
+                    // tools/charts/render.mjs (invoked by run-bench.sh after this
+                    // binary writes the JSON). A trend needs >= 2 snapshots.
+                    if history.len() < 2 {
                         println!("(run again on a different version to generate trend charts)");
+                    } else {
+                        println!(
+                            "History trend charts render from {} via tools/charts/render.mjs",
+                            history_path.display()
+                        );
                     }
                 }
                 Err(e) => {

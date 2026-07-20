@@ -115,6 +115,34 @@ LIBVIPS_PIN="$(sed -n 's/^ARG LIBVIPS_VERSION=//p' "$SCRIPT_DIR/Dockerfile" | he
 # [profile.release] pin in Cargo.toml (issue #162).
 export RUSTFLAGS="${RUSTFLAGS:--C target-cpu=native}"
 
+# Directory containing this script (the crate root). Defined up-front so both
+# the local and Docker paths can locate report/ and the JS chart renderer.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Regenerate the report SVGs from whatever JSON is in report/, using the
+# causl-bench JS chart library (tools/charts/render.mjs). The Rust binaries
+# only emit JSON now. This is a WHOLE-REPORT, idempotent regeneration from the
+# JSON on disk: render.mjs is deterministic, so re-rendering a family whose
+# JSON this run did not touch just rewrites byte-identical SVGs (no staleness
+# introduced). Skipped with a hint if node is missing.
+#
+# Rendering is NON-FATAL under `set -e`: the measurement JSON is the source of
+# truth, so a chart-side failure must never discard it — the run reports the
+# failure and leaves the JSON intact to re-render later.
+regenerate_charts() {
+    local report_dir="$1"
+    if command -v node >/dev/null 2>&1; then
+        echo ""
+        echo "Regenerating SVG charts from JSON (tools/charts/render.mjs)..."
+        node "$SCRIPT_DIR/tools/charts/render.mjs" --report-dir "$report_dir" \
+            || echo "chart render failed; JSON is intact — re-run tools/charts/render.mjs later"
+    else
+        echo ""
+        echo "node not found — skipping SVG chart regeneration."
+        echo "  JSON written; run: node tools/charts/render.mjs --report-dir $report_dir"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Local mode (--no-build) — runs on the host, no Docker required
 # ---------------------------------------------------------------------------
@@ -151,6 +179,8 @@ if [ "$NO_BUILD" = true ]; then
     fi
 
     cargo run --release $FEATURES --bin "$BENCH_CMD"
+
+    regenerate_charts "$SCRIPT_DIR/report"
     exit 0
 fi
 
@@ -208,6 +238,10 @@ docker run --rm \
     -v "$SCRIPT_DIR/report:/src/libviprs-bench/report" \
     "$IMAGE_NAME" \
     cargo run --release --features libvips --bin "$BENCH_CMD"
+
+# Charts are rendered on the HOST (node lives here, not in the Rust image)
+# from the JSON the container wrote into the mounted report/ volume.
+regenerate_charts "$SCRIPT_DIR/report"
 
 echo ""
 echo "Results written to ${SCRIPT_DIR}/report/"
