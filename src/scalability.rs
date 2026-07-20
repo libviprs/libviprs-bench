@@ -30,7 +30,9 @@ use libviprs::{
     RasterStripSource, TileFormat,
 };
 use libviprs_bench::provenance::{OracleMatch, Provenance};
-use libviprs_bench::{bench_libvips, gradient_raster, vips_available, write_temp_png};
+use libviprs_bench::{
+    bench_libvips, gradient_raster, streaming_budget_for, vips_available, write_temp_png,
+};
 
 /// Peak RSS of the current process in bytes. Mirrors the RSS basis the
 /// libvips paths report so the scalability charts compare like-for-like
@@ -54,19 +56,13 @@ fn process_peak_rss() -> u64 {
 }
 
 const TILE_SIZE: u32 = 256;
-/// Floor on the streaming engine's memory budget. Keeps small images in
-/// the "true streaming" regime; large images need more (computed below).
+/// Floor on the streaming engine's memory budget, passed as the `floor` to the
+/// shared [`streaming_budget_for`]. Keeps small images in the "true streaming"
+/// regime; wider canvases are auto-scaled up so at least one tile-aligned strip
+/// fits and the strict `BudgetPolicy::Error` never trips. This binary's non-
+/// centred DeepZoom plans have `canvas_width == width`, so passing the image
+/// width here is identical to sizing from `plan.canvas_width` (RGB8, bpp = 3).
 const STREAMING_BUDGET_FLOOR: u64 = 4_000_000; // 4 MB
-
-/// Compute the per-image streaming budget. The floor `STREAMING_BUDGET_FLOOR`
-/// keeps small images in the streaming regime; for wider canvases we need
-/// at least one tile-aligned strip (`min strip = 2 × tile_size`) to fit,
-/// otherwise `BudgetPolicy::Error` (intentionally strict) trips. The
-/// 2× multiplier leaves headroom for the per-level accumulator chain.
-fn streaming_budget_for(width: u32, tile_size: u32) -> u64 {
-    let min_strip_bytes = (width as u64) * (tile_size as u64) * 2 * 3;
-    (min_strip_bytes * 2).max(STREAMING_BUDGET_FLOOR)
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScalabilityPoint {
@@ -591,7 +587,7 @@ fn main() {
 
             // Streaming + MapReduce share a budget chosen per-width so the
             // tile-aligned minimum strip always fits.
-            let budget = streaming_budget_for(w, TILE_SIZE);
+            let budget = streaming_budget_for(STREAMING_BUDGET_FLOOR, w, TILE_SIZE, 3);
 
             // Streaming
             let run = run_streaming(&src, TILE_SIZE, budget, conc);
@@ -743,7 +739,8 @@ fn main() {
             largest.0,
             largest.1,
             largest_mp,
-            streaming_budget_for(largest.0, TILE_SIZE) as f64 / (1024.0 * 1024.0),
+            streaming_budget_for(STREAMING_BUDGET_FLOOR, largest.0, TILE_SIZE, 3) as f64
+                / (1024.0 * 1024.0),
         );
         println!(
             "  Tracked working set: {:.1} MB — bounded by strip height, not canvas area.",
@@ -766,7 +763,8 @@ fn main() {
             largest.0,
             largest.1,
             largest_mp,
-            streaming_budget_for(largest.0, TILE_SIZE) as f64 / (1024.0 * 1024.0),
+            streaming_budget_for(STREAMING_BUDGET_FLOOR, largest.0, TILE_SIZE, 3) as f64
+                / (1024.0 * 1024.0),
         );
         println!(
             "  Tracked working set: {:.1} MB — same strip-bounded model as streaming.",
