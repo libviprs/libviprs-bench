@@ -85,10 +85,21 @@ fn fixture_rasterizes_to_expected_dimensions_and_nonblank() {
     // The streaming source derives dimensions arithmetically from the page's
     // point size (1190.52 × 841.861 pt) at the requested DPI — `floor(pts ×
     // dpi/72)` — so these are stable across pdfium builds.
-    let src = PdfiumStripSource::new_streaming(fixture_path(), 1, 72).expect(
-        "pdfium must open the committed fixture (set PDFIUM_PATH if libpdfium \
-         is not on the system library path)",
-    );
+    let src = match PdfiumStripSource::new_streaming(fixture_path(), 1, 72) {
+        Ok(src) => src,
+        // libpdfium unavailable / ABI-mismatched on this box — skip with a
+        // clear message instead of a cryptic dlsym panic, matching the runtime
+        // bench's graceful skip (issue #22 review). Every assertion below runs
+        // AFTER a successful open, so a real rasterization regression still
+        // fails hard wherever a compatible pdfium is present.
+        Err(e) => {
+            eprintln!(
+                "skipping fixture_rasterizes_to_expected_dimensions_and_nonblank: pdfium \
+                 unavailable ({e}). Set PDFIUM_PATH to a compatible libpdfium to run it."
+            );
+            return;
+        }
+    };
     assert_eq!(
         (src.width(), src.height()),
         (1190, 841),
@@ -126,9 +137,27 @@ fn fixture_rasterizes_to_expected_dimensions_and_nonblank() {
 #[test]
 fn pdf_streaming_workload_produces_valid_pyramid() {
     // Tiny DPI keeps the raster small (~397 × 280) and the test fast.
-    let metrics =
-        libviprs_bench::bench_streaming_pdf(&fixture_path(), 1, 24, 256, 1, 4_000_000, "pdf_smoke")
-            .expect("PDF streaming workload must run end-to-end");
+    let metrics = match libviprs_bench::bench_streaming_pdf(
+        &fixture_path(),
+        1,
+        24,
+        256,
+        1,
+        4_000_000,
+        "pdf_smoke",
+    ) {
+        Ok(m) => m,
+        // Only the pdfium-unavailable case is a skip; a planner/engine failure
+        // is a genuine regression and still fails HARD (issue #22 review).
+        Err(libviprs_bench::PdfBenchError::SourceUnavailable(e)) => {
+            eprintln!(
+                "skipping pdf_streaming_workload_produces_valid_pyramid: pdfium unavailable \
+                 ({e}). Set PDFIUM_PATH to a compatible libpdfium to run it."
+            );
+            return;
+        }
+        Err(e) => panic!("PDF streaming workload failed (not a skip): {e}"),
+    };
 
     assert_eq!(
         metrics.engine, "streaming-pdf",

@@ -53,8 +53,11 @@ serde_json = "1"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 # SHA-256 for the committed real-content fixture's integrity guard
-# (tests/pdf_fixture.rs). Matches the core crate's sha2 major so the build
-# graph carries a single version.
+# (tests/pdf_fixture.rs). Pinned to 0.11 to match `libviprs`'s own direct
+# sha2 dep, so this dev-dep adds no new major of its own. Note the graph is
+# NOT single-version: `lopdf` (via libviprs) still pulls a sha2 0.10.x
+# transitively, so both majors are present — this pin only dedups against
+# libviprs's direct dep, not the whole tree.
 sha2 = "0.11"
 
 [[bench]]

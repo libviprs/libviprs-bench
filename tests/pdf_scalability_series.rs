@@ -45,3 +45,22 @@ fn pdf_series_is_behind_the_pdfium_feature_gate() {
         "the rasterized-PDF workload must be gated behind the pdfium feature"
     );
 }
+
+/// Structural guard (issue #22 review): the earlier tests match substrings that
+/// also occur in doc/NOTE comments, so deleting the actual wiring while leaving
+/// the explanatory prose would keep them green. This one couples to the *call
+/// site* (`run_pdf_streaming`) AND the push of its result into `all_points` —
+/// neither of which appears in a comment — so the series must really be
+/// measured and emitted, not merely described.
+#[test]
+fn pdf_series_is_actually_wired_into_the_emitted_points() {
+    assert!(
+        SCALABILITY.contains("run_pdf_streaming("),
+        "the PDF series must be produced by a call to run_pdf_streaming"
+    );
+    assert!(
+        SCALABILITY.contains("all_points.push(p)"),
+        "the run_pdf_streaming result must be pushed into all_points so it \
+         reaches the charts and JSON"
+    );
+}

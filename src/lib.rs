@@ -561,14 +561,69 @@ pub fn bench_mapreduce(
     }
 }
 
+/// Failure modes of [`bench_streaming_pdf`], split so a benchmark driver can
+/// skip the one environment-dependent case while still surfacing genuine
+/// regressions (issue #22 review).
+///
+/// A single stringly-typed error would collapse "libpdfium isn't installed on
+/// this machine" (a legitimate skip) together with "the planner or engine
+/// regressed" (a real bug the benchmark exists to catch) into one opaque value,
+/// so a driver that skips on *any* error would silently drop a regression from
+/// the deliverable. Keeping them apart lets the driver skip only
+/// [`SourceUnavailable`](Self::SourceUnavailable) and propagate the rest.
+#[cfg(feature = "pdfium")]
+#[derive(Debug)]
+pub enum PdfBenchError {
+    /// The pdfium source could not be constructed. The overwhelmingly common
+    /// cause is that `libpdfium` is unavailable or ABI-incompatible on this
+    /// machine — a *runtime/environment* condition, not a code regression — so
+    /// a driver legitimately SKIPS the real-content cell rather than aborting
+    /// the whole sweep.
+    SourceUnavailable(libviprs::PdfError),
+    /// Pyramid planning failed for the rendered page — a genuine regression the
+    /// benchmark must surface, never skip.
+    Plan(libviprs::PlannerError),
+    /// The streaming engine run failed — a genuine regression the benchmark
+    /// must surface, never skip.
+    Engine(libviprs::EngineError),
+}
+
+#[cfg(feature = "pdfium")]
+impl std::fmt::Display for PdfBenchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SourceUnavailable(e) => write!(f, "pdfium source unavailable (skippable): {e}"),
+            Self::Plan(e) => write!(f, "pyramid planner failed: {e}"),
+            Self::Engine(e) => write!(f, "streaming engine run failed: {e}"),
+        }
+    }
+}
+
+#[cfg(feature = "pdfium")]
+impl std::error::Error for PdfBenchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::SourceUnavailable(e) => Some(e),
+            Self::Plan(e) => Some(e),
+            Self::Engine(e) => Some(e),
+        }
+    }
+}
+
 /// Rasterize a PDF page straight into a DeepZoom pyramid via the streaming
 /// engine — the real-content counterpart to the synthetic [`gradient_raster`]
 /// streaming workload (issues #30 / #31).
 ///
 /// Sources strips from a [`PdfiumStripSource`](libviprs::PdfiumStripSource) in
 /// [`Streaming`](libviprs::PdfiumRenderMode::Streaming) mode, so the full page
-/// is never materialised: peak memory stays bounded by the strip in flight,
-/// exactly the regime a rasterized full-page blueprint exercises. The page is
+/// is never materialised: the engine's *tracked* working set
+/// ([`RunMetrics::tracked_memory_bytes`]) stays bounded by the strip in flight,
+/// exactly the regime a rasterized full-page blueprint exercises. That bounded
+/// figure is the engine's own accounting — the process
+/// [`peak_rss_bytes`](RunMetrics::peak_rss_bytes) captured alongside it is a
+/// monotonic, process-wide high-water mark (see [`RunMetrics::peak_rss_mb`]), so
+/// in a driver that runs several engines in one process it does NOT isolate this
+/// workload's strip-bounded footprint. The page is
 /// rendered at `dpi`; the resulting raster dimensions (reported back in
 /// [`RunMetrics::width`] / [`height`](RunMetrics::height)) grow with `dpi`,
 /// which is how the scalability sweep drives one committed fixture to
@@ -581,10 +636,12 @@ pub fn bench_mapreduce(
 /// [`BudgetPolicy::Error`] — pdfium's 4-bpp strips are wider than the 3-bpp
 /// gradient at the same width.
 ///
-/// Returns an error string (rather than panicking like the raster
-/// [`bench_streaming`]) because PDF sources fail for legitimate *runtime*
-/// reasons — a missing `libpdfium`, an unreadable file — that a benchmark
-/// driver wants to skip over rather than abort on.
+/// Returns a typed [`PdfBenchError`] (rather than panicking like the raster
+/// [`bench_streaming`]) so a driver can tell the ONE legitimately-skippable
+/// case — [`PdfBenchError::SourceUnavailable`], e.g. a missing or
+/// ABI-mismatched `libpdfium` — apart from a genuine planner/engine regression
+/// ([`PdfBenchError::Plan`] / [`PdfBenchError::Engine`]) that it must surface
+/// rather than silently drop from the deliverable (issue #22 review).
 #[cfg(feature = "pdfium")]
 #[allow(clippy::too_many_arguments)]
 pub fn bench_streaming_pdf(
@@ -595,23 +652,28 @@ pub fn bench_streaming_pdf(
     concurrency: usize,
     memory_budget_bytes: u64,
     label: &str,
-) -> Result<RunMetrics, String> {
+) -> Result<RunMetrics, PdfBenchError> {
     use libviprs::{PdfiumStripSource, StripSource};
 
     let source = PdfiumStripSource::new_streaming(pdf_path, page, dpi)
-        .map_err(|e| format!("pdfium source construction failed: {e:?}"))?;
+        .map_err(PdfBenchError::SourceUnavailable)?;
     let width = source.width();
     let height = source.height();
 
     let planner = PyramidPlanner::new(width, height, tile_size, 0, Layout::DeepZoom)
-        .map_err(|e| format!("pyramid planner failed: {e:?}"))?;
+        .map_err(PdfBenchError::Plan)?;
     let plan = planner.plan();
 
     // Admit the worst-case tile-aligned strip so `BudgetPolicy::Error` never
-    // trips on the wide RGBA pdfium strips.
+    // trips on the wide RGBA pdfium strips. Saturating arithmetic so an
+    // adversarial page width or `tile_size` saturates the budget large (which
+    // the engine then rejects cleanly) instead of wrapping small in release or
+    // panicking in debug.
     let bpp = source.format().bytes_per_pixel() as u64;
-    let min_strip_bytes = width as u64 * (2 * tile_size as u64) * bpp;
-    let budget = memory_budget_bytes.max(min_strip_bytes * 2);
+    let min_strip_bytes = (width as u64)
+        .saturating_mul(2u64.saturating_mul(tile_size as u64))
+        .saturating_mul(bpp);
+    let budget = memory_budget_bytes.max(min_strip_bytes.saturating_mul(2));
 
     let out_dir = fs_sink_dir(label);
     let sink = engine_fs_sink(&out_dir, &plan);
@@ -619,18 +681,22 @@ pub fn bench_streaming_pdf(
     let engine_config = EngineConfig::default().with_concurrency(concurrency);
 
     let start = Instant::now();
-    let result = EngineBuilder::new(source, plan.clone(), &sink)
+    let run_result = EngineBuilder::new(source, plan.clone(), &sink)
         .with_engine(EngineKind::Streaming)
         .with_config(engine_config)
         .with_memory_budget(budget)
         .with_budget_policy(BudgetPolicy::Error)
         .with_observer_arc(observer.clone())
-        .run()
-        .map_err(|e| format!("streaming engine run failed: {e:?}"))?;
+        .run();
     let wall_time = start.elapsed();
     let peak_rss_bytes = get_peak_rss();
+    // Reclaim the temp dir on EVERY exit — including the error path below — so a
+    // post-creation engine failure never leaks a directory under $TMPDIR
+    // (issue #22 review). Walking a partial/empty dir here is harmless; the
+    // value is only consumed on the success path.
     let per_level_tiles = per_level_png_tiles(&out_dir.join("pyramid"));
     let _ = std::fs::remove_dir_all(&out_dir);
+    let result = run_result.map_err(PdfBenchError::Engine)?;
 
     let strips = observer
         .events()
