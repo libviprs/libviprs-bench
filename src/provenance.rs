@@ -38,8 +38,10 @@ pub const PINNED_LIBVIPS_VERSION: &str = "8.18.4";
 /// exactly this value. Cross-checked against the upstream
 /// `vips-{PINNED_LIBVIPS_VERSION}.tar.xz.sha256sum` companion file — refresh
 /// it in the same edit whenever [`PINNED_LIBVIPS_VERSION`] is bumped.
-/// Validating the digest against the *real* upstream tarball on a schedule is
-/// tracked as a follow-up (libviprs-bench #36).
+/// [`crate::pin_check::classify_libvips_pin`] validates this digest (and the
+/// version) against the live upstream GitHub releases feed — run it on demand
+/// via `tools/check-libvips-pin.sh` or the `#[ignore]`d live test
+/// (libviprs-bench #36).
 pub const PINNED_LIBVIPS_SHA256: &str =
     "2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037";
 
@@ -219,10 +221,27 @@ impl Provenance {
     }
 }
 
+/// Strip the `vips-` and/or a leading `v` prefix a libvips version string may
+/// carry, normalizing the GitHub release tag (`"v8.18.4"`), the `vips
+/// --version` line (`"vips-8.18.4"`), and the bare pin (`"8.18.4"`) to the same
+/// digit string.
+///
+/// Shared by [`parse_libvips_major_minor`] and
+/// [`crate::pin_check::parse_libvips_version`] so the two parsers accept an
+/// identical set of prefixes and differ only in how many components they
+/// require — never in what they will strip.
+pub(crate) fn strip_libvips_prefixes(version: &str) -> &str {
+    let trimmed = version.trim();
+    let no_vips = trimmed.strip_prefix("vips-").unwrap_or(trimmed);
+    no_vips.strip_prefix('v').unwrap_or(no_vips)
+}
+
 /// Parse a libvips version string down to `(major, minor)`.
 ///
-/// Accepts both the raw `vips --version` line (`"vips-8.18.4"`) and the
-/// already-stripped form [`libvips_version`] stores (`"8.18.4"` / `"8.18"`).
+/// Accepts the raw `vips --version` line (`"vips-8.18.4"`), a GitHub release
+/// tag (`"v8.18.4"`), and the already-stripped form [`libvips_version`] stores
+/// (`"8.18.4"` / `"8.18"`) — prefix handling is shared with
+/// [`crate::pin_check::parse_libvips_version`] via `strip_libvips_prefixes`.
 /// Returns `None` for anything without at least a numeric `major.minor`
 /// (e.g. the `"unknown"` sentinel), so a missing capture never compares
 /// equal to a real version. A component carrying a non-digit suffix — a
@@ -230,8 +249,7 @@ impl Provenance {
 /// pinned oracle is always a finished release, so a suffixed string is an
 /// unexpected capture, not a version worth comparing.
 pub fn parse_libvips_major_minor(version: &str) -> Option<(u32, u32)> {
-    let trimmed = version.trim();
-    let digits = trimmed.strip_prefix("vips-").unwrap_or(trimmed);
+    let digits = strip_libvips_prefixes(version);
     let mut parts = digits.split('.');
     let major = parts.next()?.parse::<u32>().ok()?;
     let minor = parts.next()?.parse::<u32>().ok()?;

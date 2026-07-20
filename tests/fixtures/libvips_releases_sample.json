@@ -1,0 +1,78 @@
+[
+  {
+    "tag_name": "v8.18.4",
+    "name": "v8.18.4",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-07-05T10:57:07Z",
+    "assets": [
+      {
+        "name": "vips-8.18.4.tar.xz",
+        "size": 25424116,
+        "digest": "sha256:2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff037"
+      },
+      {
+        "name": "vips-8.18.4.tar.xz.sha256sum",
+        "size": 85,
+        "digest": "sha256:a5dde0950e2d22039ef61446d10e2adc3520ea971f6780c7492c0dfb8cea42e7"
+      }
+    ]
+  },
+  {
+    "tag_name": "v8.18.3",
+    "name": "v8.18.3",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-06-09T11:35:07Z",
+    "assets": [
+      {
+        "name": "vips-8.18.3.tar.xz",
+        "size": 25422084,
+        "digest": "sha256:f41285b61bfb495605494f074ca341f7791a1d406e2f157dcea606ef1ae1b146"
+      },
+      {
+        "name": "vips-8.18.3.tar.xz.sha256sum",
+        "size": 85,
+        "digest": "sha256:506c26f1414ef09bb1d8c5caa8f4a1e06135919ff9f19fad368c71c47dfa1b3a"
+      }
+    ]
+  },
+  {
+    "tag_name": "v8.18.3-rc1",
+    "name": "v8.18.3-rc1",
+    "draft": false,
+    "prerelease": true,
+    "published_at": "2026-06-06T13:33:52Z",
+    "assets": [
+      {
+        "name": "vips-8.18.3.tar.xz",
+        "size": 25420540,
+        "digest": "sha256:548e2de8f7c86d7bf19705edea51db9bf0c490cab23b9d10dcd3d8b20c1826c9"
+      },
+      {
+        "name": "vips-8.18.3.tar.xz.sha256sum",
+        "size": 85,
+        "digest": "sha256:3698e4254de1137f40df98ebbc6f4353f4f04c001b9a61c61ed7df9e196199d7"
+      }
+    ]
+  },
+  {
+    "tag_name": "v8.18.2",
+    "name": "v8.18.2",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-03-31T21:36:16Z",
+    "assets": [
+      {
+        "name": "vips-8.18.2.tar.xz",
+        "size": 25429028,
+        "digest": "sha256:a30d4aede16f1c2899c1a2241870f8a7409feafa38484bcdcdac113d6d6f8ff5"
+      },
+      {
+        "name": "vips-8.18.2.tar.xz.sha256sum",
+        "size": 85,
+        "digest": "sha256:0a2039f89f21acd62628cd67c5f83198ddc264cc62ccbfb64ded20b03ba310da"
+      }
+    ]
+  }
+]

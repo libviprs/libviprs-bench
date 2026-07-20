@@ -64,6 +64,14 @@ sha2 = "0.11"
 name = "engine_comparison"
 harness = false
 
+# On-demand upstream-pin validator (libviprs-bench #35/#36). Reads a GitHub
+# releases JSON payload on stdin and classifies the recorded libvips pin via
+# `pin_check::classify_libvips_pin` — the single classifier the tests exercise.
+# `tools/check-libvips-pin.sh` curl-fetches the feed and pipes it here.
+[[bin]]
+name = "check-libvips-pin"
+path = "src/check_libvips_pin.rs"
+
 [[bin]]
 name = "flamegraph"
 path = "src/flamegraph.rs"

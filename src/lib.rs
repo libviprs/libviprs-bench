@@ -16,6 +16,7 @@ use libviprs::{
 use serde::{Deserialize, Serialize};
 
 pub mod harness;
+pub mod pin_check;
 pub mod provenance;
 pub mod version_id;
 pub mod version_matrix;
