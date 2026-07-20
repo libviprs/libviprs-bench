@@ -6,10 +6,11 @@
 //!   report/benchmark_results.json  — raw metrics for this run
 //!   report/benchmark_history.json  — versioned history across releases
 //!   report/comparison_table.txt    — human-readable summary
-//!   report/chart_wall_time.svg     — grouped bar chart of wall time
-//!   report/chart_peak_memory.svg   — grouped bar chart of peak memory
-//!   report/chart_throughput.svg    — grouped bar chart of throughput
-//!   report/chart_history_*.svg     — trend lines across versions
+//!
+//! The SVG charts — grouped-bar comparison `chart_*.svg` and history-trend
+//! `chart_history_*.svg` — render from that JSON via `tools/charts/render.mjs`
+//! (run-bench.sh invokes it after this binary writes the JSON). This binary
+//! emits JSON only; the plotters dependency is gone (issue #42).
 //!
 //! Run: cargo run --release --bin report
 //!
@@ -22,8 +23,8 @@ use libviprs_bench::harness::{self, Engine};
 use libviprs_bench::provenance::{OracleMatch, Provenance};
 use libviprs_bench::{
     BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, DEFAULT_CONCURRENCY, DEFAULT_SIZES, core_git_sha,
-    core_version, create_snapshot, executive_verdict, generate_charts, load_history,
-    print_comparison_table, print_savings_summary, save_history, vips_available,
+    core_version, create_snapshot, executive_verdict, load_history, print_comparison_table,
+    print_savings_summary, save_history, vips_available,
 };
 
 fn main() {
@@ -232,19 +233,18 @@ fn main() {
     fs::write(&txt_path, &txt).unwrap();
     println!("Text report written to {}", txt_path.display());
 
-    // --- Generate SVG charts ---
-    generate_charts(&results, &report_dir);
+    // --- SVG charts ---
+    //
+    // The grouped-bar comparison charts (chart_*.svg) now render from
+    // benchmark_results.json by tools/charts/render.mjs — the JS chart migration
+    // is finished and the plotters dependency is dropped (issue #42). run-bench.sh
+    // invokes render.mjs after this binary writes the JSON, so a normal run
+    // refreshes both the comparison and history-trend SVGs.
     println!();
-    println!("Charts written:");
-    println!("  {}", report_dir.join("chart_wall_time.svg").display());
-    println!("  {}", report_dir.join("chart_peak_memory.svg").display());
     println!(
-        "  {}",
-        report_dir.join("chart_tracked_memory.svg").display()
+        "Comparison charts render from {} via tools/charts/render.mjs",
+        json_path.display()
     );
-    println!("  {}", report_dir.join("chart_throughput.svg").display());
-    println!("  {}", report_dir.join("chart_efficiency.svg").display());
-    println!("  {}", report_dir.join("chart_resource_cost.svg").display());
 
     // --- Versioned benchmark history ---
     //

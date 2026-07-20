@@ -5,28 +5,41 @@
  * writes (nothing else changed on the data path):
  *
  *   report/benchmark_history.json   (Vec<BenchmarkSnapshot>)  → chart_history_*.svg
+ *   report/benchmark_results.json   (Vec<RunMetrics>)         → chart_*.svg (grouped bars)
  *   report/scalability_results.json (Vec<ScalabilityPoint>)   → scalability_*.svg
  *
  * The SVG generation used to live in the Rust `report` / `scalability`
- * binaries (plotters); it now lives here, reusing the proven causl-bench
- * chart code (see chart.mjs). `run-bench.sh` invokes this after the harness
- * produces the JSON, so charts regenerate on every run.
+ * binaries (plotters); it now lives here entirely, reusing the proven
+ * causl-bench chart code (see chart.mjs) — the grouped-bar comparison charts
+ * were the last plotters user and are now rendered here too (#42), so the Rust
+ * side emits JSON only and the plotters dependency is gone. `run-bench.sh`
+ * invokes this after the harness produces the JSON, so charts regenerate on
+ * every run.
  *
  * Output is deterministic (no timestamps, no rng) — the same JSON always
  * yields byte-identical SVGs. Missing input is skipped, not fatal: a single
- * bench invocation writes only one of the two JSON files.
+ * bench invocation writes only some of the JSON files.
  *
  * Usage:
  *   node tools/charts/render.mjs [--report-dir DIR] [--out-dir DIR]
- *                                [--history FILE] [--scalability FILE]
- *                                [--linear]
+ *                                [--history FILE] [--results FILE]
+ *                                [--scalability FILE] [--linear]
+ *                                [--zoom <minMP>]
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { renderHistoryTrend, renderScalabilityChart } from './chart.mjs';
+import {
+  renderHistoryTrend,
+  renderScalabilityChart,
+  renderWallTimeBars,
+  renderPeakMemoryBars,
+  renderThroughputBars,
+  renderEfficiencyBars,
+  renderResourceCostBars,
+} from './chart.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Crate-root `report/` dir, relative to tools/charts/. */
@@ -44,20 +57,52 @@ function durationMs(d) {
 
 const BYTES_PER_MB = 1024 * 1024;
 
-/** Distinct config keys `{w}x{h}_c{conc}`, deterministically ordered. */
-function configsOf(snapshots) {
+/* RunMetrics → metric value, mirroring the Rust `RunMetrics` methods so the
+ * grouped-bar comparison charts read benchmark_results.json exactly as the
+ * removed plotters `generate_charts` did (wall time ms, peak RSS MB, tiles/s,
+ * tiles/s per RSS-MB, RSS-MB·s per tile). RSS is the cross-engine-comparable
+ * memory basis; efficiency / resource-cost are 0 when it is unavailable. */
+function runWallSecs(run) {
+  return durationMs(run.wall_time) / 1000;
+}
+function runWallTimeMs(run) {
+  return durationMs(run.wall_time);
+}
+function runPeakRssMb(run) {
+  return (run.peak_rss_bytes ?? 0) / BYTES_PER_MB;
+}
+function runTilesPerSecond(run) {
+  const s = runWallSecs(run);
+  return s > 0 ? (run.tiles_produced ?? 0) / s : 0;
+}
+function runTilesPerSecondPerMb(run) {
+  const mb = runPeakRssMb(run);
+  return mb > 0 ? runTilesPerSecond(run) / mb : 0;
+}
+function runResourceCostPerTile(run) {
+  const mb = runPeakRssMb(run);
+  const s = runWallSecs(run);
+  const tiles = run.tiles_produced ?? 0;
+  return tiles > 0 ? (mb * s) / tiles : 0;
+}
+
+/** Distinct config keys `{w}x{h}_c{conc}` over a flat run array, deterministically ordered. */
+function configsOfRuns(runs) {
   const seen = new Map();
-  for (const snap of snapshots) {
-    for (const run of snap.runs ?? []) {
-      const key = `${run.width}x${run.height}_c${run.concurrency}`;
-      if (!seen.has(key)) {
-        seen.set(key, { width: run.width, height: run.height, concurrency: run.concurrency, key });
-      }
+  for (const run of runs) {
+    const key = `${run.width}x${run.height}_c${run.concurrency}`;
+    if (!seen.has(key)) {
+      seen.set(key, { width: run.width, height: run.height, concurrency: run.concurrency, key });
     }
   }
   return [...seen.values()].sort(
     (a, b) => a.width - b.width || a.height - b.height || a.concurrency - b.concurrency,
   );
+}
+
+/** Distinct config keys across a snapshot array (their nested runs), ordered. */
+function configsOf(snapshots) {
+  return configsOfRuns(snapshots.flatMap((snap) => snap.runs ?? []));
 }
 
 /**
@@ -127,11 +172,52 @@ export function buildHistoryCharts(snapshots) {
 }
 
 /**
+ * Grouped-bar COMPARISON SVGs from a benchmark_results snapshot (a flat
+ * `Vec<RunMetrics>`): one chart per metric — wall time, peak RSS, throughput,
+ * memory efficiency, resource cost — each a column group per config with a bar
+ * per engine. This is the JS replacement for the Rust plotters
+ * `generate_charts` chart_*.svg emitters (#42); the metric extractors mirror
+ * the Rust `RunMetrics` methods so the numbers match the retired charts.
+ */
+export function buildComparisonCharts(results) {
+  const out = [];
+  if (!Array.isArray(results) || results.length === 0) return out;
+  const metrics = [
+    { suffix: 'wall_time', render: renderWallTimeBars, valueOf: runWallTimeMs },
+    { suffix: 'peak_memory', render: renderPeakMemoryBars, valueOf: runPeakRssMb },
+    { suffix: 'throughput', render: renderThroughputBars, valueOf: runTilesPerSecond },
+    { suffix: 'efficiency', render: renderEfficiencyBars, valueOf: runTilesPerSecondPerMb },
+    { suffix: 'resource_cost', render: renderResourceCostBars, valueOf: runResourceCostPerTile },
+  ];
+  // Config groups run along the x-axis in the shared numeric config order.
+  const configs = configsOfRuns(results);
+  for (const metric of metrics) {
+    const rows = [];
+    for (const config of configs) {
+      for (const run of results) {
+        if (
+          run.width === config.width &&
+          run.height === config.height &&
+          run.concurrency === config.concurrency
+        ) {
+          rows.push({ config: config.key, engine: run.engine, value: metric.valueOf(run) });
+        }
+      }
+    }
+    out.push({ filename: `chart_${metric.suffix}.svg`, svg: metric.render(rows) });
+  }
+  return out;
+}
+
+/**
  * Scalability SVGs from a scalability_results point array: five metric charts
  * (wall time, peak RSS, throughput, efficiency, resource cost) per distinct
- * thread budget. Log-log by default; `linear` selects the linear axes.
+ * thread budget. Log-log by default; `linear` selects the linear axes. A finite
+ * `xMin` zooms into the large-image regime (>= xMin MP) and tags the output
+ * filenames with a `_zoom` suffix so it never overwrites the full-range set
+ * (#43).
  */
-export function buildScalabilityCharts(points, { linear = false } = {}) {
+export function buildScalabilityCharts(points, { linear = false, xMin = null } = {}) {
   const out = [];
   if (!Array.isArray(points) || points.length === 0) return out;
   const metrics = [
@@ -144,6 +230,8 @@ export function buildScalabilityCharts(points, { linear = false } = {}) {
     { suffix: 'efficiency', title: 'Memory Efficiency — Tiles/s per RSS-MB', yLabel: 'Tiles/s/RSS-MB', unitSuffix: '', valueOf: (p) => p.tiles_per_second_per_mb },
     { suffix: 'resource_cost', title: 'Resource Cost — RSS-MB·s per Tile', yLabel: 'RSS-MB·s/tile', unitSuffix: '', valueOf: (p) => p.resource_cost },
   ];
+  const zoomed = Number.isFinite(xMin);
+  const suffix = zoomed ? '_zoom' : '';
   const concs = [...new Set(points.map((p) => p.concurrency ?? 0))].sort((a, b) => a - b);
   for (const conc of concs) {
     const subset = points.filter((p) => (p.concurrency ?? 0) === conc);
@@ -154,13 +242,14 @@ export function buildScalabilityCharts(points, { linear = false } = {}) {
         value: metric.valueOf(p),
       }));
       const svg = renderScalabilityChart(chartPoints, {
-        title: `${metric.title} — synthetic gradient (${threadCap(conc)})`,
+        title: `${metric.title} — synthetic gradient (${threadCap(conc)}${zoomed ? `, >= ${xMin} MP` : ''})`,
         xLabel: 'Image size (megapixels)',
         yLabel: metric.yLabel,
         unitSuffix: metric.unitSuffix,
         logScale: !linear,
+        xMin: zoomed ? xMin : undefined,
       });
-      out.push({ filename: `scalability_${metric.suffix}_c${conc}.svg`, svg });
+      out.push({ filename: `scalability_${metric.suffix}_c${conc}${suffix}.svg`, svg });
     }
   }
   return out;
@@ -203,21 +292,57 @@ export function scalabilityShapeOk(data) {
 }
 
 /**
+ * As {@link historyShapeOk}, for the grouped-bar `RunMetrics` shape read out of
+ * benchmark_results.json. Checks the grouping keys, the metric-source fields,
+ * AND the nested Duration `{ secs, nanos }` — so a renamed/removed field
+ * (top-level or inside the Duration) FAILS LOUD (`false`) rather than silently
+ * charting `n/a`/zero. This is the JS CONSUMER half of the #44 producer/consumer
+ * drift guard (the producer half lives in tests/chart_shape_drift.rs).
+ */
+export function resultsShapeOk(data) {
+  if (!Array.isArray(data) || data.length === 0) return true;
+  const r = data[0];
+  if (!r || typeof r !== 'object') return false;
+  const wt = r.wall_time;
+  return (
+    'engine' in r &&
+    'width' in r &&
+    'height' in r &&
+    'concurrency' in r &&
+    'peak_rss_bytes' in r &&
+    'tiles_produced' in r &&
+    !!wt &&
+    typeof wt === 'object' &&
+    'secs' in wt &&
+    'nanos' in wt
+  );
+}
+
+/**
  * Read whichever JSON files are present and write their SVGs to `outDir`.
  * Returns the absolute paths written, sorted.
  *
- * @param {{reportDir?:string, outDir?:string, historyPath?:string, scalabilityPath?:string, linear?:boolean}} opts
+ * @param {{reportDir?:string, outDir?:string, historyPath?:string, resultsPath?:string, scalabilityPath?:string, linear?:boolean, zoom?:number}} opts
  */
 export function renderAll(opts = {}) {
   const reportDir = opts.reportDir ?? DEFAULT_REPORT_DIR;
   const outDir = opts.outDir ?? reportDir;
   const historyPath = opts.historyPath ?? join(reportDir, 'benchmark_history.json');
+  const resultsPath = opts.resultsPath ?? join(reportDir, 'benchmark_results.json');
   const scalabilityPath = opts.scalabilityPath ?? join(reportDir, 'scalability_results.json');
 
+  const scalability = readJson(scalabilityPath) ?? [];
+  const linear = opts.linear ?? false;
   const charts = [
     ...buildHistoryCharts(readJson(historyPath) ?? []),
-    ...buildScalabilityCharts(readJson(scalabilityPath) ?? [], { linear: opts.linear ?? false }),
+    ...buildComparisonCharts(readJson(resultsPath) ?? []),
+    ...buildScalabilityCharts(scalability, { linear }),
   ];
+  // #43: an opt-in --zoom adds large-image `_zoom` scalability variants ON TOP
+  // of the default full-range charts (which stay the default view).
+  if (Number.isFinite(opts.zoom)) {
+    charts.push(...buildScalabilityCharts(scalability, { linear, xMin: opts.zoom }));
+  }
   if (charts.length === 0) return [];
 
   mkdirSync(outDir, { recursive: true });
@@ -238,6 +363,7 @@ const HELP = `Usage: render.mjs [options]
 
 Renders the benchmark SVGs from the harness JSON in the report dir:
   benchmark_history.json   (Vec<BenchmarkSnapshot>)  -> chart_history_*.svg
+  benchmark_results.json   (Vec<RunMetrics>)         -> chart_*.svg (grouped bars)
   scalability_results.json (Vec<ScalabilityPoint>)   -> scalability_*.svg
 
 Options:
@@ -245,8 +371,11 @@ Options:
                       (default: ../../report relative to tools/charts).
   --out-dir DIR       Write SVGs here instead of the report dir.
   --history FILE      Override the history JSON path.
+  --results FILE      Override the results JSON path (grouped-bar charts).
   --scalability FILE  Override the scalability JSON path.
   --linear            Linear scalability axes (default: log-log).
+  --zoom <minMP>      ALSO emit large-image scalability_*_zoom.svg restricted
+                      to sizes >= <minMP> megapixels (full-range stays default).
   -h, --help          Show this help.
 
 Missing input files are skipped, not fatal. Output is deterministic.
@@ -271,8 +400,20 @@ function parseArgs(argv) {
       case '--report-dir': opts.reportDir = takeValue(a, i); i++; break;
       case '--out-dir': opts.outDir = takeValue(a, i); i++; break;
       case '--history': opts.historyPath = takeValue(a, i); i++; break;
+      case '--results': opts.resultsPath = takeValue(a, i); i++; break;
       case '--scalability': opts.scalabilityPath = takeValue(a, i); i++; break;
       case '--linear': opts.linear = true; break;
+      case '--zoom': {
+        const v = takeValue(a, i);
+        i++;
+        const n = Number(v);
+        if (!Number.isFinite(n) || n <= 0) {
+          process.stderr.write('render.mjs: --zoom needs a positive megapixel value\n');
+          process.exit(2);
+        }
+        opts.zoom = n;
+        break;
+      }
       case '-h':
       case '--help':
         process.stdout.write(HELP);
@@ -290,6 +431,7 @@ function main() {
   const opts = parseArgs(process.argv.slice(2));
   const reportDir = opts.reportDir ?? DEFAULT_REPORT_DIR;
   const historyPath = opts.historyPath ?? join(reportDir, 'benchmark_history.json');
+  const resultsPath = opts.resultsPath ?? join(reportDir, 'benchmark_results.json');
   const scalabilityPath = opts.scalabilityPath ?? join(reportDir, 'scalability_results.json');
 
   const written = renderAll(opts);
@@ -306,13 +448,14 @@ function main() {
   //       run-bench.sh surfaces it.
   //   (3) inputs present + well-shaped but too little data (e.g. a single
   //       snapshot has no trend) → informational, exit 0.
-  const present = [historyPath, scalabilityPath].filter((p) => existsSync(p));
+  const present = [historyPath, resultsPath, scalabilityPath].filter((p) => existsSync(p));
   if (present.length === 0) {
     process.stdout.write('render.mjs: no benchmark JSON found — nothing to render.\n');
     return;
   }
   const drift = [];
   if (existsSync(historyPath) && !historyShapeOk(readJson(historyPath))) drift.push(historyPath);
+  if (existsSync(resultsPath) && !resultsShapeOk(readJson(resultsPath))) drift.push(resultsPath);
   if (existsSync(scalabilityPath) && !scalabilityShapeOk(readJson(scalabilityPath))) {
     drift.push(scalabilityPath);
   }
@@ -325,7 +468,7 @@ function main() {
   }
   process.stdout.write(
     'render.mjs: inputs present but produced no charts ' +
-      '(a history trend needs >= 2 snapshots; scalability needs >= 1 point).\n',
+      '(a history trend needs >= 2 snapshots; grouped bars need >= 1 run; scalability needs >= 1 point).\n',
   );
 }
 

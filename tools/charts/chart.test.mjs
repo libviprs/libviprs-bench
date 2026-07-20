@@ -485,14 +485,13 @@ test('#43 xMin zooms into the large-image regime: filters out smaller sizes and 
   assert.equal(fullLine.length, 4, 'full-range plots every size');
   assert.equal(zoomLine.length, 2, 'zoom keeps only the >= xMin sizes (10, 100 MP)');
 
-  // After the rescale the smallest retained size (10 MP) snaps to the left
-  // frame (padding = 64), where in the full-range plot it sat mid-axis.
+  // Lines are size-sorted, so index 2 is the 10 MP point in the full plot and
+  // index 0 is the 10 MP point after zoom. The rescale snaps it from mid-axis
+  // to the left frame (padding = 64), proving the axis was re-scaled, not just
+  // filtered.
   const padding = 64;
   assert.ok(Math.abs(zoomLine[0].x - padding) < 1e-3, '10 MP sits on the left frame after zoom');
-  assert.ok(
-    fullLine.find((p) => Math.abs(p.x - padding) < 1e-3) === undefined,
-    '10 MP is NOT on the left frame in the full-range plot',
-  );
+  assert.ok(fullLine[2].x - padding > 50, '10 MP sits mid-axis in the full-range plot');
 });
 
 test('#43 default (no xMin) leaves the full-range rendering unchanged', () => {

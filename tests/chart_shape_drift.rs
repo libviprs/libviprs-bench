@@ -109,18 +109,24 @@ fn walk_rs(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
 
 #[test]
 fn plotters_is_fully_removed_from_src() {
-    // The JS migration is finished (#42): no `src/*.rs` may reference plotters.
+    // The JS migration is finished (#42): no `src/*.rs` may pull in the plotters
+    // crate. We look for a real CODE reference (`use plotters`, a `plotters::`
+    // path, or an `extern crate`), not any mention — a comment documenting the
+    // removal is fine and must not trip the guard.
     let src = crate_root().join("src");
     let mut offenders = Vec::new();
     walk_rs(&src, &mut |path, text| {
-        if text.contains("plotters") {
+        let referenced = text.contains("use plotters")
+            || text.contains("plotters::")
+            || text.contains("extern crate plotters");
+        if referenced {
             offenders.push(path.to_path_buf());
         }
     });
     assert!(
         offenders.is_empty(),
         "plotters must be fully removed from src/ once the JS chart migration is finished; \
-         found references in {offenders:?}"
+         found a code reference in {offenders:?}"
     );
 }
 

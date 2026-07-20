@@ -38,7 +38,6 @@ libc = "0.2"
 # libvips series through a different-series binding is its own mismatched
 # oracle (issue #33); `tests/libvips_provenance.rs` asserts they stay aligned.
 libvips-rs = { version = "8.18", optional = true }
-plotters = { version = "0.3", default-features = false, features = ["svg_backend", "line_series"] }
 polars = { version = "0.50", optional = true, default-features = false, features = [
     "lazy",
     "csv",

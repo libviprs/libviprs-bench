@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 
 import {
   COLORS,
+  ENGINE_ORDER,
   renderMetricGroupedBars,
   renderWallTimeBars,
   renderPeakMemoryBars,
@@ -92,10 +93,11 @@ test('each engine gets one bar per config at an increasing x, taller for the big
   }
 });
 
-test('engines are drawn in canonical order within a group (bar x increases by engine)', () => {
+test('engines are drawn in canonical order within a group (bar x increases by ENGINE_ORDER)', () => {
   const svg = renderMetricGroupedBars(metricRows(), { title: 't', unitSuffix: 'ms' });
-  // First-group x for each engine, in ENGINE_ORDER, must strictly increase.
-  const firstGroupX = ENGINES.map((e) => barsFor(svg, COLORS[e])[0].x);
+  // First-group bar x, walked in canonical ENGINE_ORDER (libvips leads), must
+  // strictly increase — the bars are laid out in ENGINE_ORDER, not input order.
+  const firstGroupX = ENGINE_ORDER.map((e) => barsFor(svg, COLORS[e])[0].x);
   for (let i = 1; i < firstGroupX.length; i++) {
     assert.ok(firstGroupX[i] > firstGroupX[i - 1], 'engine bars ordered left→right by ENGINE_ORDER');
   }

@@ -19,18 +19,26 @@
  *     extended to true LOG-LOG axes — log10 on BOTH the megapixel x-axis and
  *     the metric y-axis — with the log domain snapped to enclosing decades so
  *     the endpoints land on labeled decade ticks (#21/#34). A LINEAR mode is
- *     kept behind `opts.logScale = false`.
+ *     kept behind `opts.logScale = false`, and an optional `opts.xMin` zooms
+ *     into the large-image regime (#43, the opt-in replacement for the removed
+ *     Rust `--crop`).
+ *   - {@link renderMetricGroupedBars} (+ {@link renderWallTimeBars} /
+ *     {@link renderPeakMemoryBars} / {@link renderThroughputBars} /
+ *     {@link renderEfficiencyBars} / {@link renderResourceCostBars}) from
+ *     causl's `renderMetricGroupedBars` family: one column group per benchmark
+ *     config, one bar per engine, driven from benchmark_results.json — the port
+ *     that retires the Rust plotters `generate_charts` (#42).
  *   - the shared helpers: {@link COLORS}, {@link ENGINE_ORDER},
  *     {@link formatNumber}, {@link svgPlaceholder}, and the SVG scaffolding /
  *     font conventions, so both libviprs charts read like the causl-bench
  *     article.
  *
- * Cross-stack note: the six grouped-bar `chart_*.svg` comparison charts are
- * still emitted in Rust (`libviprs_bench::generate_charts`, plotters). The
- * engine palette below is therefore intentionally MIRRORED from that Rust
- * `COLOR_VIPS/COLOR_MONO/COLOR_STREAM/COLOR_MR` set and must be kept in
- * lockstep with it until that half is ported too (see the tracking issue for
- * completing the JS migration and dropping plotters).
+ * Cross-stack note: the grouped-bar `chart_*.svg` comparison charts are now
+ * rendered here too ({@link renderMetricGroupedBars} + its per-metric
+ * wrappers), completing the JS migration and retiring the Rust plotters
+ * `generate_charts` (#42). The engine palette below is the hex equivalent of
+ * the RGB values those plotters emitters used, so the JS charts stay
+ * colour-identical to the prior report artifacts.
  *
  * Determinism (the article's CI-snapshot contract): every renderer is a pure
  * function of its input — canonical {@link ENGINE_ORDER} iteration (never a
@@ -388,7 +396,7 @@ export function renderHistoryTrend(points, opts = {}) {
  * legend swatch so the reader can tell it was benchmarked.
  *
  * @param {ReadonlyArray<{engine:string, megapixels:number, value:number}>} points
- * @param {{title?:string, xLabel?:string, yLabel?:string, unitSuffix?:string, width?:number, height?:number, logScale?:boolean}} opts
+ * @param {{title?:string, xLabel?:string, yLabel?:string, unitSuffix?:string, width?:number, height?:number, logScale?:boolean, xMin?:number}} opts
  * @returns {string} deterministic SVG
  */
 export function renderScalabilityChart(points, opts = {}) {
@@ -403,13 +411,28 @@ export function renderScalabilityChart(points, opts = {}) {
 
   if (points.length === 0) return svgPlaceholder(width, height, title || 'scalability');
 
+  // #43 large-image zoom: an optional xMin (minimum megapixels) restricts the
+  // chart to the large-image regime, re-scaling the axes to just the retained
+  // points — the opt-in replacement for the removed Rust `--crop`. The default
+  // (no xMin) keeps the full-range sweep, so the log-log full-range chart stays
+  // the default view. Everything downstream operates on the windowed set, so
+  // the domain snaps to the retained points and points below xMin simply drop
+  // out of view (they are not counted as "omitted", which is reserved for the
+  // <=0 / non-finite log-mode drops).
+  const xMin = Number.isFinite(opts.xMin) ? opts.xMin : null;
+  const windowed =
+    xMin === null
+      ? points
+      : points.filter((p) => Number.isFinite(p.megapixels) && p.megapixels >= xMin);
+  if (windowed.length === 0) return svgPlaceholder(width, height, title || 'scalability');
+
   // A point is plottable when both coordinates are finite and (in log mode)
   // strictly positive. Non-plottable points break the line, never bridge it.
   const plottable = (p) =>
     Number.isFinite(p.megapixels) &&
     Number.isFinite(p.value) &&
     (!logScale || (p.megapixels > 0 && p.value > 0));
-  const usable = points.filter(plottable);
+  const usable = windowed.filter(plottable);
   if (usable.length === 0) return svgPlaceholder(width, height, title || 'scalability');
 
   const xs = usable.map((p) => p.megapixels);
@@ -474,11 +497,11 @@ export function renderScalabilityChart(points, opts = {}) {
     })
     .join('');
 
-  const ordered = orderedEngines(points);
+  const ordered = orderedEngines(windowed);
   const seriesSvg = ordered
     .map((engine) => {
       // Size-sorted points that can be POSITIONED on the x-axis (finite MP).
-      const eng = points
+      const eng = windowed
         .filter((p) => p.engine === engine && Number.isFinite(p.megapixels))
         .sort((a, b) => a.megapixels - b.megapixels);
       if (eng.length === 0) return '';
@@ -517,17 +540,19 @@ export function renderScalabilityChart(points, opts = {}) {
     .join('');
 
   const modeTag = logScale ? 'log-log' : 'linear';
-  // Honest disclosure: how many input points fell out of the log plot.
-  const omitted = points.length - usable.length;
+  // Honest disclosure: how many IN-WINDOW points fell out of the log plot
+  // (the <=0 / non-finite drops; points below xMin are out of view, not
+  // "omitted").
+  const omitted = windowed.length - usable.length;
   const omittedNote =
     logScale && omitted > 0
       ? `<text x="${fmtCoord(width - 8)}" y="26" text-anchor="end" font-size="8" fill="#b26a00">${omitted} pt${omitted === 1 ? '' : 's'} &lt;=0 omitted</text>`
       : '';
 
-  // Legend keeps every engine with INPUT points (even none plottable), so a
-  // benchmarked-but-unplottable engine is still disclosed.
+  // Legend keeps every engine with INPUT points in the window (even none
+  // plottable), so a benchmarked-but-unplottable engine is still disclosed.
   const legend = ordered
-    .filter((engine) => points.some((p) => p.engine === engine))
+    .filter((engine) => windowed.some((p) => p.engine === engine))
     .map((engine, i) => {
       const x = plotL + i * 130;
       const y = height - 14;
@@ -538,4 +563,127 @@ export function renderScalabilityChart(points, opts = {}) {
   const axisLabels = `<text x="${fmtCoord((plotL + plotR) / 2)}" y="${fmtCoord(plotB + 30)}" text-anchor="middle" font-size="10" fill="#333">${escapeXml(xLabel)}</text><text x="14" y="${fmtCoord((plotT + plotB) / 2)}" text-anchor="middle" font-size="10" fill="#333" transform="rotate(-90 14 ${fmtCoord((plotT + plotB) / 2)})">${escapeXml(yLabel)}</text>`;
 
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" font-family="ui-sans-serif"><text x="${fmtCoord(width / 2)}" y="22" text-anchor="middle" font-size="13" font-weight="600">${escapeXml(title)}</text><text x="${fmtCoord(width - 8)}" y="14" text-anchor="end" font-size="8" fill="#999">${modeTag}</text>${omittedNote}${frame}${xMajor}${xMinor}${yMajor}${yMinor}${axisLabels}${seriesSvg}${legend}</svg>`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* #42 — grouped-bar comparison charts (the plotters port).                   */
+/*                                                                            */
+/* The JS port of causl-bench's renderMetricGroupedBars + its per-metric      */
+/* wrappers (renderWallTimeBars / renderPeakMemoryBars / renderThroughputBars */
+/* / renderResourceCostBars), adapted to libviprs: each CONFIG               */
+/* (`{w}x{h}_c{conc}`) is a column group and each group holds one bar per     */
+/* engine in canonical ENGINE_ORDER. These replace the Rust plotters         */
+/* `generate_charts` chart_*.svg emitters; render.mjs feeds them from         */
+/* benchmark_results.json (Vec<RunMetrics>).                                  */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Grouped-bar chart of one metric across every benchmark config — one column
+ * group per config, one bar per engine. `rows` are `{ config, engine, value }`
+ * records; the caller (render.mjs) feeds them in the config order it wants
+ * along the x-axis, and the groups preserve that first-appearance order.
+ *
+ * The bar slots and the legend cover the engines actually present in the data,
+ * in canonical {@link ENGINE_ORDER} (plus any non-canonical engine, drawn with
+ * a fallback colour), so the engine set is stable across every group and a
+ * missing `(config, engine)` cell renders as a zero-height bar. Deterministic:
+ * canonical iteration, all formatting through the shared helpers, no
+ * timestamps / rng.
+ *
+ * @param {ReadonlyArray<{config:string, engine:string, value:number}>} rows
+ * @param {{title?:string, unitSuffix?:string, width?:number, height?:number}} opts
+ * @returns {string} deterministic SVG
+ */
+export function renderMetricGroupedBars(rows, opts = {}) {
+  const width = opts.width ?? 880;
+  const height = opts.height ?? 320;
+  const padding = 56;
+  const legendH = 26;
+  const title = opts.title ?? '';
+  const unitSuffix = opts.unitSuffix ?? '';
+  if (rows.length === 0) return svgPlaceholder(width, height, title || 'comparison');
+
+  // Config groups in first-appearance order (render.mjs feeds them numerically
+  // sorted). `ordered` keeps the FULL canonical order + extras so the palette
+  // stays stable; `engines` is the subset actually present, driving the bar
+  // slots and the legend (the shared convention with the line renderers).
+  const configs = [];
+  const seenCfg = new Set();
+  for (const r of rows) {
+    if (!seenCfg.has(r.config)) {
+      seenCfg.add(r.config);
+      configs.push(r.config);
+    }
+  }
+  const ordered = orderedEngines(rows);
+  const engines = ordered.filter((engine) => rows.some((r) => r.engine === engine));
+  const byKey = new Map();
+  for (const r of rows) byKey.set(`${r.config}|${r.engine}`, r.value);
+
+  // Scale to the largest finite bar; a missing / NaN cell contributes no height.
+  const maxV = maxOf(rows.map((r) => r.value).filter(Number.isFinite), 0) || 1;
+  const groupW = (width - 2 * padding) / configs.length;
+  const barW = (groupW - 16) / engines.length;
+  const plotH = height - 2 * padding - legendH;
+  const yFor = (v) => (Number.isFinite(v) && v > 0 ? (v / maxV) * plotH : 0);
+
+  const groups = configs
+    .map((config, gi) => {
+      const gx = padding + gi * groupW;
+      const bars = engines
+        .map((engine, ei) => {
+          const v = byKey.get(`${config}|${engine}`) ?? 0;
+          const h = yFor(v);
+          const x = gx + 8 + ei * barW;
+          const y = height - padding - legendH - h;
+          const label = `${formatNumber(v)}${escapeXml(unitSuffix)}`;
+          return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(y)}" width="${fmtCoord(barW)}" height="${fmtCoord(h)}" fill="${colorFor(engine, ordered)}"/><text x="${fmtCoord(x + barW / 2)}" y="${fmtCoord(y - 3)}" text-anchor="middle" font-size="9" fill="#444">${label}</text></g>`;
+        })
+        .join('');
+      const sx = gx + groupW / 2;
+      const sy = height - padding - legendH + 14;
+      return `<g>${bars}<text x="${fmtCoord(sx)}" y="${fmtCoord(sy)}" text-anchor="middle" font-size="11" fill="#222" font-weight="500">${escapeXml(config)}</text></g>`;
+    })
+    .join('');
+
+  const legendY = height - 12;
+  const legend = engines
+    .map((engine, i) => {
+      const x = padding + i * 150;
+      return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(legendY - 10)}" width="10" height="10" fill="${colorFor(engine, ordered)}"/><text x="${fmtCoord(x + 14)}" y="${fmtCoord(legendY - 1)}" font-size="10" fill="#333">${escapeXml(labelFor(engine))}</text></g>`;
+    })
+    .join('');
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" font-family="ui-sans-serif"><text x="${fmtCoord(width / 2)}" y="22" text-anchor="middle" font-size="13" font-weight="600">${escapeXml(title)}</text>${groups}${legend}</svg>`;
+}
+
+/** Wall time per config (ms, median). Lower is better. */
+export function renderWallTimeBars(rows) {
+  return renderMetricGroupedBars(rows, { title: 'Wall Time (lower is better)', unitSuffix: 'ms' });
+}
+
+/** Peak RSS per config (MB) — the cross-engine-comparable memory basis. Lower is better. */
+export function renderPeakMemoryBars(rows) {
+  return renderMetricGroupedBars(rows, { title: 'Peak RSS (lower is better)', unitSuffix: 'MB' });
+}
+
+/** Raw throughput per config (tiles/second). Higher is better. */
+export function renderThroughputBars(rows) {
+  return renderMetricGroupedBars(rows, { title: 'Raw Throughput (higher is better)', unitSuffix: '' });
+}
+
+/** Memory efficiency per config (tiles/second per RSS-MB). Higher is better. */
+export function renderEfficiencyBars(rows) {
+  return renderMetricGroupedBars(rows, {
+    title: 'Memory Efficiency — Tiles/s per RSS-MB (higher is better)',
+    unitSuffix: '',
+  });
+}
+
+/** Resource cost per config (RSS-MB·s per tile). Lower is better. */
+export function renderResourceCostBars(rows) {
+  return renderMetricGroupedBars(rows, {
+    title: 'Resource Cost — RSS-MB·s per Tile (lower is better)',
+    unitSuffix: '',
+  });
 }
