@@ -46,9 +46,11 @@ fn recorded_libvips_version_parses_to_expected_major_minor() {
         "the pinned libvips must be on the 8.18 series the bindings target (#33)"
     );
 
-    // Raw `vips --version` output ("vips-8.18.4") parses identically to the
-    // `vips-`-stripped form provenance stores ("8.18.4").
+    // Raw `vips --version` output ("vips-8.18.4"), a GitHub tag ("v8.18"), and
+    // the `vips-`-stripped form provenance stores ("8.18.4") all parse
+    // identically — prefix handling is shared with `pin_check`'s triple parser.
     assert_eq!(parse_libvips_major_minor("vips-8.18.4"), Some((8, 18)));
+    assert_eq!(parse_libvips_major_minor("v8.18"), Some((8, 18)));
     assert_eq!(parse_libvips_major_minor("8.18.4"), Some((8, 18)));
     assert_eq!(
         parse_libvips_major_minor("vips-8.18.4"),
@@ -319,9 +321,13 @@ fn dockerfile_pins_apt_to_a_debian_snapshot() {
 /// image, not two that can drift apart.
 #[test]
 fn apt_snapshot_matches_the_pinned_base_image_date() {
-    let base = base_image_date(DOCKERFILE)
+    // Both dates are read from the comment-stripped build instructions, so the
+    // `(bookworm-20250929)` mention in the header prose can never stand in for
+    // the real `FROM` tag.
+    let instructions = dockerfile_instructions(DOCKERFILE);
+    let base = base_image_date(&instructions)
         .expect("a Debian base image must carry a `bookworm-YYYYMMDD` date (#35)");
-    let snap = snapshot_date(&dockerfile_instructions(DOCKERFILE))
+    let snap = snapshot_date(&instructions)
         .expect("the apt snapshot must carry a `YYYYMMDD` timestamp (#35)");
     assert_eq!(
         base, snap,
@@ -404,6 +410,11 @@ fn is_snapshot_timestamp(token: &str) -> bool {
 /// Extract the `YYYYMMDD` date from the first `bookworm-YYYYMMDD` base-image tag
 /// (the dated Debian image); ignores undated `-bookworm` tags and the
 /// `bookworm-updates` / `bookworm-security` suite names.
+///
+/// Reads the date from the base image's *tag* string, not its `@sha256:`
+/// digest: a digest's build date is not knowable offline, so this asserts the
+/// tag and the apt snapshot describe the same day. Feed it the comment-stripped
+/// [`dockerfile_instructions`] so it reads the real `FROM` tag, not header prose.
 fn base_image_date(dockerfile: &str) -> Option<String> {
     dockerfile.split("bookworm-").skip(1).find_map(|rest| {
         let date: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();

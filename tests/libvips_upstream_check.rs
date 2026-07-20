@@ -5,9 +5,11 @@
 //! Dockerfile). A pin ages silently: upstream ships a newer release, or —
 //! worse — re-cuts the pinned tarball so the recorded digest no longer matches
 //! the bytes served. This validator flags both against the upstream GitHub
-//! releases feed. It is deliberately *on-demand* (a `tools/` script plus an
-//! `#[ignore]`d live test), never a PR gate: this repo gates locally and skips
-//! GitHub CI on PR commits.
+//! releases feed. It is deliberately *on-demand* (a `tools/` script that pipes
+//! the feed to the `check-libvips-pin` binary, plus an `#[ignore]`d live test),
+//! never a PR gate: this repo gates locally and skips GitHub CI on PR commits.
+//! The script, the binary, and the live test all call the one
+//! `pin_check::classify_libvips_pin` — there is no parallel classifier.
 //!
 //! These are cheap, host-independent checks in the style of
 //! `tests/libvips_provenance.rs` / `tests/pdfium_provenance.rs`: the
@@ -16,7 +18,7 @@
 //! `GET /repos/libvips/libvips/releases` response) so no network is touched.
 //! One `#[ignore]`d test performs the real fetch on demand.
 
-use libviprs_bench::provenance::{
+use libviprs_bench::pin_check::{
     LibvipsPinError, LibvipsPinStatus, PINNED_LIBVIPS_SHA256, PINNED_LIBVIPS_VERSION,
     classify_libvips_pin, parse_libvips_version,
 };
@@ -162,10 +164,13 @@ fn classify_errors_on_malformed_payload() {
     ));
 }
 
-/// The #36 drift guard: the committed pin (the `provenance` constants) must
-/// agree with a real upstream releases payload — right version, right digest,
-/// and the latest stable at capture time. This is exactly the drift #36 exists
-/// to catch. When the pin is bumped, re-capture
+/// Commit-time consistency guard: the committed pin (the `provenance`
+/// constants) must agree with the committed upstream sample — right version,
+/// right digest, latest stable at capture time. Because the pin and the fixture
+/// are committed together and agree by construction, this can only ever catch a
+/// copy-paste slip at commit time; it does NOT detect a pin aging against *live*
+/// upstream — that is the job of [`live_upstream_pin_is_current`] and
+/// `tools/check-libvips-pin.sh`. When the pin is bumped, re-capture
 /// `tests/fixtures/libvips_releases_sample.json` in the same edit.
 #[test]
 fn recorded_pin_matches_the_captured_upstream_sample() {
@@ -183,19 +188,74 @@ fn recorded_pin_matches_the_captured_upstream_sample() {
     );
 }
 
-/// The committed on-demand validator script must query the upstream feed and
-/// read the pin from the single source of truth (provenance.rs), not a copy
-/// that can silently drift. Cheap source-level guard, no network.
+/// The committed on-demand validator script must fetch the upstream feed and
+/// delegate classification to the single-source `check-libvips-pin` binary
+/// (which calls [`classify_libvips_pin`]), never reimplement it shell-side. A
+/// parallel jq/bash classifier is exactly what diverged from the Rust logic in
+/// the #35/#36 review (a null digest read as a false MISMATCH; a mis-flagged
+/// pre-release ranked as "latest"). Cheap source-level guard, no network.
 #[test]
-fn on_demand_validator_script_is_well_formed() {
+fn on_demand_validator_script_delegates_to_the_single_classifier() {
     const SCRIPT: &str = include_str!("../tools/check-libvips-pin.sh");
     assert!(
         SCRIPT.contains("api.github.com/repos/libvips/libvips/releases"),
         "validator must query the upstream libvips releases API (#36)"
     );
     assert!(
-        SCRIPT.contains("PINNED_LIBVIPS_VERSION") && SCRIPT.contains("PINNED_LIBVIPS_SHA256"),
-        "validator must read the pin from provenance.rs so the two cannot drift (#36)"
+        SCRIPT.contains("--bin check-libvips-pin"),
+        "validator must pipe the feed to the `check-libvips-pin` binary so the \
+         single `classify_libvips_pin` is the only classifier (#36)"
+    );
+    // Guard against a regression to a parallel shell-side classifier: the old
+    // jq `sort_by` "latest stable" ranking is precisely what diverged.
+    assert!(
+        !SCRIPT.contains("sort_by"),
+        "the shell must not re-derive 'latest stable' itself; that jq ranking \
+         diverged from `classify_libvips_pin` (#35/#36 review)"
+    );
+}
+
+/// The version compare and the tarball-digest lookup must agree on the input
+/// form. A `v`- or `vips-`-prefixed pin (both accepted by
+/// [`parse_libvips_version`]) must still locate the
+/// `vips-<major.minor.patch>.tar.xz` asset and validate — the pre-review code
+/// built the asset name from the raw argument, so a `v8.18.4` pin produced
+/// `vips-v8.18.4.tar.xz`, matched nothing, and read as a false
+/// `PinnedReleaseNotFound` for a perfectly valid pin.
+#[test]
+fn classify_validates_prefixed_pin_forms() {
+    for pin in ["v8.18.4", "vips-8.18.4", "8.18.4"] {
+        let status = classify_libvips_pin(RELEASES_SAMPLE, pin, V8_18_4_SHA256)
+            .unwrap_or_else(|e| panic!("sample classifies for pin {pin}: {e}"));
+        assert_eq!(
+            status,
+            LibvipsPinStatus::UpToDate,
+            "pin form {pin} must normalize and validate, not read as not-found"
+        );
+    }
+}
+
+/// Only a finished stable release may supply the digest the pin is validated
+/// against. Here a `draft:true` `v8.18.4` carrying a bogus digest precedes the
+/// real stable `v8.18.4` in document order; the verdict must stay
+/// [`LibvipsPinStatus::UpToDate`], not a false `Sha256Mismatch` driven by the
+/// draft's digest (the pre-review lookup filtered on version only).
+#[test]
+fn classify_ignores_a_draft_same_version_digest() {
+    let bogus = "dead".repeat(16); // 64-hex, != the real v8.18.4 digest
+    let feed = format!(
+        r#"[
+            {{"tag_name":"v8.18.4","draft":true,"prerelease":false,
+              "assets":[{{"name":"vips-8.18.4.tar.xz","digest":"sha256:{bogus}"}}]}},
+            {{"tag_name":"v8.18.4","draft":false,"prerelease":false,
+              "assets":[{{"name":"vips-8.18.4.tar.xz","digest":"sha256:{V8_18_4_SHA256}"}}]}}
+        ]"#
+    );
+    let status = classify_libvips_pin(&feed, "8.18.4", V8_18_4_SHA256).expect("feed classifies");
+    assert_eq!(
+        status,
+        LibvipsPinStatus::UpToDate,
+        "a draft release's digest must never drive the pin verdict"
     );
 }
 

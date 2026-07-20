@@ -28,6 +28,13 @@
 #                     the live bookworm mirror (#35, closing the #33 scope gap)
 # The Rust and Debian base images are digest-pinned (`@sha256:`) on the FROM
 # lines below, so no layer floats on a mutable tag either (#35).
+#
+# Availability note (#35): pinning apt to snapshot.debian.org routes every
+# package fetch through a single archive host that is historically slow and can
+# be briefly rate-limited or degraded. That is the deliberate cost of a frozen
+# mirror; apt is set to retry and the libvips/PDFium tarball fetches use
+# `curl --retry`, so a transient snapshot blip should be re-run rather than
+# treated as a real failure.
 # ---------------------------------------------------------------------------
 ARG PDFIUM_RELEASE=pdfium-7881
 # Upstream libvips release compiled from source (issue #33). Kept in lockstep
@@ -52,6 +59,10 @@ FROM debian:bookworm-20250929-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e0
 # stage's `curl` resolves from a frozen mirror (#35). See the builder stage for
 # the full rationale; the deb822 source is rewritten wholesale (keeping the
 # stock archive keyring) so the pin is independent of the base image's layout.
+# NOTE: this deb822 snapshot block is duplicated verbatim in the builder stage
+# below (the canonical copy). The builder is `rust:*-bookworm` and cannot share
+# this Debian base image, so the two are kept intentionally in sync — edit both
+# together when either changes.
 ARG DEBIAN_SNAPSHOT
 RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
         "${DEBIAN_SNAPSHOT}" "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list.d/debian.sources && \
