@@ -68,7 +68,6 @@ fn streaming_budget_for(width: u32, tile_size: u32) -> u64 {
     (min_strip_bytes * 2).max(STREAMING_BUDGET_FLOOR)
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScalabilityPoint {
     width: u32,
