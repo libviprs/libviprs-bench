@@ -100,9 +100,13 @@ test('the history time chart reflects the fixture gap (streaming broken)', () =>
 
 test('missing input files are skipped, not fatal', () => {
   const outDir = freshOut();
+  // Every input path is overridden to a missing file, including resultsPath —
+  // otherwise it defaults to the real report dir and a stray benchmark_results.json
+  // (e.g. left by a local `report` run) would make this non-hermetic.
   const written = renderAll({
     historyPath: join(FIX, 'does-not-exist.json'),
     scalabilityPath: join(FIX, 'nope.json'),
+    resultsPath: join(FIX, 'also-missing.json'),
     outDir,
   });
   assert.deepEqual(written, [], 'nothing written when no JSON is present');

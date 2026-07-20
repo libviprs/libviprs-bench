@@ -27,8 +27,36 @@ MEMORY_MB=""
 BENCH_CMD="scalability"
 VERSIONS=""
 
+usage() {
+    cat <<'EOF'
+run-bench.sh — build and run libviprs benchmarks (in Docker by default)
+
+Usage:
+  ./run-bench.sh [scalability|report|versions] [options]
+
+Commands (default: scalability):
+  scalability   Engine scalability sweep  -> report/scalability_results.json
+  report        Full comparison matrix    -> report/benchmark_{results,history}.json
+  versions      Release-history axis (requires --versions)
+
+Options:
+  --versions <tag,tag,HEAD>   Refs to benchmark for the 'versions' command
+  --arch <arm|amd64>          Force the target architecture (default: host uname -m)
+  --memory <MB>               Container memory limit in MB (default: 4096)
+  --no-build                  Run on the host without Docker (needs libvips-dev + pkg-config)
+  -h, --help                  Show this help and exit
+
+After the harness writes its JSON, the SVG charts are rendered on the host by
+tools/charts/render.mjs (needs Node; skipped with a hint if Node is absent).
+EOF
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        -h|--help)
+            usage
+            exit 0
+            ;;
         --no-build) NO_BUILD=true ;;
         --memory)
             shift
@@ -53,8 +81,8 @@ while [[ $# -gt 0 ]]; do
             BENCH_CMD="version_matrix"
             ;;
         *)
-            echo "Unknown argument: $1"
-            echo "Usage: $0 [scalability|report|versions] [--versions v0.2.0,v0.3.1,HEAD] [--arch arm|amd64] [--memory MB] [--no-build]"
+            echo "Unknown argument: $1" >&2
+            echo "Run '$0 --help' for usage." >&2
             exit 1
             ;;
     esac

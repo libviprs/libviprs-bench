@@ -1,13 +1,19 @@
-//! Generates flame graphs for monolithic and streaming engines.
+//! Generates time-weighted flame graphs for all three libviprs engines.
 //!
-//! Uses tracing-based self-instrumentation and the inferno crate to produce
-//! SVG flame graphs in the `report/` directory.
+//! Drives each engine on a 4096x4096 image under a [`CollectingObserver`], then
+//! folds the captured [`EngineEvent`](libviprs::EngineEvent) stream into
+//! inferno's `stack <weight>` format via
+//! [`libviprs_bench::flame::events_to_folded_stacks`] and renders an SVG per
+//! engine. Frame WIDTH is TIME: each tile is weighted by the wall-clock gap since
+//! the previous tile (in microseconds), not by a flat sample count, so a level or
+//! tile that took longer draws wider.
 //!
-//! Run: cargo run --bin flamegraph
+//! Run: cargo run --release --bin flamegraph
 //!
-//! This binary profiles both engines on a 4096x4096 image and writes:
+//! Writes, into the `report/` directory:
 //!   report/flamegraph_monolithic.svg
 //!   report/flamegraph_streaming.svg
+//!   report/flamegraph_mapreduce.svg
 
 use std::fs::{self, File};
 use std::io::BufWriter;
@@ -20,6 +26,7 @@ use libviprs::{
     CollectingObserver, EngineBuilder, EngineConfig, EngineEvent, EngineKind, Layout, MemorySink,
     PyramidPlanner, RasterStripSource,
 };
+use libviprs_bench::flame::{FLAMEGRAPH_COUNT_NAME, events_to_folded_stacks};
 use libviprs_bench::{gradient_raster, streaming_budget_for};
 use std::sync::Arc;
 
@@ -27,86 +34,23 @@ const WIDTH: u32 = 4096;
 const HEIGHT: u32 = 4096;
 const TILE_SIZE: u32 = 256;
 
-/// Collect a folded-stack trace from engine observer events.
-///
-/// Converts EngineEvent sequences into a folded stack format that inferno
-/// can render as a flame graph. Each event becomes a stack frame with its
-/// duration encoded as the sample count.
-fn events_to_folded_stacks(events: &[EngineEvent], engine_name: &str) -> Vec<String> {
-    let mut stacks = Vec::new();
-    let mut current_level: Option<u32> = None;
-    let mut _level_tiles: u64 = 0;
-
-    for event in events {
-        match event {
-            EngineEvent::LevelStarted {
-                level, tile_count, ..
-            } => {
-                current_level = Some(*level);
-                _level_tiles = 0;
-                stacks.push(format!("{engine_name};level_{level}_start {tile_count}"));
-            }
-            EngineEvent::TileCompleted { coord, .. } => {
-                _level_tiles += 1;
-                if let Some(lvl) = current_level {
-                    stacks.push(format!(
-                        "{engine_name};level_{lvl};tile_r{}_c{} 1",
-                        coord.row, coord.col
-                    ));
-                }
-            }
-            EngineEvent::LevelCompleted {
-                level,
-                tiles_produced,
-            } => {
-                stacks.push(format!(
-                    "{engine_name};level_{level}_complete {tiles_produced}"
-                ));
-            }
-            EngineEvent::StripRendered {
-                strip_index,
-                total_strips,
-            } => {
-                stacks.push(format!(
-                    "{engine_name};strip_{strip_index}_of_{total_strips} 1"
-                ));
-            }
-            EngineEvent::BatchStarted {
-                batch_index,
-                strips_in_batch,
-                ..
-            } => {
-                stacks.push(format!(
-                    "{engine_name};batch_{batch_index}_{strips_in_batch}strips 1"
-                ));
-            }
-            EngineEvent::BatchCompleted {
-                batch_index,
-                tiles_produced,
-            } => {
-                stacks.push(format!(
-                    "{engine_name};batch_{batch_index}_done_{tiles_produced}tiles 1"
-                ));
-            }
-            EngineEvent::Finished {
-                total_tiles,
-                levels,
-            } => {
-                stacks.push(format!(
-                    "{engine_name};finished_{levels}levels_{total_tiles}tiles 1"
-                ));
-            }
-            _ => {}
-        }
+fn generate_flamegraph(stacks: &[String], output_path: &Path, title: &str) {
+    if stacks.is_empty() {
+        // inferno's `from_reader` errors on empty input, which the `.expect`
+        // below would turn into a panic. A zero-tile run (no `TileCompleted`
+        // events) legitimately folds to no frames — skip the SVG with a notice
+        // rather than abort. Latent for the fixed 4096² workload (which always
+        // produces tiles), but #25 dropped the marker frames that used to
+        // guarantee non-empty output, so guard the regression (#25 review).
+        eprintln!("  (no tiles produced — skipping {})", output_path.display());
+        return;
     }
 
-    stacks
-}
-
-fn generate_flamegraph(stacks: &[String], output_path: &Path, title: &str) {
     let mut opts = Options::default();
     opts.title = title.to_string();
-    opts.count_name = "events".to_string();
+    // The sample unit is microseconds of wall time (see the flame module), not a
+    // count of events, so inferno's hover/legend reads in time.
+    opts.count_name = FLAMEGRAPH_COUNT_NAME.to_string();
     opts.min_width = 0.1;
 
     let file = File::create(output_path).expect("create flamegraph file");
@@ -167,7 +111,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generate_flamegraph(
             &stacks,
             &path,
-            "libviprs monolithic engine — event flame graph",
+            "libviprs monolithic engine — time-weighted flame graph \
+             (per-tile width = µs; serial engine, faithful per tile)",
         );
         println!("  → {}", path.display());
     }
@@ -207,7 +152,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generate_flamegraph(
             &stacks,
             &path,
-            "libviprs streaming engine — event flame graph",
+            "libviprs streaming engine — time-weighted flame graph \
+             (width = µs; read at level/root — per-tile widths are strip-emission cadence)",
         );
         println!("  → {}", path.display());
     }
@@ -252,7 +198,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         generate_flamegraph(
             &stacks,
             &path,
-            "libviprs MapReduce engine — event flame graph",
+            "libviprs MapReduce engine — time-weighted flame graph \
+             (width = µs; read at level/root — per-tile widths are emission cadence)",
         );
         println!("  → {}", path.display());
     }

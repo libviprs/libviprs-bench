@@ -160,11 +160,14 @@ function threadCap(conc) {
 export function buildHistoryCharts(snapshots) {
   const out = [];
   if (!Array.isArray(snapshots) || snapshots.length < 2) return out;
+  // Both trended metrics are lower-is-better; the title states it so a downward
+  // trend line reads unambiguously as an improvement.
   const metrics = [
-    { suffix: 'time', label: 'Wall Time', unitSuffix: 'ms', valueOf: (r) => durationMs(r.wall_time) },
+    { suffix: 'time', label: 'Wall Time', direction: 'lower is better', unitSuffix: 'ms', valueOf: (r) => durationMs(r.wall_time) },
     {
       suffix: 'memory',
       label: 'Peak RSS',
+      direction: 'lower is better',
       unitSuffix: 'MB',
       // `peak_rss_bytes` is `#[serde(default)] = 0`, where 0 means UNKNOWN
       // (legacy history predating the field), not a real zero-memory run.
@@ -179,7 +182,7 @@ export function buildHistoryCharts(snapshots) {
       const runs = new Set(points.map((p) => p.runIndex));
       if (runs.size < 2) continue; // need >= 2 snapshots for a trend
       const svg = renderHistoryTrend(points, {
-        title: `${metric.label} History — ${config.width}x${config.height} c${config.concurrency}`,
+        title: `${metric.label} History — ${config.width}x${config.height} c${config.concurrency} (${metric.direction})`,
         unitSuffix: metric.unitSuffix,
       });
       out.push({ filename: `chart_history_${config.key}_${metric.suffix}.svg`, svg });
@@ -247,15 +250,19 @@ export function buildComparisonCharts(results) {
 export function buildScalabilityCharts(points, { linear = false, xMin = null } = {}) {
   const out = [];
   if (!Array.isArray(points) || points.length === 0) return out;
+  // Each title names the metric's unit and its better-direction (higher/lower),
+  // matching the grouped-bar comparison charts, so a reader never has to guess
+  // whether a rising line is good or bad. The primary throughput metric is
+  // TILES/s (pyramid tiles), never pixels/s.
   const metrics = [
-    { suffix: 'wall_time', title: 'Wall Time Scalability', yLabel: 'Time (ms)', unitSuffix: 'ms', valueOf: (p) => p.wall_time_ms },
+    { suffix: 'wall_time', title: 'Wall Time Scalability (lower is better)', yLabel: 'Time (ms)', unitSuffix: 'ms', valueOf: (p) => p.wall_time_ms },
     // `peak_rss_mb ?? peak_memory_mb` mirrors the Rust
     // `#[serde(alias = "peak_memory_mb")]` so pre-#153 scalability JSON that
     // still uses the old field name is read, not silently dropped.
-    { suffix: 'peak_memory', title: 'Peak RSS Scalability', yLabel: 'Peak RSS (MB)', unitSuffix: 'MB', valueOf: (p) => p.peak_rss_mb ?? p.peak_memory_mb },
-    { suffix: 'throughput', title: 'Throughput Scalability', yLabel: 'Tiles/s', unitSuffix: '', valueOf: (p) => p.tiles_per_second },
-    { suffix: 'efficiency', title: 'Memory Efficiency — Tiles/s per RSS-MB', yLabel: 'Tiles/s/RSS-MB', unitSuffix: '', valueOf: (p) => p.tiles_per_second_per_mb },
-    { suffix: 'resource_cost', title: 'Resource Cost — RSS-MB·s per Tile', yLabel: 'RSS-MB·s/tile', unitSuffix: '', valueOf: (p) => p.resource_cost },
+    { suffix: 'peak_memory', title: 'Peak RSS Scalability (lower is better)', yLabel: 'Peak RSS (MB)', unitSuffix: 'MB', valueOf: (p) => p.peak_rss_mb ?? p.peak_memory_mb },
+    { suffix: 'throughput', title: 'Throughput Scalability — Tiles/s (higher is better)', yLabel: 'Tiles/s', unitSuffix: '', valueOf: (p) => p.tiles_per_second },
+    { suffix: 'efficiency', title: 'Memory Efficiency — Tiles/s per RSS-MB (higher is better)', yLabel: 'Tiles/s/RSS-MB', unitSuffix: '', valueOf: (p) => p.tiles_per_second_per_mb },
+    { suffix: 'resource_cost', title: 'Resource Cost — RSS-MB·s per Tile (lower is better)', yLabel: 'RSS-MB·s/tile', unitSuffix: '', valueOf: (p) => p.resource_cost },
   ];
   const zoomed = Number.isFinite(xMin);
   const suffix = zoomed ? '_zoom' : '';

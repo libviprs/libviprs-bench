@@ -216,6 +216,12 @@ fn write_markdown_report(df: &DataFrame, versions: &[String], path: &PathBuf) {
          delta vs the previous version. Columns are one per \
          `version@short_sha` on record, ordered by (semver, timestamp).\n\n",
     );
+    out.push_str(
+        "Each metric heading states its unit and its better-direction (higher- or \
+         lower-is-better). Delta markers: ✅ moved in the better direction; ⚠️ regressed; \
+         ≈ within the combined 95% CI (a statistical tie); `env≠` measured in a different \
+         environment (not comparable — see the fingerprint).\n\n",
+    );
 
     // The size axis is derived from the frame; the version (column) axis is
     // supplied pre-ordered by (semver, timestamp) so releases read in release
@@ -244,7 +250,12 @@ fn write_markdown_report(df: &DataFrame, versions: &[String], path: &PathBuf) {
             ),
         ] {
             let (col, title, higher_is_better, ci_col) = metric;
-            out.push_str(&format!("### {title}\n\n"));
+            let direction = if higher_is_better {
+                "higher is better"
+            } else {
+                "lower is better"
+            };
+            out.push_str(&format!("### {title} — {direction}\n\n"));
             out.push_str(&render_metric_table(
                 df,
                 *w,
