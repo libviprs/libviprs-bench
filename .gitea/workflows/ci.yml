@@ -2,9 +2,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: ['**']
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,6 +13,14 @@ jobs:
     name: Check & Lint feature cells
     runs-on: ubuntu-latest
     steps:
+      - name: Report pending to GitHub
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+        run: |
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d '{"state":"pending","context":"gitea/ci","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}","description":"Gitea Actions run started"}' || true
       # libviprs-bench depends on `libviprs = { path = "../libviprs" }`, so
       # the core repo must sit alongside as a sibling directory.
       - uses: actions/checkout@v4
@@ -76,3 +83,24 @@ jobs:
       - name: Test (libvips feature)
         working-directory: libviprs-bench
         run: cargo test --lib --tests --doc --features libvips
+
+  report:
+    name: Report status to GitHub
+    needs: [check, test]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Report result to GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
+        run: |
+          if [ "${{ needs.check.result }}" = "success" ] && [ "${{ needs.test.result }}" = "success" ]; then
+            STATE="success"
+            DESC="Gitea Actions run passed"
+          else
+            STATE="failure"
+            DESC="Gitea Actions run failed"
+          fi
+          curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
+            -d "{\"state\":\"$STATE\",\"context\":\"gitea/ci\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}\",\"description\":\"$DESC\"}" || true
