@@ -13,6 +13,7 @@ jobs:
     name: Check & Lint feature cells
     runs-on: ubuntu-latest
     steps:
+      # target_url is human-clicked from GitHub, so it uses the PUBLIC forge URL (vars.GIT_PUBLIC_URL); github.server_url is the runner's internal gitea:3000, for API and git calls only.
       - name: Report pending to GitHub
         if: always()
         env:
@@ -20,7 +21,7 @@ jobs:
         run: |
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d '{"state":"pending","context":"gitea/ci","target_url":"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}","description":"Gitea Actions run started"}' || true
+            -d '{"state":"pending","context":"gitea/ci","target_url":"${{ vars.GIT_PUBLIC_URL }}/${{ github.repository }}/actions/runs/${{ github.run_number }}","description":"Gitea Actions run started"}' || true
       # libviprs-bench depends on `libviprs = { path = "../libviprs" }`, so
       # the core repo must sit alongside as a sibling directory.
       - uses: actions/checkout@v4
@@ -90,6 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always()
     steps:
+      # target_url is human-clicked from GitHub, so it uses the PUBLIC forge URL (vars.GIT_PUBLIC_URL); github.server_url is the runner's internal gitea:3000, for API and git calls only.
       - name: Report result to GitHub
         env:
           GH_TOKEN: ${{ secrets.GH_STATUS_TOKEN }}
@@ -103,4 +105,4 @@ jobs:
           fi
           curl -sf -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${{ github.repository }}/statuses/${{ github.sha }}" \
-            -d "{\"state\":\"$STATE\",\"context\":\"gitea/ci\",\"target_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}\",\"description\":\"$DESC\"}" || true
+            -d "{\"state\":\"$STATE\",\"context\":\"gitea/ci\",\"target_url\":\"${{ vars.GIT_PUBLIC_URL }}/${{ github.repository }}/actions/runs/${{ github.run_number }}\",\"description\":\"$DESC\"}" || true
