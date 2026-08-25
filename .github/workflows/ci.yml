@@ -75,6 +75,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: libviprs-bench
+      # Two invocations, not one: cargo rejects `--doc` mixed with any other
+      # target selector, so the old single `--lib --tests --doc` line errored
+      # out before running anything. Splitting it runs both halves for real.
       - name: Test (libvips feature)
         working-directory: libviprs-bench
-        run: cargo test --lib --tests --doc --features libvips
+        run: |
+          cargo test --lib --tests --features libvips
+          cargo test --doc --features libvips
