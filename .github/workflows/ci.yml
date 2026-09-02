@@ -6,6 +6,15 @@ name: CI
 on:
   push:
     branches: ['**']
+  # Both jobs clone libviprs at whatever `main` is, so the thing under test
+  # moves without a commit here to notice. On push-only triggers the last run
+  # of any kind was 2026-08-25 while 585 core commits landed behind it, so the
+  # next person to push inherits every one of those breakages at once (#57).
+  # A nightly reports the drift while it is still one day wide. 05:31 UTC
+  # keeps it off the top of the hour and away from libviprs-cli's nightly,
+  # which runs at 06:11.
+  schedule:
+    - cron: '31 5 * * *'
   workflow_dispatch:
 
 env:
