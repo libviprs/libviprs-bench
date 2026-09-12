@@ -130,7 +130,7 @@ chosen to fit beneath it.
 
 Four benchmark groups, each parameterised on image size:
 
-- `monolithic` — single-thread vs `EngineConfig::default().with_concurrency(4)`.
+- `monolithic` — single-thread vs `EngineConfig::default.with_concurrency(4)`.
   See [`--parallel`](https://libviprs.org/cli/#flag-parallel) /
   [`--concurrency`](https://libviprs.org/cli/#flag-concurrency).
 - `streaming` — single-thread vs 4-thread, both at 1 MB
@@ -152,13 +152,13 @@ numbers back the "vector-heavy PDFs scale ~linearly with N, raster-heavy
 approach 1×" doc comment on `PdfiumStripSource::new_streaming` with data instead
 of assertion. Gated behind the `pdfium` feature.
 
-| `pdfium_strip_source_bench` flag | Meaning                                                                  |
+| `pdfium_strip_source_bench` flag | Meaning |
 |----------------------------------|--------------------------------------------------------------------------|
-| `--pdf <path>`                   | PDF to bench (default: the committed `fixtures/cc_licenses_mapping.pdf`)  |
-| `--page <N>`                     | 1-based page index                                                       |
-| `--dpis 72,150,300`              | comma-separated render DPIs to sweep                                      |
-| `--strip-counts 4,16,64`         | comma-separated strip counts to sweep                                    |
-| `--output <file.jsonl>`          | write JSONL here instead of stdout                                       |
+| `--pdf <path>` | PDF to bench (default: the committed `fixtures/cc_licenses_mapping.pdf`) |
+| `--page <N>` | 1-based page index |
+| `--dpis 72,150,300` | comma-separated render DPIs to sweep |
+| `--strip-counts 4,16,64` | comma-separated strip counts to sweep |
+| `--output <file.jsonl>` | write JSONL here instead of stdout |
 
 ```bash
 cargo run --release --features pdfium --bin pdfium_strip_source_bench -- \
