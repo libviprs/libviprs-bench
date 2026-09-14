@@ -68,6 +68,23 @@ use scenarios::{
 /// The argv subcommand a parent uses to re-invoke itself as one scenario.
 pub const SINGLE_FLAG: &str = "--storage-single";
 
+/// The file a sweep writes, inside the family's own report directory.
+pub const DOCUMENT_NAME: &str = "storage-results.json";
+
+/// Where a sweep's document lands under a report root.
+///
+/// Derived from [`Family::report_dir`](crate::family::Family::report_dir) and
+/// not spelled out, so the storage family cannot drift out of the
+/// `report/<family>/` layout every other family follows. Two families writing
+/// into one directory can overwrite each other's charts and append to each
+/// other's history, and the JS renderer takes a `--report-dir` and nothing
+/// else, so a document outside a family directory is one no chart will draw.
+pub fn default_output_path(report_root: &Path) -> PathBuf {
+    crate::family::Family::Storage
+        .report_dir(report_root)
+        .join(DOCUMENT_NAME)
+}
+
 /// Every scenario a sweep walks, in order.
 ///
 /// K1.4 extends this with `open`, `first_lookup`, `decode_root`,

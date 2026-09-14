@@ -253,6 +253,7 @@ fn append_records_distinct_tagged_fingerprinted_snapshots() {
     // Two versions appended through the runner's append path, out of semver
     // order, with distinct SHAs.
     let n1 = append_version_snapshot(
+        libviprs_bench::family::DEFAULT_FAMILY,
         &path,
         "0.3.1",
         "aaaaaaa",
@@ -264,6 +265,7 @@ fn append_records_distinct_tagged_fingerprinted_snapshots() {
     assert_eq!(n1, 1, "first append yields one history entry");
 
     let n2 = append_version_snapshot(
+        libviprs_bench::family::DEFAULT_FAMILY,
         &path,
         "0.2.0",
         "bbbbbbb",
@@ -339,6 +341,7 @@ fn ordered_version_keys_sorts_by_semver_and_timestamp_not_lexically() {
 /// test (bypassing `create_snapshot` so the timestamp is deterministic).
 fn snap_with(version: &str, git_sha: &str, timestamp: &str) -> BenchmarkSnapshot {
     let mut snap = libviprs_bench::create_snapshot_for(
+        libviprs_bench::family::DEFAULT_FAMILY,
         libviprs_bench::provenance::Provenance::default(),
         version,
         git_sha,
