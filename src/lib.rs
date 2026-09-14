@@ -19,6 +19,7 @@ pub mod flame;
 pub mod harness;
 pub mod pin_check;
 pub mod provenance;
+pub mod storage;
 pub mod version_id;
 pub mod version_matrix;
 
