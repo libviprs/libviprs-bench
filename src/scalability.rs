@@ -8,9 +8,9 @@
 //! thread budgets (1 and num_cpus), measuring how wall time, peak RSS, and
 //! efficiency scale with image area.
 //!
-//! Run: cargo run --release --bin scalability
+//! Run: cargo run --release --bin scalability [-- --family <name>]
 //!
-//! Output: report/scalability_results.json. This binary emits JSON only; the
+//! Output: report/<family>/scalability_results.json. This binary emits JSON only; the
 //! `scalability_*.svg` line charts render from that JSON via
 //! `tools/charts/render.mjs` (run-bench.sh invokes it after this writes the
 //! JSON) — the plotters dependency is gone (issue #42).
