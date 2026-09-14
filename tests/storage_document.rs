@@ -111,7 +111,13 @@ fn a_cell_carries_reps_samples_and_a_median_of_them() {
 /// on the one column this whole comparison is about.
 #[test]
 fn unmeasured_columns_are_null_never_zero() {
-    let built = row(vec![10.0, 11.0, 12.0], InvariantBlock::default());
+    // Built the way the runner builds it, out of what a scenario observed,
+    // rather than out of a default block. A `From` that folded a `None`
+    // through `unwrap_or(0)` is invisible to a test that never calls it, and
+    // the mutation table caught exactly that: this test was green under the
+    // zero-filling mutation until it went through this conversion.
+    let nothing_measured = InvariantBlock::from(&Invariants::default());
+    let built = row(vec![10.0, 11.0, 12.0], nothing_measured);
     let json = parse(&serde_json::to_string(&built).expect("a row serialises"));
     let invariants = &json["invariants"];
 
@@ -140,16 +146,28 @@ fn unmeasured_columns_are_null_never_zero() {
         );
     }
 
+    // A cell with no samples has no statistics either, and it says so rather
+    // than publishing a median of zero, which is the fastest possible cell.
+    let empty = row(Vec::new(), InvariantBlock::from(&Invariants::default()));
+    let json = parse(&serde_json::to_string(&empty).expect("a row serialises"));
+    for field in ["median", "min", "max", "iqr", "cov", "ci95", "p95OfSamples", "tail"] {
+        assert!(
+            json[field].is_null(),
+            "{field} of a cell with no samples reads {}, not null",
+            json[field]
+        );
+    }
+
     // The positive control. Without it a producer that nulled everything
     // unconditionally would pass: a measured zero has to survive as a zero,
     // because a zero-byte artefact is a real observation and a hole is not.
     let measured = row(
         vec![10.0],
-        InvariantBlock {
+        InvariantBlock::from(&Invariants {
             filesystem_entries: Some(0),
             output_bytes: Some(0),
-            ..InvariantBlock::default()
-        },
+            ..Invariants::default()
+        }),
     );
     let json = parse(&serde_json::to_string(&measured).expect("a row serialises"));
     assert_eq!(json["invariants"]["filesystemEntries"], Value::from(0u64));
