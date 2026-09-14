@@ -20,7 +20,7 @@ pub mod flame;
 pub mod harness;
 pub mod pin_check;
 pub mod provenance;
-/// SHA-256 in `std` alone, shared with `build.rs` by `include!`.
+/// SHA-256 over `sha2`, shared with `build.rs` by `include!`.
 pub mod sha256;
 pub mod storage;
 pub mod version_id;
