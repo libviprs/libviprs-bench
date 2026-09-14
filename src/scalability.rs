@@ -28,8 +28,7 @@ use serde::{Deserialize, Serialize};
 
 use libviprs::streaming::BudgetPolicy;
 use libviprs::{
-    EngineBuilder, EngineConfig, EngineKind, FsSink, Layout, PyramidPlanner, Raster,
-    RasterStripSource, TileFormat,
+    EngineBuilder, EngineConfig, EngineKind, Layout, PyramidPlanner, Raster, RasterStripSource,
 };
 use libviprs_bench::family::{ALL_FAMILIES, DEFAULT_FAMILY, Family};
 use libviprs_bench::provenance::Provenance;
@@ -125,7 +124,7 @@ fn run_monolithic(src: &Raster, tile_size: u32, concurrency: usize) -> Option<En
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
     let out_dir = sink_dir("mono");
-    let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
+    let sink = libviprs_bench::engine_fs_sink(&out_dir, &plan);
     let start = Instant::now();
     let run_result = EngineBuilder::new(src, plan, &sink)
         .with_engine(EngineKind::Monolithic)
@@ -165,7 +164,7 @@ fn run_streaming(
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
     let out_dir = sink_dir("stream");
-    let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
+    let sink = libviprs_bench::engine_fs_sink(&out_dir, &plan);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
     let run_result = EngineBuilder::new(strip_src, plan, &sink)
@@ -208,7 +207,7 @@ fn run_mapreduce(
         PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
     let plan = planner.plan();
     let out_dir = sink_dir("mr");
-    let sink = FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(TileFormat::Png);
+    let sink = libviprs_bench::engine_fs_sink(&out_dir, &plan);
     let strip_src = RasterStripSource::new(src);
     let start = Instant::now();
     let run_result = EngineBuilder::new(strip_src, plan, &sink)
@@ -449,7 +448,9 @@ fn parse_cli() -> CliOpts {
                 })));
             }
             "-h" | "--help" => {
-                println!("Usage: scalability [--family <name>] [--report-dir <dir>] [--pdf-max-mp <n>]");
+                println!(
+                    "Usage: scalability [--family <name>] [--report-dir <dir>] [--pdf-max-mp <n>]"
+                );
                 println!();
                 println!("Families:");
                 for family in ALL_FAMILIES {
@@ -482,8 +483,9 @@ fn parse_cli() -> CliOpts {
         eprintln!("{refusal}");
         std::process::exit(refusal.exit_code());
     });
-    let report_dir = report_dir
-        .unwrap_or_else(|| family.report_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("report")));
+    let report_dir = report_dir.unwrap_or_else(|| {
+        family.report_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("report"))
+    });
 
     CliOpts {
         family,

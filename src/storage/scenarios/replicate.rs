@@ -118,3 +118,65 @@ pub fn covered_by_noise(block: &ReplicateBlock, metric: &str, delta_pct: f64) ->
         .get(metric)
         .is_some_and(|spread| delta_pct.abs() <= *spread)
 }
+
+// ---------------------------------------------------------------------------
+// Reaching the document
+// ---------------------------------------------------------------------------
+
+use super::super::cells::{Profile, replicate_cell};
+use super::super::document::{Document, Replicate};
+
+/// The replicate block a finished sweep publishes, or `None`.
+///
+/// `None` on a profile with no control, and `None` when the control's rows did
+/// not come out in pairs, which is the case this whole scenario exists to stop:
+/// a block computed from one measurement publishes a spread of zero and reads
+/// as a perfectly quiet host.
+///
+/// The two measurements are found by position. `Document::push` appends, so for
+/// a given `(scenario, backend, scale)` the control's first and last rows are
+/// the two ends of the sweep, which is the drift the spread is there to see.
+pub fn block_for(doc: &Document, profile: Profile) -> Option<Replicate> {
+    let control = replicate_cell(profile)?;
+    let scale = control.declared_tiles;
+    let source = control.source.as_str();
+
+    let mut firsts: BTreeMap<String, f64> = BTreeMap::new();
+    let mut lasts: BTreeMap<String, f64> = BTreeMap::new();
+    for cell in &doc.cells {
+        if cell.scale != scale || cell.source != source {
+            continue;
+        }
+        let Some(median) = cell.median else { continue };
+        let key = format!("{}.{}", cell.backend, cell.key);
+        if !firsts.contains_key(&key) {
+            firsts.insert(key, median);
+        } else {
+            lasts.insert(key, median);
+        }
+    }
+
+    let mut spread = serde_json::Map::new();
+    for (metric, first) in &firsts {
+        let Some(last) = lasts.get(metric) else {
+            continue;
+        };
+        if let Some(pct) = spread_pct(*first, *last) {
+            spread.insert(
+                metric.clone(),
+                serde_json::Number::from_f64(pct)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+    if spread.is_empty() {
+        return None;
+    }
+
+    Some(Replicate {
+        cell: control.spec(),
+        replicate_reps: REPLICATE_REPS as u32,
+        spread_pct: serde_json::Value::Object(spread),
+    })
+}

@@ -32,14 +32,30 @@
 //! [`scenarios::ReaderFactory`] and asks it for one that has never served a
 //! lookup.
 //!
+//! # What an archived run has to prove about itself
+//!
+//! A number is only worth keeping if the document carrying it can say what
+//! produced it. [`integrity`] canonicalises a document and digests it four ways,
+//! [`attest`] decides whether a cell's declared regime is the one the archive is
+//! actually in, and [`archive`] refuses a run it cannot vouch for rather than
+//! averaging it in. The invariants below are what those digests are taken over.
+//!
 //! # This family does not need libvips
 //!
 //! Nothing in it touches the comparison, so it builds and runs without the
 //! `libvips` feature, which is what lets it live in the cheap check job and in
 //! a Docker stage that skips the source build entirely.
 
+/// What refuses a run rather than averaging it in, and what an archived run is
+/// filed under (issue #66).
+pub mod archive;
+/// Whether the thing a cell says it measured is the thing that ran, observed
+/// from the archive rather than read off the cell's own label (issue #66).
+pub mod attest;
 pub mod cells;
 pub mod document;
+/// Canonical JSON and the four digests a sealed document carries (issue #66).
+pub mod integrity;
 /// The two declared cost models (issue #67). Not measurements, and never
 /// charted on an axis carrying one.
 pub mod model;
@@ -54,6 +70,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
+// One SHA-256 for the crate. This module and `crate::sha256` each grew a thin
+// `sha2` wrapper in the same week; they are the same hash and now the same code,
+// and `sha256.rs` is the one that keeps the known-answer vectors.
+use crate::sha256::Sha256Stream;
+
 use libviprs::checksum::{ChecksumAlgo, hash_tile};
 use libviprs::planner::{PyramidPlan, TileCoord};
 use libviprs::pyramid_reader::{DirectoryPyramidReader, PmTilesPyramidReader, PyramidReader};
@@ -61,7 +82,7 @@ use libviprs::sink::TileFormat;
 use libviprs::sink_pmtiles::PmTilesSink;
 use libviprs::{EngineBuilder, FsSink, PixelFormat, Raster};
 
-use cells::{Backend, Cell, Profile, SEED, Source};
+use cells::{Backend, Cell, Profile, Regime, SEED, Source};
 use document::{CellReport, Document, DocumentCell, InvariantBlock, MachineLoad};
 use scenarios::{
     Coordinates, Invariants, Isolation, MetricSpec, Outcome, ReaderFactory, RepFacts, Scenario,
@@ -88,14 +109,24 @@ pub fn default_output_path(report_root: &Path) -> PathBuf {
         .join(DOCUMENT_NAME)
 }
 
-/// Every scenario a sweep walks, in order.
+/// Every scenario a sweep can walk, in order.
 ///
-/// K1.4 extends this with `open`, `first_lookup`, `decode_root`,
-/// `read_tileid_order`, the `read_concurrent@T` curve and `requests`. What is
-/// here is the reference set: one generation scenario and two pass scenarios,
-/// which is the least that proves the skeleton measures anything.
+/// The reference set (`generate`, `read_plan_order`, `read_tileid_order`,
+/// `read_random`) plus K1.4's: `open`, `first_lookup`, `decode_root`, the
+/// `read_concurrent@T` ladder and `requests`.
+///
+/// Which of them a given sweep walks is [`Profile::scenario_names`], not this
+/// list. `ci` leaves out the thread ladder and says so there rather than
+/// skipping quietly at run time.
+///
+/// `tests/storage_registry.rs` asserts this against the family's declared list
+/// and against a real `ci` document, because the failure this had for one whole
+/// wave was that seven scenarios existed, were tested, were merged, and were
+/// never in here.
 pub fn registry() -> Vec<Box<dyn Scenario>> {
-    scenarios::reference::all()
+    let mut out = scenarios::reference::all();
+    out.extend(scenarios::all());
+    out
 }
 
 /// Look one up by the name it publishes.
@@ -358,25 +389,142 @@ fn hash_file(path: &Path) -> Option<String> {
     Some(hasher.finish())
 }
 
-/// A streaming sha256. `libviprs::checksum::hash_file` is `pub(crate)`, so the
-/// streaming form is here rather than borrowed.
-struct Sha256Stream(sha2::Sha256);
+/// Attest one cell's artefacts: was the archive each backend names the archive
+/// it was measured against, and do the two agree about what a tile contains?
+///
+/// This is `attest`'s caller, and the whole point of it is that nothing here
+/// reads a label. The regime a cell is *supposed* to come out as is predicted
+/// from the plan and the writer's own cutoff, the regime it *is* in is read back
+/// out of the file, and the two are compared. The byte half opens both backends
+/// and asks them for the same coordinates.
+///
+/// A backend with no archive is not attested, which is the honest answer: the
+/// aggregator refuses an `ok` cell that was never observed exactly as it refuses
+/// one that was observed and disagreed.
+///
+/// The directory backend has no directory structure to be in a regime about, so
+/// its attestation rests on the byte half alone, and that is said out loud here
+/// rather than left for a reader to infer from a `None`.
+pub fn attest_artefacts(
+    cell: Cell,
+    plan: &PyramidPlan,
+    profile: Profile,
+    artefacts: &[(Backend, Scratch, PathBuf)],
+) -> Vec<(Backend, attest::Attestation)> {
+    // Predicted, not declared: the writer spills into leaves at
+    // `ROOT_ONLY_MAX_ENTRIES` and the comparison is strict, so this is the
+    // engine's own rule applied to this cell's plan.
+    let entries = cell.planned_tiles().unwrap_or(0) as u64;
+    let predicted = if entries < cells::ROOT_ONLY_MAX_ENTRIES {
+        Regime::Root
+    } else {
+        Regime::Leaves
+    };
+    let equivalence = byte_equivalence(plan, profile, artefacts);
 
-impl Sha256Stream {
-    fn new() -> Sha256Stream {
-        use sha2::Digest as _;
-        Sha256Stream(sha2::Sha256::new())
+    artefacts
+        .iter()
+        .map(|(backend, _, path)| {
+            let observed = match backend {
+                Backend::PmTiles => match archive_shape(*backend, path) {
+                    Some((root_entries, leaves)) => attest::ObservedArchive {
+                        backend: backend.as_str().to_string(),
+                        // The root is reconstructed as the entry kinds `attest`
+                        // classifies, from the two counts the reader gives.
+                        root_entries: (0..root_entries)
+                            .map(|i| {
+                                if i < leaves {
+                                    attest::RootEntry::LeafPointer
+                                } else {
+                                    attest::RootEntry::Tile
+                                }
+                            })
+                            .collect(),
+                        leaf_directories: leaves,
+                        tiles: entries,
+                    },
+                    None => attest::ObservedArchive {
+                        backend: backend.as_str().to_string(),
+                        root_entries: Vec::new(),
+                        leaf_directories: 0,
+                        tiles: 0,
+                    },
+                },
+                // A directory tree has no root directory in the PMTiles sense.
+                // Handing `attest` an empty root would read as "nothing was
+                // observed", so the shape half is satisfied by construction and
+                // the byte half is what decides.
+                Backend::Directory => attest::ObservedArchive {
+                    backend: backend.as_str().to_string(),
+                    root_entries: vec![match predicted {
+                        Regime::Root => attest::RootEntry::Tile,
+                        Regime::Leaves => attest::RootEntry::LeafPointer,
+                    }],
+                    leaf_directories: match predicted {
+                        Regime::Root => 0,
+                        Regime::Leaves => 1,
+                    },
+                    tiles: entries,
+                },
+            };
+            (*backend, attest::attest(predicted, &observed, &equivalence))
+        })
+        .collect()
+}
+
+/// Read the same coordinates from both backends and compare the bytes.
+///
+/// Two backends that disagree about what a tile contains are not two
+/// measurements of one workload, however clean the timings look. The sample is
+/// seeded so it is the same coordinates every run, and the count is whatever the
+/// profile reads, floored at `attest`'s own minimum so a thin profile cannot
+/// quietly weaken the claim.
+fn byte_equivalence(
+    plan: &PyramidPlan,
+    profile: Profile,
+    artefacts: &[(Backend, Scratch, PathBuf)],
+) -> attest::EquivalenceSample {
+    let coords = coordinate_sets(plan, profile, cells::SEED);
+    let wanted = attest::MIN_EQUIVALENCE_SAMPLE as usize;
+    let sampled: Vec<_> = coords.random.iter().copied().take(wanted).collect();
+
+    let readers: Vec<_> = artefacts
+        .iter()
+        .filter_map(|(backend, _, path)| FileReaderFactory::new(*backend, path, plan).fresh().ok())
+        .collect();
+
+    // One backend cannot disagree with itself, and claiming agreement from a
+    // single reader would be the label-shaped answer this whole module exists to
+    // avoid.
+    if readers.len() < 2 {
+        return attest::EquivalenceSample {
+            seed: cells::SEED,
+            sampled: 0,
+            matched: 0,
+        };
     }
 
-    fn update(&mut self, bytes: &[u8]) {
-        use sha2::Digest as _;
-        self.0.update(bytes);
+    let mut matched = 0u32;
+    for coord in &sampled {
+        let mut bytes: Vec<Option<Vec<u8>>> = Vec::new();
+        for reader in &readers {
+            match reader.tile(*coord) {
+                Ok(found) => bytes.push(found),
+                Err(_) => {
+                    bytes.clear();
+                    break;
+                }
+            }
+        }
+        if bytes.len() == readers.len() && bytes.windows(2).all(|w| w[0] == w[1]) {
+            matched += 1;
+        }
     }
 
-    fn finish(self) -> String {
-        use sha2::Digest as _;
-        let out = self.0.finalize();
-        out.iter().map(|b| format!("{b:02x}")).collect()
+    attest::EquivalenceSample {
+        seed: cells::SEED,
+        sampled: sampled.len() as u32,
+        matched,
     }
 }
 
@@ -432,8 +580,12 @@ impl ReaderFactory for FileReaderFactory {
                     .map_err(|e| format!("the archive does not open: {e}"))?,
             ),
             Backend::Directory => Box::new(
-                DirectoryPyramidReader::try_open(&self.artefact, self.plan.clone(), TileFormat::Png)
-                    .map_err(|e| format!("the tree does not open: {e}"))?,
+                DirectoryPyramidReader::try_open(
+                    &self.artefact,
+                    self.plan.clone(),
+                    TileFormat::Png,
+                )
+                .map_err(|e| format!("the tree does not open: {e}"))?,
             ),
         };
         Ok(Arc::new(PyramidTileReader(inner)))
@@ -691,7 +843,8 @@ pub fn agreed(reps: &[RepFacts]) -> (Invariants, Vec<String>) {
             if all_equal {
                 out.$field = first;
             } else {
-                disagreements.push(concat!(stringify!($field), " differs between reps").to_string());
+                disagreements
+                    .push(concat!(stringify!($field), " differs between reps").to_string());
             }
         }};
     }
@@ -720,10 +873,19 @@ pub fn rows_from_wire(
 ) -> Vec<DocumentCell> {
     let (invariants, disagreements) = agreed(&wire.reps);
     let mut block = InvariantBlock::from(&invariants);
-    block.peak_rss_mb = wire
-        .peak_rss_bytes
-        .map(|b| b as f64 / (1024.0 * 1024.0))
-        .filter(|_| matches!(scenario.isolation(), Isolation::ProcessPerRep));
+    // Published for both isolations. It used to be filtered to
+    // `ProcessPerRep`, which silently dropped it from every read row, and the
+    // read rows are where a leaf cache would show. It is a real measurement
+    // either way: `wait4` gives the child's own `ru_maxrss` whichever isolation
+    // spawned it. What it *means* differs, and that is a caption rather than a
+    // reason to discard it. Under `ProcessPerRep` it is the largest single
+    // repetition, taken as a max across the children. Under
+    // `ProcessPerScenario` it is one child's high-water mark across its warm-up
+    // and every repetition, so it is the scenario's peak rather than a
+    // repetition's, which is the right number for a capacity question and the
+    // wrong one for a per-repetition dispersion. It is a scalar on the cell and
+    // never a series, so nothing downstream can mistake it for the latter.
+    block.peak_rss_mb = wire.peak_rss_bytes.map(|b| b as f64 / (1024.0 * 1024.0));
     block.heap_peak_bytes = wire.heap_peak_bytes;
 
     let outcome = if wire.outcome == "ok" && disagreements.is_empty() {
@@ -838,7 +1000,28 @@ pub fn run_sweep(profile: Profile) -> Document {
             }
         }
 
-        for (index, scenario) in registry().iter().enumerate() {
+        // Observed once per cell, because it is a property of the artefact
+        // rather than of each scenario that reads it.
+        let attested: Vec<(Backend, attest::Attestation)> =
+            attest_artefacts(cell, &plan, profile, &artefacts);
+        for (backend, verdict) in &attested {
+            for reason in verdict.reasons() {
+                eprintln!(
+                    "storage: {} {} is not attested: {reason}",
+                    backend.as_str(),
+                    cell.spec()
+                );
+            }
+        }
+
+        let walked: Vec<Box<dyn Scenario>> = {
+            let names = profile.scenario_names();
+            registry()
+                .into_iter()
+                .filter(|s| names.contains(&s.name()))
+                .collect()
+        };
+        for (index, scenario) in walked.iter().enumerate() {
             let reps = scenario.reps(profile);
             // Alternate which backend leads, scenario by scenario.
             let order: Vec<Backend> = if index % 2 == 0 {
@@ -886,7 +1069,11 @@ pub fn run_sweep(profile: Profile) -> Document {
                 };
                 match wire {
                     Ok(wire) => {
-                        for row in rows_from_wire(
+                        let verdict = attested
+                            .iter()
+                            .find(|(b, _)| *b == backend)
+                            .map(|(_, v)| v.is_attested());
+                        for mut row in rows_from_wire(
                             backend,
                             cell,
                             scenario.as_ref(),
@@ -895,6 +1082,10 @@ pub fn run_sweep(profile: Profile) -> Document {
                             load,
                             timer,
                         ) {
+                            // From the observation, never from the cell. A
+                            // constant `true` here is the exact failure
+                            // `attest` exists to prevent.
+                            row.storage_attested = verdict;
                             doc.push(row);
                         }
                     }
@@ -905,18 +1096,109 @@ pub fn run_sweep(profile: Profile) -> Document {
     }
 
     doc.rebuild_invariant_table();
+    // The two blocks a sweep has to fill itself, because nothing downstream can
+    // reconstruct them: the in-run noise floor, and what a remote store would
+    // charge. Both live in K1.4's modules and both are one call, so K1.3's
+    // provenance and attestation work lands beside them rather than on top.
+    doc.modelled = model::entries_for(&doc);
+    doc.replicate = scenarios::replicate::block_for(&doc, profile);
     doc.finished_at = Some(now_iso());
+    doc.provenance = Some(sweep_provenance(profile, &doc));
     doc
 }
 
+/// The `provenance` block, filled from the environment the sweep actually ran
+/// in.
+///
+/// `Document::new` leaves this `None` and the aggregator refuses a document
+/// without it, which is the correct refusal and was, until this existed, one the
+/// producer earned on every run. Everything in the block is observed:
+/// `capture_for_storage` probes emulation, the scratch filesystem, the cgroup
+/// ceilings and the resolved dependency graph, and `build.rs` stamped the two
+/// trees' commits at compile time.
+///
+/// `resolved` is the half only the driver knows: what the profile's defaults
+/// expanded to. The aggregator refuses a document whose `resolved.scenarios`
+/// still says `"all"`, so the names are written out.
+fn sweep_provenance(profile: Profile, doc: &Document) -> serde_json::Value {
+    let scratch = std::env::temp_dir().join("libviprs-storage-provenance");
+    let provenance = crate::provenance::Provenance::capture_for_storage(&scratch);
+    for warning in provenance.storage_provenance_warnings() {
+        eprintln!("{warning}");
+    }
+    let allow_dirty = std::env::var("STORAGE_ALLOW_DIRTY").is_ok();
+    let scenarios: Vec<String> = profile
+        .scenario_names()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let scales: Vec<u64> = {
+        let mut seen: Vec<u64> = profile
+            .cells()
+            .iter()
+            .filter_map(|c| c.planned_tiles())
+            .map(|t| t as u64)
+            .collect();
+        seen.sort_unstable();
+        seen.dedup();
+        seen
+    };
+    provenance.to_storage_block(
+        &serde_json::json!({
+            "argv": std::env::args().collect::<Vec<_>>(),
+            "command": "storage",
+            "cwd": std::env::current_dir()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default(),
+            "env": {
+                "STORAGE_ALLOW_DIRTY": std::env::var("STORAGE_ALLOW_DIRTY").ok(),
+                "RUSTFLAGS": std::env::var("RUSTFLAGS").ok(),
+                "BENCH_DAEMON_ARCH": std::env::var("BENCH_DAEMON_ARCH").ok(),
+                "TMPDIR": std::env::var("TMPDIR").ok(),
+            },
+            "resolved": {
+                "profile": profile.label(),
+                "reps": doc.measurement.reps,
+                "scenarios": scenarios,
+                "scales": scales,
+            },
+        }),
+        allow_dirty,
+    )
+}
+
 /// Fold one more per-repetition child into the run so far.
-fn merge(into: Option<WireRun>, one: WireRun) -> WireRun {
+pub fn merge(into: Option<WireRun>, one: WireRun) -> WireRun {
     let Some(mut acc) = into else { return one };
-    for (i, series) in one.series.into_iter().enumerate() {
-        match acc.series.get_mut(i) {
+    // By metric name, never by position. A scenario is free to emit its series
+    // in a different order or to emit a conditional one: `ReadPass` already
+    // picks `p99` or `max` at run time depending on how many lookups a pass
+    // made, so two children of one scenario can disagree about what their
+    // second series is. Pairing by index would then concatenate one metric's
+    // samples into another metric's array, under the first child's label, with
+    // nothing to see afterwards. A metric that appears in one child and not
+    // another is carried through and named in the reason, because a series
+    // shorter than `reps` is a different defect and the aggregator has to be
+    // able to tell them apart.
+    let mut unmatched: Vec<String> = Vec::new();
+    for series in one.series {
+        match acc.series.iter_mut().find(|s| s.metric == series.metric) {
             Some(existing) => existing.samples.extend(series.samples),
-            None => acc.series.push(series),
+            None => {
+                unmatched.push(series.metric.clone());
+                acc.series.push(series);
+            }
         }
+    }
+    if !unmatched.is_empty() {
+        let note = format!(
+            "repetitions disagreed about which series they publish; {} appeared partway through",
+            unmatched.join(", ")
+        );
+        acc.reason = Some(match acc.reason.take() {
+            Some(existing) => format!("{existing}; {note}"),
+            None => note,
+        });
     }
     acc.reps.extend(one.reps);
     acc.discarded_warmup.extend(one.discarded_warmup);

@@ -21,7 +21,12 @@ use std::time::{Duration, Instant};
 
 use libviprs::planner::TileCoord;
 
-use super::{Outcome, Skip, TileReader};
+use super::super::cells::Profile;
+use super::super::document::read_reps;
+use super::{
+    Direction, Isolation, MetricSpec, Outcome, RepFacts, Scenario, ScenarioContext, ScenarioRun,
+    Series, Skip, TileReader, Unit, Warmup,
+};
 
 /// The thread counts every sweep reports, whether or not the host can run them.
 pub const THREAD_LADDER: [usize; 4] = [1, 2, 4, 8];
@@ -138,68 +143,85 @@ impl ArmRun {
 /// and a join are real work, and a control that pays them is measuring the pool
 /// as well as the lookups, which is exactly the thing the curve is supposed to
 /// isolate.
-pub fn run_arm(reader: &dyn TileReader, coords: &[TileCoord], threads: usize) -> ArmRun {
+pub fn run_arm(
+    reader: &dyn TileReader,
+    coords: &[TileCoord],
+    threads: usize,
+) -> Result<ArmRun, String> {
     let hits = AtomicU64::new(0);
 
     if threads == 1 {
         let started = Instant::now();
-        let (latencies, thread_id, hit) = walk(reader, coords);
+        let (latencies, thread_id, hit) = walk(reader, coords)?;
         let elapsed = started.elapsed();
         hits.fetch_add(hit, Ordering::Relaxed);
-        return ArmRun {
+        return Ok(ArmRun {
             threads,
             latencies,
             elapsed,
             thread_ids: vec![thread_id],
             hits: hits.load(Ordering::Relaxed),
             coordinates_walked: coords.len(),
-        };
+        });
     }
 
     let pieces = chunks(coords, threads);
     let started = Instant::now();
-    let per_thread: Vec<(Vec<Duration>, ThreadId, u64)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = pieces
-            .iter()
-            .map(|piece| scope.spawn(|| walk(reader, piece)))
-            .collect();
-        handles
-            .into_iter()
-            .map(|handle| handle.join().expect("a lookup thread does not panic"))
-            .collect()
-    });
+    // A thread that panics is a bug in this file rather than a condition the
+    // archive can put the sweep in, so a join failure is reported as one
+    // instead of unwinding the parent: `Scenario::run` turns it into a
+    // `Skip::failed` and the rest of the sweep continues.
+    let per_thread: Vec<Result<(Vec<Duration>, ThreadId, u64), String>> =
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = pieces
+                .iter()
+                .map(|piece| scope.spawn(|| walk(reader, piece)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| {
+                    handle
+                        .join()
+                        .unwrap_or_else(|_| Err("a lookup thread panicked".to_string()))
+                })
+                .collect()
+        });
     let elapsed = started.elapsed();
 
     let mut latencies = Vec::with_capacity(coords.len());
     let mut thread_ids = Vec::with_capacity(threads);
-    for (mut chunk_latencies, thread_id, hit) in per_thread {
+    for outcome in per_thread {
+        let (mut chunk_latencies, thread_id, hit) = outcome?;
         latencies.append(&mut chunk_latencies);
         thread_ids.push(thread_id);
         hits.fetch_add(hit, Ordering::Relaxed);
     }
 
-    ArmRun {
+    Ok(ArmRun {
         threads,
         latencies,
         elapsed,
         thread_ids,
         hits: hits.load(Ordering::Relaxed),
         coordinates_walked: coords.len(),
-    }
+    })
 }
 
-fn walk(reader: &dyn TileReader, coords: &[TileCoord]) -> (Vec<Duration>, ThreadId, u64) {
+fn walk(
+    reader: &dyn TileReader,
+    coords: &[TileCoord],
+) -> Result<(Vec<Duration>, ThreadId, u64), String> {
     let mut latencies = Vec::with_capacity(coords.len());
     let mut hits = 0;
     for coord in coords {
         let at = Instant::now();
-        let tile = reader.tile(*coord).expect("a lookup succeeds");
+        let tile = reader.tile(*coord)?;
         latencies.push(at.elapsed());
         if tile.is_some() {
             hits += 1;
         }
     }
-    (latencies, std::thread::current().id(), hits)
+    Ok((latencies, std::thread::current().id(), hits))
 }
 
 /// `lookups_per_s(T) / (T * lookups_per_s(1))`.
@@ -212,4 +234,129 @@ pub fn scaling_efficiency(threads: usize, at_t: Option<f64>, at_one: Option<f64>
         return None;
     }
     Some(at_t / (threads as f64 * at_one))
+}
+
+// ---------------------------------------------------------------------------
+// The scenario, one per rung
+// ---------------------------------------------------------------------------
+
+/// `read_concurrent@T`: one rung of the ladder.
+///
+/// One `Scenario` per thread count rather than one scenario that loops, because
+/// the document keys on the scenario name and a rung the host declined has to
+/// be its own row carrying its own reason. A single scenario emitting four
+/// series could not say "this host measured three of these and refused one".
+pub struct Concurrent {
+    pub threads: usize,
+}
+
+pub const LOOKUPS_PER_S: MetricSpec = MetricSpec {
+    name: "lookups_per_s",
+    unit: Unit::PerSecond,
+    direction: Direction::HigherIsBetter,
+};
+
+pub const POOLED_P50: MetricSpec = MetricSpec {
+    name: "p50",
+    unit: Unit::Microseconds,
+    direction: Direction::LowerIsBetter,
+};
+
+/// Every rung, in ladder order.
+pub fn all() -> Vec<Box<dyn Scenario>> {
+    THREAD_LADDER
+        .iter()
+        .map(|&threads| Box::new(Concurrent { threads }) as Box<dyn Scenario>)
+        .collect()
+}
+
+impl Scenario for Concurrent {
+    fn name(&self) -> String {
+        format!("read_concurrent@{}", self.threads)
+    }
+
+    fn isolation(&self) -> Isolation {
+        Isolation::ProcessPerScenario
+    }
+
+    fn warmup(&self) -> Option<Warmup> {
+        Some(Warmup::ONE_DISCARDED_PASS)
+    }
+
+    fn reps(&self, profile: Profile) -> u32 {
+        read_reps(profile)
+    }
+
+    fn primary(&self) -> MetricSpec {
+        LOOKUPS_PER_S
+    }
+
+    fn series(&self) -> Vec<MetricSpec> {
+        vec![LOOKUPS_PER_S, POOLED_P50]
+    }
+
+    fn run(&self, ctx: &ScenarioContext<'_>, reps: u32) -> Result<ScenarioRun, Skip> {
+        let ncpu = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let rung = ladder(ncpu)
+            .into_iter()
+            .find(|arm| arm.threads == self.threads);
+        if let Some(skip) = rung.and_then(|arm| arm.skip) {
+            // Declined, not dropped. The row stays in the document carrying the
+            // reason, because an absent row reads as a measurement nobody took.
+            return Err(skip);
+        }
+
+        let coords = &ctx.coords.random;
+        if coords.is_empty() {
+            return Err(Skip::skipped("the cell has no coordinates to walk"));
+        }
+        let reader = ctx.readers.fresh().map_err(Skip::failed)?;
+
+        let mut discarded = Vec::new();
+        for _ in 0..self.warmup().map(|w| w.passes).unwrap_or(0) {
+            let arm = run_arm(reader.as_ref(), coords, self.threads).map_err(Skip::failed)?;
+            if let Some(rate) = arm.lookups_per_s() {
+                discarded.push(rate);
+            }
+        }
+
+        let mut rates = Vec::new();
+        let mut p50s = Vec::new();
+        for _ in 0..reps.max(1) {
+            let arm = run_arm(reader.as_ref(), coords, self.threads).map_err(Skip::failed)?;
+            let Some(rate) = arm.lookups_per_s() else {
+                return Err(Skip::failed("a pass took no measurable time"));
+            };
+            rates.push(rate);
+            let mut micros: Vec<f64> = arm
+                .latencies
+                .iter()
+                .map(|d| d.as_secs_f64() * 1e6)
+                .collect();
+            micros.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            if micros.is_empty() {
+                return Err(Skip::failed("a pass produced no latencies"));
+            }
+            p50s.push(micros[micros.len() / 2]);
+        }
+
+        Ok(ScenarioRun {
+            series: vec![
+                Series {
+                    metric: LOOKUPS_PER_S,
+                    samples: rates,
+                },
+                Series {
+                    metric: POOLED_P50,
+                    samples: p50s,
+                },
+            ],
+            reps: vec![RepFacts::default(); reps.max(1) as usize],
+            discarded_warmup: discarded,
+            peak_rss_bytes: None,
+            heap_peak_bytes: None,
+        })
+    }
 }

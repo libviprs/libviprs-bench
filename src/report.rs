@@ -100,7 +100,9 @@ fn parse_concurrency(raw: &str) -> Vec<usize> {
     raw.split(',')
         .map(|token| {
             token.trim().parse::<usize>().unwrap_or_else(|_| {
-                eprintln!("--concurrency wants non-negative integers, comma separated; got {token:?}");
+                eprintln!(
+                    "--concurrency wants non-negative integers, comma separated; got {token:?}"
+                );
                 std::process::exit(2);
             })
         })
@@ -170,8 +172,9 @@ fn parse_cli() -> ReportOpts {
         std::process::exit(refusal.exit_code());
     });
 
-    let report_dir = report_dir
-        .unwrap_or_else(|| family.report_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("report")));
+    let report_dir = report_dir.unwrap_or_else(|| {
+        family.report_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("report"))
+    });
 
     ReportOpts {
         family,
@@ -446,32 +449,32 @@ fn main() {
 /// `vips` family has a reference to spot-check against, so this whole section
 /// is skipped for the libviprs-only families rather than printed empty.
 fn print_equivalence_section(results: &[libviprs_bench::RunMetrics]) {
-        println!();
-        println!("=== Output-equivalence: mid-pyramid tile PSNR vs libvips ===");
-        let mut any = false;
-        for r in results {
-            let Some(psnr) = r.equivalence_psnr_db else {
-                continue;
-            };
-            any = true;
-            let verdict = if psnr >= harness::MIN_TILE_PSNR_DB {
-                "OK"
-            } else {
-                "FAIL"
-            };
-            let key = format!("{}x{} c{} {}", r.width, r.height, r.concurrency, r.engine);
-            println!("  {key:<28} {psnr:>7.1} dB  [{verdict}]");
-        }
-        if any {
-            println!(
-                "  threshold: {:.0} dB (near-lossless), advisory only",
-                harness::MIN_TILE_PSNR_DB
-            );
-        } else if libviprs_bench::vips_available() {
-            // libvips ran but no size produced a comparable multi-tile mid level
-            // (e.g. a smoke run over tiny images) — distinct from libvips absent.
-            println!("  (no comparable mid level for the configured sizes — pixel spot-check skipped)");
+    println!();
+    println!("=== Output-equivalence: mid-pyramid tile PSNR vs libvips ===");
+    let mut any = false;
+    for r in results {
+        let Some(psnr) = r.equivalence_psnr_db else {
+            continue;
+        };
+        any = true;
+        let verdict = if psnr >= harness::MIN_TILE_PSNR_DB {
+            "OK"
         } else {
-            println!("  (libvips unavailable — pixel spot-check skipped)");
-        }
+            "FAIL"
+        };
+        let key = format!("{}x{} c{} {}", r.width, r.height, r.concurrency, r.engine);
+        println!("  {key:<28} {psnr:>7.1} dB  [{verdict}]");
+    }
+    if any {
+        println!(
+            "  threshold: {:.0} dB (near-lossless), advisory only",
+            harness::MIN_TILE_PSNR_DB
+        );
+    } else if libviprs_bench::vips_available() {
+        // libvips ran but no size produced a comparable multi-tile mid level
+        // (e.g. a smoke run over tiny images) — distinct from libvips absent.
+        println!("  (no comparable mid level for the configured sizes — pixel spot-check skipped)");
+    } else {
+        println!("  (libvips unavailable — pixel spot-check skipped)");
+    }
 }

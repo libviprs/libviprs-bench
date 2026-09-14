@@ -103,7 +103,9 @@ fn a_default_build_runs_the_engines_family_end_to_end() {
     // 2. All three libviprs engines, and no libvips row — whatever is installed
     //    on the machine running this test.
     let results = read_json(&dir.join("benchmark_results.json"));
-    let rows = results.as_array().expect("benchmark_results.json is an array");
+    let rows = results
+        .as_array()
+        .expect("benchmark_results.json is an array");
     let engines: Vec<&str> = rows
         .iter()
         .filter_map(|r| r["engine"].as_str())
@@ -125,7 +127,9 @@ fn a_default_build_runs_the_engines_family_end_to_end() {
     // 3. The snapshot names its family, so this history can never be appended
     //    to another family's.
     let history = read_json(&dir.join("benchmark_history.json"));
-    let snapshots = history.as_array().expect("benchmark_history.json is an array");
+    let snapshots = history
+        .as_array()
+        .expect("benchmark_history.json is an array");
     assert_eq!(snapshots.len(), 1, "one run, one snapshot");
     assert_eq!(
         snapshots[0]["family"].as_str(),
@@ -179,7 +183,11 @@ fn the_vips_family_is_refused_by_the_report_binary_without_its_feature() {
         !out.status.success(),
         "asking a libvips-free build for the vips family must fail"
     );
-    assert_eq!(out.status.code(), Some(2), "and with a deliberate exit code");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "and with a deliberate exit code"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("libvips") && stderr.contains("--features libvips"),

@@ -1,0 +1,59 @@
+name: Storage measured claims
+
+# The two assertions that open an archive and read what it came out as are
+# `#[ignore]`d, because between them they generate a fifty megabyte archive and
+# a two hundred megabyte one and nobody wants that in the lint job. `ci.yml`
+# runs `cargo test --lib --tests` with no `--ignored` in either cell, so until
+# this file existed the brink cell's "16369 entries, no leaf pointers, fourteen
+# under the cutoff" and the six-phase reconciliation were guarded by tests that
+# never executed.
+#
+# Shrinking the fixtures was the other option and it is not available: the brink
+# cell *is* the cell whose root stops under the writer's cutoff, so a smaller one
+# measures a different thing and stops being the peak of the ramp. The leaf cell
+# is the smallest canvas that crosses the cutoff at all. So the fixtures stay and
+# the job runs them.
+#
+# A new workflow **file** rather than a job added to `ci.yml`, deliberately:
+# libviprs-tests' Hook Mirror guard compares `ci.yml`'s job list against
+# `tools/install-hooks.sh`, so a new job there reddens another repository until
+# it is mirrored in the same wave, and a new file does not.
+#
+# Release, not debug: the brink archive takes minutes to generate unoptimised
+# and about half a second optimised, and the reconciliation is a ratio between
+# two timings in the same binary, which debug's uneven slowdowns distort.
+
+on:
+  push:
+    branches: ['**']
+  schedule:
+    - cron: '47 5 * * *'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  measured:
+    name: Measured claims (--ignored, release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: libviprs-bench
+      - name: Clone libviprs core (sibling path dep)
+        run: |
+          BRANCH="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          git clone --depth 1 --branch "$BRANCH" \
+            https://github.com/${{ github.repository_owner }}/libviprs.git libviprs 2>/dev/null \
+            || git clone --depth 1 \
+              https://github.com/${{ github.repository_owner }}/libviprs.git libviprs
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: libviprs-bench
+      # The measured claims. `--ignored` is the whole point of this job: these
+      # two tests open the archives and ask them, and nothing else in CI does.
+      - name: Brink and leaf cells, and the cold-split reconciliation
+        working-directory: libviprs-bench
+        run: cargo test --release --test storage_scenarios -- --ignored --nocapture
