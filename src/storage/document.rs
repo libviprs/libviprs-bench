@@ -110,10 +110,10 @@ pub struct RepsByKind {
 }
 
 /// How the interval under `median` was computed.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IntervalSpec {
-    pub statistic: &'static str,
-    pub method: &'static str,
+    pub statistic: String,
+    pub method: String,
     pub level: f64,
     pub resamples: usize,
 }
@@ -121,13 +121,13 @@ pub struct IntervalSpec {
 /// What the run declared about how it measured.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Measurement {
-    pub unit: &'static str,
-    pub isolation: &'static str,
+    pub unit: String,
+    pub isolation: String,
     pub reps: RepsByKind,
     #[serde(rename = "minReps")]
     pub min_reps: RepsByKind,
     pub seed: String,
-    pub clock: &'static str,
+    pub clock: String,
     #[serde(rename = "timerTickNs")]
     pub timer_tick_ns: Option<f64>,
     #[serde(rename = "timerCallNs")]
@@ -146,7 +146,7 @@ pub struct Measurement {
     #[serde(rename = "freshProcessPerCell")]
     pub fresh_process_per_cell: bool,
     #[serde(rename = "pageCache")]
-    pub page_cache: &'static str,
+    pub page_cache: String,
 }
 
 impl Measurement {
@@ -158,26 +158,26 @@ impl Measurement {
             read: read_reps(profile),
         };
         Measurement {
-            unit: "fresh-process-per-cell",
-            isolation: "subprocess-per-cell",
+            unit: "fresh-process-per-cell".to_string(),
+            isolation: "subprocess-per-cell".to_string(),
             reps,
             min_reps: reps,
             seed: format!("{SEED:#018x}"),
-            clock: "std::time::Instant",
+            clock: "std::time::Instant".to_string(),
             timer_tick_ns: Some(probe.tick_ns),
             timer_call_ns: Some(probe.call_ns),
             min_ticks_per_sample: stats::MIN_TICKS_PER_SAMPLE,
             warmup: Some(WarmupBlock::from(Warmup::ONE_DISCARDED_PASS)),
             interval: IntervalSpec {
-                statistic: "median",
-                method: "percentile-bootstrap",
+                statistic: "median".to_string(),
+                method: "percentile-bootstrap".to_string(),
                 level: stats::BOOTSTRAP_LEVEL,
                 resamples: stats::BOOTSTRAP_RESAMPLES,
             },
             tie_band_pct: 3.0,
             cov_low_confidence: stats::COV_LOW_CONFIDENCE,
             fresh_process_per_cell: true,
-            page_cache: "warm-unknown",
+            page_cache: "warm-unknown".to_string(),
         }
     }
 }
@@ -198,16 +198,16 @@ pub fn read_reps(profile: Profile) -> u32 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// The warm-up policy as the document carries it.
+///
+/// The policy is an owned `String` and not the `&'static str` the scenario
+/// declares, because the document has to round trip and `serde` cannot fill a
+/// borrowed field from owned input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WarmupBlock {
-    pub policy: String_,
+    pub policy: String,
     pub passes: u32,
 }
-
-/// A `&'static str` that deserialises. `serde` cannot fill a `&'static str`
-/// from owned input, and the document has to round trip, so the policy is an
-/// owned string on the way back in.
-pub type String_ = String;
 
 impl From<Warmup> for WarmupBlock {
     fn from(w: Warmup) -> WarmupBlock {
@@ -278,7 +278,7 @@ pub struct TailBlock {
 ///
 /// Separate from [`Invariants`] only because the JSON names are the
 /// document's rather than Rust's.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct InvariantBlock {
     #[serde(rename = "outputBytes")]
     pub output_bytes: Option<u64>,
