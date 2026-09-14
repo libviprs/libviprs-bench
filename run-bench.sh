@@ -12,6 +12,7 @@ set -euo pipefail
 # Usage:
 #   ./run-bench.sh                             # scalability benchmark (default)
 #   ./run-bench.sh report                      # full comparison report
+#   ./run-bench.sh storage                     # PMTiles vs a directory tree (no libvips)
 #   ./run-bench.sh versions --versions v0.2.0,v0.3.1,HEAD
 #                                              # release-history axis (one snapshot per tag)
 #   ./run-bench.sh --arch arm                  # force arm64 build
@@ -26,6 +27,7 @@ NO_BUILD=false
 MEMORY_MB=""
 BENCH_CMD="scalability"
 VERSIONS=""
+STORAGE_PROFILE="ci"
 
 usage() {
     cat <<'EOF'
@@ -37,7 +39,13 @@ Usage:
 Commands (default: scalability):
   scalability   Engine scalability sweep  -> report/scalability_results.json
   report        Full comparison matrix    -> report/benchmark_{results,history}.json
+  storage       PMTiles vs a directory tree -> report/storage-results.json
   versions      Release-history axis (requires --versions)
+
+The 'storage' family compares libviprs against itself, so it needs no libvips
+and builds from the Dockerfile's small 'storage' stage instead of the full
+image. Its profile comes from --storage-profile (ci, full or xl); 'ci' proves
+the harness runs and is never published.
 
 Options:
   --versions <tag,tag,HEAD>   Refs to benchmark for the 'versions' command
@@ -74,8 +82,12 @@ while [[ $# -gt 0 ]]; do
             shift
             VERSIONS="$1"
             ;;
-        report|scalability)
+        report|scalability|storage)
             BENCH_CMD="$1"
+            ;;
+        --storage-profile)
+            shift
+            STORAGE_PROFILE="$1"
             ;;
         versions)
             BENCH_CMD="version_matrix"
@@ -206,6 +218,13 @@ if [ "$NO_BUILD" = true ]; then
         exit 0
     fi
 
+    # The storage family builds without the libvips feature by design, so it
+    # never takes $FEATURES even when the host has libvips to offer.
+    if [ "$BENCH_CMD" = "storage" ]; then
+        cargo run --release --bin storage -- --profile "$STORAGE_PROFILE"
+        exit 0
+    fi
+
     cargo run --release $FEATURES --bin "$BENCH_CMD"
 
     regenerate_charts "$SCRIPT_DIR/report"
@@ -241,8 +260,17 @@ echo "  libvips:   ${LIBVIPS_PIN:-unknown} (built from source, issue #33)"
 echo "  Command:   ${BENCH_CMD}"
 echo ""
 
+# The storage family targets the small stage that skips the libvips source
+# build entirely; everything else targets the default (builder) image.
+BUILD_TARGET_ARGS=()
+if [ "$BENCH_CMD" = "storage" ]; then
+    BUILD_TARGET_ARGS=(--target storage)
+    IMAGE_NAME="libviprs-bench:storage"
+fi
+
 DOCKER_BUILDKIT=1 docker build \
     --platform "$PLATFORM" \
+    "${BUILD_TARGET_ARGS[@]}" \
     -f "$SCRIPT_DIR/Dockerfile" \
     -t "$IMAGE_NAME" \
     "$WORKSPACE_DIR"
@@ -257,6 +285,20 @@ echo ""
 
 # Mount report/ so charts persist after the container exits
 mkdir -p "$SCRIPT_DIR/report"
+
+if [ "$BENCH_CMD" = "storage" ]; then
+    docker run --rm \
+        --platform "$PLATFORM" \
+        --name "$CONTAINER_NAME" \
+        --memory="${MEMORY_MB}m" \
+        -e RUSTFLAGS="$RUSTFLAGS" \
+        -v "$SCRIPT_DIR/report:/src/libviprs-bench/report" \
+        "$IMAGE_NAME" \
+        cargo run --release --bin storage -- --profile "$STORAGE_PROFILE"
+    echo ""
+    echo "Results written to ${SCRIPT_DIR}/report/storage-results.json"
+    exit 0
+fi
 
 docker run --rm \
     --platform "$PLATFORM" \

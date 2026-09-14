@@ -51,6 +51,38 @@ ARG LIBVIPS_SHA256=2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff
 # lands on a real snapshot.
 ARG DEBIAN_SNAPSHOT=20250929T000000Z
 
+# ---------------------------------------------------------------------------
+# The `storage` stage: the libviprs-only families, no libvips at all.
+#
+# `storage` compares PMTiles against a directory tree, which is libviprs
+# against libviprs, so nothing in it links the C oracle. Building libvips from
+# source for it would add ten minutes and a hundred apt packages to a job that
+# cannot use any of it, so this stage starts at the same digest-pinned Rust
+# base the builder does and stops there. Same toolchain, same base image, a
+# fraction of the build.
+#
+# It sits ahead of the builder stage on purpose: BuildKit skips a stage nothing
+# depends on, so a plain `docker build` with no `--target` still produces the
+# builder image and `run-bench.sh`'s default path is untouched.
+#
+#   docker build --platform linux/arm64 --target storage -t libviprs-bench:storage .
+#   docker run --rm --platform linux/arm64 libviprs-bench:storage
+# ---------------------------------------------------------------------------
+FROM rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff AS storage
+
+WORKDIR /src
+COPY libviprs/ libviprs/
+COPY libviprs-bench/ libviprs-bench/
+
+WORKDIR /src/libviprs-bench
+RUN cargo fetch
+
+# Default features only. The `storage` family must build without `libvips`,
+# and this is where that is enforced rather than asserted.
+RUN cargo build --release --bin storage
+
+CMD ["cargo", "run", "--release", "--bin", "storage", "--", "--profile", "ci"]
+
 # Stage 1: Download PDFium for the target architecture. Base image digest-pinned
 # (not just tag-pinned) so the exact layer cannot shift under a rebuild (#35).
 FROM debian:bookworm-20250929-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 AS pdfium
