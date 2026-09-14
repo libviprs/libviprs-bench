@@ -72,14 +72,24 @@ serde = { version = "1", features = ["derive"] }
 # its canary: delete this feature and that test goes red (libviprs-bench #66).
 serde_json = { version = "1", features = ["float_roundtrip"] }
 
+# SHA-256 for the storage archive's digests (`src/sha256.rs`) and for the
+# committed PDF fixture's integrity guard (`tests/pdf_fixture.rs`). It was a
+# dev-dependency until the archive needed it, and promoting it costs nothing:
+# `libviprs` already depends on sha2 0.11 directly and is a normal path
+# dependency here, so this crate's binaries were already compiling it. Pinned to
+# 0.11 to match that. The graph is NOT single-version — `lopdf` (via libviprs)
+# still pulls a sha2 0.10.x transitively — so this pin dedups against libviprs's
+# direct dep rather than across the whole tree (libviprs-bench #66).
+sha2 = "0.11"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-# SHA-256 for the committed real-content fixture's integrity guard
-# (tests/pdf_fixture.rs). Pinned to 0.11 to match `libviprs`'s own direct
-# sha2 dep, so this dev-dep adds no new major of its own. Note the graph is
-# NOT single-version: `lopdf` (via libviprs) still pulls a sha2 0.10.x
-# transitively, so both majors are present — this pin only dedups against
-# libviprs's direct dep, not the whole tree.
+
+# `build.rs` digests `Cargo.lock` for `provenance.lockfileHash`, and a build
+# script cannot use its own crate's library, so the same `sha2` is listed again
+# here. This is the entire cost of not hand-rolling the hash: one extra
+# compilation of sha2 for the host, which never reaches a shipped binary.
+[build-dependencies]
 sha2 = "0.11"
 
 [[bench]]
