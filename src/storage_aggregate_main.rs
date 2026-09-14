@@ -125,16 +125,22 @@ fn print_usage() {
     );
 }
 
-fn read_document(path: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|err| format!("{} could not be read: {err}", path.display()))?;
-    serde_json::from_str(&text).map_err(|err| format!("{} is not JSON: {err}", path.display()))
+/// Read a document as the bytes it is stored as.
+///
+/// Bytes rather than a parsed value, and that is the whole of the fix for the
+/// digest hole: `serde_json`'s number reader is not correctly rounded, so a
+/// document parsed and re-canonicalised does not digest to what its producer
+/// wrote. Every mode below works from this string.
+fn read_document(path: &Path) -> Result<String, String> {
+    std::fs::read_to_string(path)
+        .map_err(|err| format!("{} could not be read: {err}", path.display()))
 }
 
 /// Say whether a document would be archived, and if not, every reason.
 fn check(path: &Path) -> Result<u8, String> {
-    let doc = read_document(path)?;
-    let refusals = archive::admit(&doc);
+    let text = read_document(path)?;
+    let refusals =
+        archive::admit_text(&text).map_err(|err| format!("{}: {err}", path.display()))?;
     if refusals.is_empty() {
         println!("{}: admissible", path.display());
         return Ok(OK);
@@ -148,8 +154,8 @@ fn check(path: &Path) -> Result<u8, String> {
 
 /// Admit, seal and file.
 fn do_archive(path: &Path, root: &Path) -> Result<u8, String> {
-    let doc = read_document(path)?;
-    match archive::archive(&doc, root) {
+    let text = read_document(path)?;
+    match archive::archive_text(&text, root) {
         Ok(entry) if entry.written => {
             println!(
                 "archived {} as {} ({})",
@@ -188,8 +194,8 @@ fn do_archive(path: &Path, root: &Path) -> Result<u8, String> {
 
 /// Recompute the four digests and name the block that moved.
 fn verify(path: &Path) -> Result<u8, String> {
-    let doc = read_document(path)?;
-    let report = integrity::verify(&doc).map_err(|err| err.to_string())?;
+    let text = read_document(path)?;
+    let report = integrity::verify_text(&text).map_err(|err| err.to_string())?;
     for line in report.lines() {
         if report.ok() {
             println!("{line}");

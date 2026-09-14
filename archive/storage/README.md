@@ -86,6 +86,38 @@ silently disagrees:
 4. **Strings.** RFC 8259 escaping: `\"`, `\\`, the five two-character control
    escapes, `\u00xx` for the remaining C0 controls, everything else literal.
 
+Two more that are not about spelling at all.
+
+**A digest comes from the producer's own bytes, never from a re-serialised
+parse.** `serde_json`'s number *reader* is not correctly rounded. Measured in an
+arm64 container on `0.09090909090909091`, which is the coefficient of variation
+of `[10, 11, 12]` and so a value this suite really produces:
+
+```
+witness text          0.09090909090909091
+std parse             3fb745d1745d1746   prints 0.09090909090909091
+serde_json parse      3fb745d1745d1747   prints 0.09090909090909093
+serde_json print(std) 0.09090909090909091
+```
+
+The printer is right and `std` agrees with it, so the reader is the one that is
+wrong, and `parse(print(x)) == x` is false through `serde_json`. A document whose
+bytes are exactly what the producer wrote would fail its own integrity check.
+Across languages it is worse: V8's `JSON.parse` *is* correctly rounded, so Rust
+and JavaScript read one archived file as two different floats and derive two
+different digests from a file neither wrote incorrectly.
+
+So nothing on the digest path builds a float. `integrity.rs` reads JSON into a
+tree that keeps every number as the text it was written as, and canonicalises
+that text by moving the decimal point and trimming zeros. Both range rules are
+checked by counting digits. `--verify` works from the file's bytes, `--archive`
+re-prints the number tokens it read rather than re-serialising them, and there is
+deliberately no function in the module that will verify a parsed value.
+
+**A key that appears twice is refused.** It is legal JSON and every reader
+resolves it differently, so a document carrying one digests to whatever the
+reader happened to keep.
+
 A digest is `sha256:` followed by 64 lowercase hex characters over the UTF-8
 bytes of the canonical string.
 
@@ -113,7 +145,7 @@ forty-minute sweep into an afternoon.
 | `no-cells` | an empty reading is a refusal, not a result |
 | `unattested-cell` | a cell claims `outcome: ok` without `storageAttested: true` |
 | `outcome-without-reason` | a non-`ok` cell with no reason |
-| `integrity` | the document carries digests that no longer hold |
+| `integrity` | the document carries digests that no longer hold, checked over the file's own bytes |
 
 Two refusals can be cleared, and neither of them by making the problem go away.
 `--allow-dirty` records the dirt and forces it onto every cell. A profile that
