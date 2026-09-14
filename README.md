@@ -9,7 +9,7 @@
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
 </p>
 
-Benchmark harness for [libviprs](../libviprs), comparing its three pyramid engines against [libvips](https://www.libvips.org/) `dzsave` under identical inputs.
+Benchmark harness for [libviprs](../libviprs): how its three pyramid engines compare to each other, and how that moves across releases. A comparison against [libvips](https://www.libvips.org/) `dzsave` is kept too, behind the `libvips` cargo feature.
 
 This crate is kept in a separate repository so the library crate stays free of heavy benchmark-only dependencies (criterion, libvips FFI).
 
@@ -18,7 +18,26 @@ This crate is kept in a separate repository so the library crate stays free of h
 
 ## What this is
 
-`libviprs-bench` measures how libviprs scales as image size and concurrency change, and how it compares to libvips on the same workload. To keep the cross-engine comparison apples-to-apples, every engine — the three libviprs engines and libvips `dzsave` — writes its tiles as **PNG files to a real on-disk sink** under the same DeepZoom layout, so neither side gets an in-RAM-sink or tile-codec advantage.
+`libviprs-bench` measures how libviprs scales as image size and concurrency change. Every run measures one **family**, and the family is what the runner, the report and the charts are keyed on.
+
+| Family | What it measures | Needs |
+|---|---|---|
+| `engines` | monolithic vs streaming vs mapreduce | nothing: no cargo features, no libvips anywhere. **The default.** |
+| `storage` | PMTiles vs a directory tree | nothing; the cells land in K1.2 and asking for it before then is refused |
+| `vips` | the libvips `dzsave` comparison | `--features libvips`, and the pinned libvips the Docker image builds |
+
+libviprs-only is the default build and the default output. The comparison is a
+second question this harness can also answer, not the frame the first one hangs
+off: a run of `engines` measures the same three engines whether or not the
+machine it runs on has libvips installed, because the engine set is a function
+of the family and of nothing else.
+
+Each family writes into its own `report/<family>/` directory, so two families
+can never append to each other's history or overwrite each other's charts. A
+snapshot records the family it came out of, and appending one family's snapshot
+to another's history is refused.
+
+To keep the cross-engine comparison apples-to-apples, every engine writes its tiles as PNG files to a real on-disk sink under the same DeepZoom layout, so neither side gets an in-RAM-sink or tile-codec advantage. That holds for the libviprs engines and for libvips `dzsave` alike, and `tests/encoding_claim.rs` proves it from a real run and then holds this sentence to it.
 
 The harness produces:
 
@@ -37,25 +56,29 @@ The harness produces:
 | **Monolithic** | in-memory `Raster` | Decodes the full canvas, downscales level-by-level. Highest peak memory, fastest at small sizes. |
 | **Streaming** | strip source | Sequential strip pipeline bounded by a memory budget. Memory scales with strip width, not image area. |
 | **MapReduce** | strip source | Parallel strip pipeline. Same strip-bounded model as streaming, with `K` in-flight strips trading memory for throughput. |
-| **libvips** | in-memory `VipsImage` | External baseline via `dzsave`, writing PNG tiles to the same on-disk sink as the libviprs engines. Either spawned as a CLI or, with the `libvips` feature, called in-process through FFI. |
+| **libvips** | in-memory `VipsImage` | External baseline via `dzsave`, writing PNG tiles to the same on-disk sink as the libviprs engines. Either spawned as a CLI or, with the `libvips` feature, called in-process through FFI. **`vips` family only** — no other family will measure it, installed or not. |
 
 | Bench file | Targets |
 |---|---|
 | `benches/engine_comparison.rs` | Criterion micro-benchmarks for monolithic / streaming / MapReduce, plus a head-to-head group across image sizes. |
-| `src/scalability.rs` (`scalability` bin) | Scalability sweep from 0.2 MP to 47 MP, comparing all four engines on a 1.42:1 aspect ratio matching `43551_California_South.pdf`. |
-| `src/report.rs` (`report` bin) | Full comparison matrix across image sizes and concurrency levels, with versioned history. |
+| `src/scalability.rs` (`scalability` bin) | Scalability sweep from 0.2 MP to 280 MP over the family's engines, on a 1.42:1 aspect ratio matching `43551_California_South.pdf`. Takes `--family`. |
+| `src/report.rs` (`report` bin) | Full matrix across image sizes and concurrency levels for the family's engines, with versioned history. Takes `--family`. |
 | `src/flamegraph.rs` (`flamegraph` bin) | Time-weighted flame graphs (frame width = µs) for all three libviprs engines on a 4096x4096 image. Per-tile widths are faithful for the serial monolithic engine; for the strip-based streaming/MapReduce engines read them at level/root granularity (per-tile widths are emission cadence). |
 
 ## Running benchmarks
 
 ```bash
-# Scalability sweep (default) — writes report/scalability_results.json, then
-# renders report/scalability_*.svg from it (see "Charts" below)
+# Scalability sweep of the engines family (the default) — writes
+# report/engines/scalability_results.json, then renders the SVGs from it
 ./run-bench.sh
 
-# Full comparison matrix — writes benchmark_results.json + benchmark_history.json,
-# then renders report/chart_*.svg + chart_history_*.svg
+# Full matrix for the engines family — writes benchmark_results.json +
+# benchmark_history.json under report/engines/, then renders the charts
 ./run-bench.sh report
+
+# The libvips comparison. Builds the pinned libvips stage and runs with
+# --features libvips; everything lands under report/vips/
+./run-bench.sh report --family vips
 
 # Force architecture
 ./run-bench.sh --arch arm
@@ -64,11 +87,20 @@ The harness produces:
 # Container memory limit (MB, default 4096)
 ./run-bench.sh --memory 2048
 
-# Run locally without Docker (requires libvips-dev + pkg-config installed)
+# Run locally without Docker (--family vips additionally needs libvips-dev + pkg-config)
 ./run-bench.sh --no-build
 ```
 
-Output is written to `report/`. Each run of the `report` command appends an entry to `benchmark_history.json`; once two or more entries exist, the trend charts (`chart_history_*.svg`) showing wall time and peak memory across versions are rendered from it.
+The binaries take the same flag directly, and a family they cannot run is refused with a non-zero exit rather than measured as something else:
+
+```bash
+cargo run --release --bin report                              # engines, no features
+cargo run --release --features libvips --bin report -- --family vips
+cargo run --release --bin report -- --family vips             # refused: names the feature
+cargo run --release --bin report -- --help                    # lists the families
+```
+
+Output is written to `report/<family>/`. Each run of the `report` command appends an entry to that family's `benchmark_history.json`; once two or more entries exist, the trend charts (`chart_history_*.svg`) showing wall time and peak memory across versions are rendered from it.
 
 ### Charts
 
@@ -77,12 +109,12 @@ Every SVG — the grouped-bar comparison charts (`chart_*.svg`), the history-tre
 Running a binary directly (`cargo run --bin scalability` / `--bin report`) emits **JSON only**. To (re)render the SVGs from JSON already on disk:
 
 ```bash
-node tools/charts/render.mjs --report-dir report            # log-log scalability axes (default)
-node tools/charts/render.mjs --report-dir report --linear   # linear scalability axes
-node tools/charts/render.mjs --report-dir report --zoom 20  # + large-image scalability_*_zoom.svg (>= 20 MP)
+node tools/charts/render.mjs --report-dir report/engines            # log-log scalability axes (default)
+node tools/charts/render.mjs --report-dir report/engines --linear   # linear scalability axes
+node tools/charts/render.mjs --report-dir report/engines --zoom 20  # + large-image scalability_*_zoom.svg (>= 20 MP)
 ```
 
-`render.mjs` is deterministic (same JSON → byte-identical SVGs) and idempotent — it re-renders the whole report from whatever JSON is present. Its own tests run with `node --test '*.test.mjs'` from `tools/charts/` (or `npm test` there).
+`render.mjs` is deterministic (same JSON → byte-identical SVGs) and idempotent — it re-renders the whole report from whatever JSON is present. Point `--report-dir` at a family directory (`report/engines`, `report/vips`) to draw that family. Its own tests run with `node --test '*.test.mjs'` from `tools/charts/` (or `npm test` there).
 
 The grouped-bar comparison charts read `benchmark_results.json`, the history trends read `benchmark_history.json`, and the scalability charts read `scalability_results.json`. A committed golden set under `tools/charts/fixtures/` mirrors the exact serde shape the Rust serializers emit; `render.mjs`'s shape probes plus the Rust `tests/chart_shape_drift.rs` guard catch producer/consumer field drift between the two.
 
@@ -167,24 +199,34 @@ cargo run --release --features pdfium --bin pdfium_strip_source_bench -- \
 
 ## Docker
 
-`run-bench.sh` builds a Docker image with libvips, PDFium, and both crates side-by-side, then runs the chosen binary inside it with a memory limit. This is the recommended path because it pins the libvips version and isolates the host from the benchmark.
+`run-bench.sh` builds the Docker image the family needs, then runs the chosen binary inside it with a memory limit. This is the recommended path because it isolates the host from the benchmark, and for the `vips` family it also pins the libvips version.
+
+There are two stages, because the families need different machines:
+
+| Stage | For | What is in it |
+|---|---|---|
+| `--target engines` | `engines`, `storage` | Rust and the two crates. No libvips headers, no `vips` binary, no cargo features. Builds in a fraction of the time. |
+| default target | `vips` | the above plus libvips compiled from a pinned upstream source tarball, plus PDFium |
+
+The absence in the first one is the point: a family that measures three libviprs engines must not be able to find a fourth.
 
 You can also drive Docker directly:
 
 ```bash
 # From the workspace root (parent of libviprs/ and libviprs-bench/)
-docker build -f libviprs-bench/Dockerfile -t libviprs-bench .
+docker build --target engines -f libviprs-bench/Dockerfile -t libviprs-bench:engines .
 
-# Default: scalability binary
+# Default: scalability binary over the engines family
 docker run --rm --memory=4096m \
     -v "$(pwd)/libviprs-bench/report:/src/libviprs-bench/report" \
-    libviprs-bench
+    libviprs-bench:engines
 
-# Run the full report binary
+# The libvips comparison
+docker build -f libviprs-bench/Dockerfile -t libviprs-bench .
 docker run --rm --memory=4096m \
     -v "$(pwd)/libviprs-bench/report:/src/libviprs-bench/report" \
     libviprs-bench \
-    cargo run --release --features libvips --bin report
+    cargo run --release --features libvips --bin report -- --family vips
 ```
 
 The `report/` directory is mounted into the container so charts persist after it exits.
@@ -193,28 +235,38 @@ The `report/` directory is mounted into the container so charts persist after it
 
 | Feature | Default | Description |
 |---|---|---|
-| `libvips` | off | Enables in-process libvips FFI via `libvips-rs`. Without it, libvips is invoked through the `vips` CLI when present. |
+| `libvips` | off | Enables in-process libvips FFI via `libvips-rs`, and with it the `vips` family. Without it the `vips` family is refused, naming the feature, rather than run empty. |
+| `pdfium` | off | The rasterized-PDF workload (`pdfium_strip_source_bench`, and the `streaming-pdf` scalability series). |
+| `polars` | off | The `cross_version` columnar analysis binary. |
+
+The default feature set is empty, and that is load-bearing: the `engines` family builds, runs and charts with no features at all, so `libvips-rs` is never in the normal dependency graph and the cheap CI cell never needs libvips installed.
 
 ## Output layout
 
+One directory per family, identical inside:
+
 ```
 report/
-├── scalability_wall_time.svg
-├── scalability_peak_memory.svg
-├── scalability_throughput.svg
-├── scalability_efficiency.svg
-├── scalability_resource_cost.svg
-├── scalability_results.json
-├── chart_wall_time.svg
-├── chart_peak_memory.svg
-├── chart_throughput.svg
-├── chart_efficiency.svg
-├── chart_resource_cost.svg
-├── chart_history_<size>_c<n>_time.svg
-├── chart_history_<size>_c<n>_memory.svg
-├── benchmark_results.json
-├── benchmark_history.json
-├── comparison_table.txt
+├── engines/                 # the default family
+│   ├── scalability_wall_time.svg
+│   ├── scalability_peak_memory.svg
+│   ├── scalability_throughput.svg
+│   ├── scalability_efficiency.svg
+│   ├── scalability_resource_cost.svg
+│   ├── scalability_results.json
+│   ├── chart_wall_time.svg
+│   ├── chart_peak_memory.svg
+│   ├── chart_tracked_memory.svg
+│   ├── chart_throughput.svg
+│   ├── chart_efficiency.svg
+│   ├── chart_resource_cost.svg
+│   ├── chart_history_<size>_c<n>_time.svg
+│   ├── chart_history_<size>_c<n>_memory.svg
+│   ├── benchmark_results.json
+│   ├── benchmark_history.json
+│   ├── comparison_table.txt
+│   └── verdict_table.txt
+├── vips/                    # same shape, plus the libvips row and the PSNR spot-check
 └── flamegraph_{monolithic,streaming,mapreduce}.svg
 ```
 
@@ -223,7 +275,7 @@ report/
 - Rust 1.85+ (edition 2024)
 - Docker (recommended, used by `run-bench.sh`)
 - For `--no-build`: `libvips-dev` and `pkg-config` on the host
-- **Node** (recent LTS) on the host to render the history/scalability SVGs (`tools/charts/render.mjs`); optional — without it the benchmark still writes its JSON
+- **Node** (recent LTS) on the host to render the history/scalability SVGs (`tools/charts/render.mjs`). Optional for a benchmark run — without it the run still writes its JSON — but **required to run the test suite**, because `tests/engines_family_end_to_end.rs` asserts the charts are actually drawn and a chart assertion that quietly does not run is the same colour as one that passed
 
 ## See also
 
