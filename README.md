@@ -248,11 +248,11 @@ One directory per family, identical inside:
 ```
 report/
 ├── engines/                 # the default family
-│   ├── scalability_wall_time.svg
-│   ├── scalability_peak_memory.svg
-│   ├── scalability_throughput.svg
-│   ├── scalability_efficiency.svg
-│   ├── scalability_resource_cost.svg
+│   ├── scalability_wall_time_c<n>.svg      # one set per thread budget (#156)
+│   ├── scalability_peak_memory_c<n>.svg
+│   ├── scalability_throughput_c<n>.svg
+│   ├── scalability_efficiency_c<n>.svg
+│   ├── scalability_resource_cost_c<n>.svg
 │   ├── scalability_results.json
 │   ├── chart_wall_time.svg
 │   ├── chart_peak_memory.svg
