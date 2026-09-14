@@ -40,6 +40,9 @@
 
 pub mod cells;
 pub mod document;
+/// The two declared cost models (issue #67). Not measurements, and never
+/// charted on an axis carrying one.
+pub mod model;
 pub mod scenarios;
 pub mod stats;
 
@@ -135,6 +138,26 @@ pub fn raster(source: Source, width: u32, height: u32) -> Raster {
                 }
                 *byte = chunk[taken];
                 taken += 1;
+            }
+        }
+        Source::PeriodicGradient => {
+            // The same ramp with its moduli rounded to 256, so it repeats every
+            // 256 pixels on both axes. It exists as the positive control for
+            // `cells::collapses_at`: a guard that refuses a source whose period
+            // divides the tile size has to be shown refusing one, and the
+            // gradient above never will.
+            //
+            // It is not invented for the test. `libviprs_bench::gradient_raster`
+            // in `src/lib.rs` is `(x % 256, y % 256, (x * 7 + y * 13) % 256)`
+            // and has exactly this shape, which makes this source a measurement
+            // of what that costs as well as a control.
+            for y in 0..height {
+                for x in 0..width {
+                    let off = (y as usize * width as usize + x as usize) * 3;
+                    data[off] = (x % 256) as u8;
+                    data[off + 1] = (y % 256) as u8;
+                    data[off + 2] = ((x * 7 + y * 13) % 256) as u8;
+                }
             }
         }
         Source::Flat => {}
@@ -436,14 +459,11 @@ impl ReaderFactory for NoReaders {
 /// rows is about order and nothing else. `N` is the profile's cap or the plan
 /// length, whichever is smaller.
 pub fn coordinate_sets(plan: &PyramidPlan, profile: Profile, seed: u64) -> Coordinates {
-    let all = cells::coordinates(plan);
-    let n = profile.read_samples().min(all.len());
-    let plan_order: Vec<TileCoord> = all.iter().copied().take(n).collect();
-
-    let mut tileid_order = plan_order.clone();
-    tileid_order.sort_by_key(|c| {
-        libviprs::pmtiles::zxy_to_tileid(c.level as u8, c.col, c.row).unwrap_or(u64::MAX)
-    });
+    let n = profile.read_samples().min(cells::coordinates(plan).len());
+    // Both orders come from the scenario modules that publish them, so there is
+    // one sort in the family rather than one here and another there.
+    let plan_order = scenarios::plan_order::coordinates(plan, n);
+    let tileid_order = scenarios::tileid_order::coordinates(plan, n);
 
     // A seeded Fisher-Yates over the same set, so the random row addresses the
     // same tiles as the ordered rows and only the order differs.

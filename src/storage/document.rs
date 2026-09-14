@@ -491,6 +491,36 @@ pub struct InvariantEntry {
     pub unit: String,
 }
 
+/// Whether a published quantity was observed or declared.
+///
+/// Document-shaped rather than scenario-shaped, which is why it lives here: it
+/// is a property of a cell in the output, every consumer of the document has to
+/// honour it, and no scenario changes its meaning.
+///
+/// The directory backend's request count is one object per tile, and nothing
+/// measured that: there is no range reader under a `std::fs::read`. It is a
+/// declaration, it is correct, and it must never render as a measurement beside
+/// the archive's observed counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Origin {
+    Observed,
+    Declared,
+}
+
+impl Origin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Origin::Observed => "observed",
+            Origin::Declared => "declared",
+        }
+    }
+
+    pub fn is_declared(self) -> bool {
+        matches!(self, Origin::Declared)
+    }
+}
+
 /// One modelled quantity. Never charted on an axis carrying a measured one.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelledEntry {

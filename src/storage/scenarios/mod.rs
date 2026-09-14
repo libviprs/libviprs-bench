@@ -30,6 +30,21 @@
 
 pub mod reference;
 
+// The scenarios and cells the old sweep never had (issue #67). Each one is a
+// `Scenario` over the contract above, so nothing here constructs a reader: a
+// scenario that wants a cold one asks `ReaderFactory::fresh()` again, and the
+// request-counting proof works by putting a counting factory behind that seam
+// rather than by reaching around it.
+pub mod concurrent_curve;
+pub mod counting;
+pub mod decode_root;
+pub mod first_lookup;
+pub mod open;
+pub mod plan_order;
+pub mod replicate;
+pub mod requests;
+pub mod tileid_order;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
