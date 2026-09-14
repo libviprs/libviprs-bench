@@ -110,6 +110,19 @@ pub enum Source {
     /// being the cell it is labelled as. A source planning 16369 tiles comes
     /// out as a root of 261 entries.
     Flat,
+    /// The same ramp with its moduli rounded to 256, which makes it repeat
+    /// every 256 pixels on both axes.
+    ///
+    /// Never published either. It is here as the positive control for
+    /// [`collapses_at`]: a guard that refuses a source whose period divides the
+    /// tile size has to be shown refusing one, and the honest way to show that
+    /// is with a source the guard really does refuse rather than with a solid
+    /// fill, which collapses for a second reason as well.
+    ///
+    /// It is not invented for the test. `libviprs_bench::gradient_raster` in
+    /// `src/lib.rs`, which the `engines` family tiles, is
+    /// `(x % 256, y % 256, (x * 7 + y * 13) % 256)` and has exactly this shape.
+    PeriodicGradient,
 }
 
 impl Source {
@@ -118,6 +131,7 @@ impl Source {
             Self::Gradient => "gradient",
             Self::Noise => "noise",
             Self::Flat => "flat",
+            Self::PeriodicGradient => "periodic-gradient",
         }
     }
 
@@ -128,7 +142,7 @@ impl Source {
     /// and a row from it would be labelled with a cell whose regime it does not
     /// have.
     pub fn publishes_rows(self) -> bool {
-        !matches!(self, Self::Flat)
+        !matches!(self, Self::Flat | Self::PeriodicGradient)
     }
 
     /// The raster a cell of this source generates from.
@@ -137,29 +151,72 @@ impl Source {
             Self::Gradient => gradient(width, height),
             Self::Noise => noise(width, height),
             Self::Flat => flat(width, height),
+            Self::PeriodicGradient => periodic_gradient(width, height),
         }
     }
 }
 
 /// Every source a sweep may walk, publishable or not.
-pub const SOURCES: [Source; 3] = [Source::Gradient, Source::Noise, Source::Flat];
+pub const SOURCES: [Source; 4] = [
+    Source::Gradient,
+    Source::Noise,
+    Source::Flat,
+    Source::PeriodicGradient,
+];
 
-/// The deterministic RGB gradient the engine's harness already uses.
+/// The deterministic RGB gradient the engine's harness already uses, ported
+/// line for line.
+///
+/// From `tests/common/pmtiles_bench.rs` at `libviprs` `origin/main`, read with
+/// `git show origin/main:tests/common/pmtiles_bench.rs` rather than out of a
+/// working tree, because the checkout sitting next to this one is parked on a
+/// branch that predates the whole `pmtiles` module and does not contain that
+/// file at all.
 ///
 /// Copied rather than imported because the engine keeps it in a test-only
 /// module reached through `#[path]`, and K2.5 is the lane that decides whether
-/// it becomes a `pub` item over there. Byte for byte the same function, so an
-/// archive built here is the archive built there.
+/// it becomes a `pub` item over there. It has to be the same function, moduli
+/// and all: the `storage` family exists to re-home that harness, and a sweep
+/// measuring a different source produces numbers that are comparable neither
+/// with the published sweep nor with the engine's own guards.
+///
+/// The three moduli are **prime** and none of them divides 256, and that is the
+/// load-bearing part. The x channel repeats every 251 pixels, the y channel
+/// every 241, and the third every 239 on both axes, so the smallest tile that
+/// could make two neighbouring tiles byte-identical is 251 * 241 * 239 pixels
+/// wide. No tile size any sweep uses comes near it, so this source never
+/// collapses under the writer's run-length encoding.
 pub fn gradient(width: u32, height: u32) -> Raster {
-    let mut data = Vec::with_capacity((width as usize) * (height as usize) * 3);
+    let mut data = vec![0u8; width as usize * height as usize * 3];
     for y in 0..height {
         for x in 0..width {
-            data.push((x % 256) as u8);
-            data.push((y % 256) as u8);
-            data.push(((x + y) % 256) as u8);
+            let off = (y as usize * width as usize + x as usize) * 3;
+            data[off] = (x % 251) as u8;
+            data[off + 1] = (y % 241) as u8;
+            data[off + 2] = ((x * 7 + y * 13) % 239) as u8;
         }
     }
     Raster::new(width, height, PixelFormat::Rgb8, data).expect("a gradient raster is well formed")
+}
+
+/// The same ramp with power-of-two moduli, which makes it repeat every 256
+/// pixels.
+///
+/// The control that proves [`collapses_at`] can fire, and a copy of a shape that
+/// is already in this crate: `libviprs_bench::gradient_raster` is
+/// `(x % 256, y % 256, (x * 7 + y * 13) % 256)`.
+pub fn periodic_gradient(width: u32, height: u32) -> Raster {
+    let mut data = vec![0u8; width as usize * height as usize * 3];
+    for y in 0..height {
+        for x in 0..width {
+            let off = (y as usize * width as usize + x as usize) * 3;
+            data[off] = (x % 256) as u8;
+            data[off + 1] = (y % 256) as u8;
+            data[off + 2] = ((x * 7 + y * 13) % 256) as u8;
+        }
+    }
+    Raster::new(width, height, PixelFormat::Rgb8, data)
+        .expect("a periodic gradient raster is well formed")
 }
 
 /// A seeded xorshift fill: the incompressible source.
@@ -524,81 +581,104 @@ pub fn random_order(coords: &[TileCoord], seed: u64) -> Vec<TileCoord> {
     out
 }
 
-/// The cells a sweep may publish rows for.
+
+// ---------------------------------------------------------------------------
+// A source's period, which is not a detail
+// ---------------------------------------------------------------------------
+
+/// How many pixels a source runs for before it repeats on both axes, when it
+/// repeats at all.
 ///
-/// Everything except the `flat` dedupe guard. It is filtered here, once, rather
-/// than by every consumer remembering to, because the failure mode is a row
-/// labelled with a cell whose regime it does not have and nothing downstream
-/// can see that.
-pub fn publishable(cells: &[Cell]) -> Vec<Cell> {
-    cells
-        .iter()
-        .copied()
-        .filter(|cell| cell.source.publishes_rows())
-        .collect()
+/// It matters because the writer counts **run-length-encoded entries**. A
+/// level's tile ids are one contiguous range, so if every tile of a level is
+/// byte-identical the writer merges the lot into a single entry and the cell
+/// stops being the cell its tile count says it is.
+///
+/// * [`Source::Gradient`] is `(x % 251, y % 241, (x * 7 + y * 13) % 239)`. Three
+///   primes, none of them a factor of any tile size anybody uses, so the
+///   smallest repeat is `251 * 241 * 239 = 14_457_349` pixels.
+/// * [`Source::PeriodicGradient`] is the same ramp at 256, so it repeats every
+///   256 pixels.
+/// * [`Source::Flat`] repeats every pixel.
+/// * [`Source::Noise`] is a seeded xorshift walk over the whole raster, so it
+///   never repeats inside a canvas anybody can allocate. `None`.
+pub fn period_px(source: Source) -> Option<u32> {
+    match source {
+        Source::Gradient => Some(251 * 241 * 239),
+        Source::PeriodicGradient => Some(256),
+        Source::Flat => Some(1),
+        Source::Noise => None,
+    }
 }
 
-// ---------------------------------------------------------------------------
-// The gradient's period, which is not a detail
-// ---------------------------------------------------------------------------
-
-/// How often the gradient repeats, in pixels, on both axes.
+/// Whether a tile size makes every tile of a level byte-identical for this
+/// source.
 ///
-/// `gradient` is `(x % 256, y % 256, (x + y) % 256)`, so it is periodic with a
-/// period of 256 on both axes and that number is load bearing rather than
-/// cosmetic.
-pub const GRADIENT_PERIOD_PX: u32 = 256;
-
-/// Whether a tile size makes every tile of a gradient level byte-identical.
+/// It does exactly when the tile is a whole number of the source's periods
+/// wide. Then tile `(i, j)` covers `x` in `[t*i, t*i + t)`, the source runs
+/// through the same values for every `i`, and the same on the other axis, so
+/// every tile at that level is the same bytes and the level collapses to one
+/// entry.
 ///
-/// It does whenever the tile is a whole number of periods wide. Then tile
-/// `(i, j)` covers `x` in `[t*i, t*i + t)`, `x % 256` runs 0 to 255 for every
-/// `i`, and the same for `y`, so every tile at that level is the same bytes. A
-/// level's tile ids are a contiguous range, the writer's run-length encoding
-/// merges a contiguous run of identical payloads into one entry, and the whole
-/// level collapses to **one** entry.
+/// Measured, on this crate's own archives, by
+/// `the_measured_root_entries_of_every_source`:
 ///
-/// Measured, on this crate's own archives:
+/// | cell | planned tiles | gradient | noise | periodic gradient | flat |
+/// |---|---|---|---|---|---|
+/// | 1024x1024@256 | 29 | 29 | 29 | 11 | 11 |
+/// | 1024x1024@128 | 92 | 92 | 92 | 74 | 11 |
+/// | 1024x1024@64 | 347 | 347 | 347 | 329 | 11 |
+/// | 1024x1024@46 | 728 | 728 | 728 | 728 | 80 |
+/// | 2048x2048@256 | 93 | 93 | 93 | 12 | 12 |
 ///
-/// | cell | planned tiles | gradient root | noise root | flat root |
-/// |---|---|---|---|---|
-/// | 1024x1024@256 | 29 | 11 | 29 | 11 |
-/// | 2048x2048@256 | 93 | 12 | 93 | 12 |
-/// | 1024x1024@128 | 92 | 74 | 92 | 11 |
-/// | 1024x1024@64 | 347 | 329 | 347 | 11 |
-/// | 1024x1024@46 | 728 | 728 | 728 | 80 |
-/// | 2048x2048@64 | 1371 | 1290 | 1371 | 12 |
-///
-/// One entry per level at 256, all distinct at 46, and a few percent merged at
-/// 64 where the identical tiles exist but their ids are not adjacent in Hilbert
-/// order. That is why the brink cell's 46 pixel tile gives it a root the size of
-/// its plan, and it is why a gradient cell at a 256 pixel tile is not the cell
-/// its tile count says it is.
-pub fn gradient_collapses_at(tile_size: u32) -> bool {
-    tile_size % GRADIENT_PERIOD_PX == 0
+/// The engine's gradient pays one entry a tile everywhere, which is what the
+/// open-cost ramp's x axis rests on. The periodic ramp collapses to one entry a
+/// level wherever 256 divides the tile, and to 74 and 329 at 128 and 64, where
+/// the identical tiles exist but their ids are not adjacent in Hilbert order.
+pub fn collapses_at(source: Source, tile_size: u32) -> bool {
+    period_px(source).is_some_and(|period| tile_size % period == 0)
 }
 
 /// Whether a cell's declared shape survives the source it is filled from.
 ///
 /// The open-cost ramp is a function of **root entries**, and a cell's tile count
 /// is only the same number while no run of neighbouring tiles shares a payload.
-/// A gradient at a 256 pixel tile shares every payload in the level, so such a
-/// cell sits at a dozen entries however many tiles it plans, and a table that
-/// names it by its tile count is naming a point that is not on the ramp.
+/// A source whose period divides the tile size shares every payload in the
+/// level, so such a cell sits at one entry per level however many tiles it
+/// plans, and a table that names it by its tile count is naming a point that is
+/// not on the ramp.
 ///
-/// `Err` carries the reason, so a sweep can refuse the pairing and say why
-/// rather than publishing a cell under a label it does not have.
+/// With the engine's gradient this never fires on any cell in the family, which
+/// is the point: it is a regression test rather than a refusal anybody hits, and
+/// `the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses`
+/// proves it can still fire by handing it a source that does collapse.
 pub fn source_suits_the_cell(cell: &Cell) -> Result<(), String> {
-    if cell.source == Source::Gradient && gradient_collapses_at(cell.tile_size) {
+    if let Some(period) = period_px(cell.source)
+        && collapses_at(cell.source, cell.tile_size)
+    {
         return Err(format!(
-            "{} fills a {} pixel tile from the gradient, whose period is {GRADIENT_PERIOD_PX} \
-             pixels on both axes, so every tile of a level is the same bytes and the writer's \
-             run-length encoding collapses the level to one entry; the cell plans {} tiles and its \
-             root will hold about one entry per level",
+            "{} fills a {} pixel tile from a source whose period is {period} pixels on both axes, \
+             so every tile of a level is the same bytes and the writer's run-length encoding \
+             collapses the level to one entry; the cell plans {} tiles and its root will hold \
+             about one entry per level",
             cell.spec(),
             cell.tile_size,
             cell.planned_tiles()
         ));
     }
     Ok(())
+}
+
+/// The cells a sweep may publish rows for.
+///
+/// Everything except the sources that exist only as controls. It is filtered
+/// here, once, rather than by every consumer remembering to, because the failure
+/// mode is a row labelled with a cell whose regime it does not have and nothing
+/// downstream can see that.
+pub fn publishable(cells: &[Cell]) -> Vec<Cell> {
+    cells
+        .iter()
+        .copied()
+        .filter(|cell| cell.source.publishes_rows())
+        .collect()
 }

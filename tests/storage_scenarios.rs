@@ -48,13 +48,13 @@ fn tiny(source: Source) -> Cell {
     }
 }
 
-/// A cell whose tile size does **not** divide the gradient's period, so the
-/// gradient really is all distinct there.
+/// The brink cell's tile size at a canvas small enough for an ordinary test.
 ///
-/// 1024 by 1024 at a 46 pixel tile, which is the brink cell's tile size: 728
-/// planned tiles and a gradient root of 728 entries, against 80 for the flat
-/// fill. A 256 pixel tile cannot be used for anything that needs distinct tiles,
-/// and `the_gradient_collapses_to_one_entry_a_level_at_a_256_pixel_tile` is why.
+/// 1024 by 1024 at a 46 pixel tile: 728 planned tiles, and a flat fill there
+/// collapses to 80 entries while both published sources pay one entry a tile.
+/// The engine's gradient does not collapse at 256 either, so this cell is about
+/// having a source that deduplicates to compare against rather than about
+/// avoiding one that does.
 fn distinct_tiny(source: Source) -> Cell {
     Cell {
         width: 1024,
@@ -306,14 +306,27 @@ fn a_flat_source_never_produces_a_published_row() {
 ///
 /// RED against a `noise` that is another gradient, another flat fill, or a
 /// per-tile constant: any of those compresses, and then the source axis this
-/// lane added measures nothing. The gradient in the same test is the control
-/// that the comparison is about the pixels rather than about the encoder.
+/// lane added measures nothing.
+///
+/// The claim is measured against the raw pixels the pyramid holds rather than
+/// against the gradient archive, because "incompressible" means "the codec got
+/// nothing", not "bigger than the other one". A ratio between the two archives
+/// would also be a moving target: the engine's gradient is far less
+/// compressible than the ramp I first reconstructed, and a 2x rule that held
+/// against one holds by 2.5% against the other. The gradient is still in the
+/// test, as the control that the ratio discriminates at all.
 #[test]
 fn the_noise_source_is_incompressible_and_the_gradient_is_not() {
     let dir = tempdir();
 
     let noise = tiny(Source::Noise);
     let gradient = tiny(Source::Gradient);
+    let raw: u64 = noise
+        .plan()
+        .levels
+        .iter()
+        .map(|level| u64::from(level.width) * u64::from(level.height) * 3)
+        .sum();
     let noise_bytes = std::fs::metadata(write_archive(dir.path(), &noise))
         .expect("the noise archive exists")
         .len();
@@ -321,11 +334,21 @@ fn the_noise_source_is_incompressible_and_the_gradient_is_not() {
         .expect("the gradient archive exists")
         .len();
 
-    println!("noise archive {noise_bytes} bytes, gradient archive {gradient_bytes} bytes");
+    let noise_ratio = noise_bytes as f64 / raw as f64;
+    let gradient_ratio = gradient_bytes as f64 / raw as f64;
+    println!(
+        "{raw} raw pyramid bytes: noise archive {noise_bytes} ({noise_ratio:.2}x), gradient \
+         archive {gradient_bytes} ({gradient_ratio:.2}x)"
+    );
     assert!(
-        noise_bytes > gradient_bytes * 2,
-        "the noise archive is {noise_bytes} bytes against the gradient's {gradient_bytes}, which \
-         is not the gap an incompressible source makes"
+        noise_ratio > 0.9,
+        "the noise archive is {noise_ratio:.2} of the {raw} raw pyramid bytes, so the codec got \
+         something out of it and it is not the incompressible source"
+    );
+    assert!(
+        gradient_ratio < 0.7,
+        "the gradient archive is {gradient_ratio:.2} of the raw pyramid bytes, so this measure \
+         cannot tell a compressible source from an incompressible one"
     );
 
     // And it is deterministic, because a benchmark source that moves between
@@ -1097,98 +1120,257 @@ fn median_micros(samples: &[std::time::Duration]) -> f64 {
 
 
 // ---------------------------------------------------------------------------
-// The gradient's period
+// A source's period
 // ---------------------------------------------------------------------------
 
-/// A gradient at a 256 pixel tile collapses to one root entry a level.
+/// The ported gradient does not collapse at any tile size the sweep uses.
 ///
-/// RED against a cell table that reads a root-entry count off a tile count,
-/// which is what the sweep's three 256-pixel cells do when they call themselves
-/// the 93, 1373 and 5469 entry cells. The gradient is `(x % 256, y % 256,
-/// (x + y) % 256)`, so at a tile that is a whole number of periods wide every
-/// tile of a level is the same bytes, a level's tile ids are one contiguous
-/// range, and the writer's run-length encoding merges the lot into a single
-/// entry.
+/// RED against a gradient reconstructed with power-of-two moduli, which is what
+/// I wrote before I read the engine's. The engine's is
+/// `(x % 251, y % 241, (x * 7 + y * 13) % 239)`: three primes, so the smallest
+/// tile that could make two neighbouring tiles byte-identical is 251 * 241 * 239
+/// pixels wide and no sweep comes near it. A `% 256` version repeats every 256
+/// pixels, the whole level becomes one contiguous run of identical payloads, and
+/// the writer's run-length encoding merges it into a single entry.
 ///
-/// Three controls in the same test, because "the root is smaller than the plan"
-/// has three uninteresting explanations: the noise source at the same cell pays
-/// one entry a tile, so the collapse is the gradient's; the gradient at a 46
-/// pixel tile pays one entry a tile, so the collapse is the tile size's; and the
-/// flat fill collapses at both, so the mechanism is the run-length encoding
-/// rather than anything about this canvas.
+/// The positive control is in the same test: the periodic ramp *does* collapse
+/// at 256, so the guard is shown firing rather than merely not firing.
 #[test]
-fn the_gradient_collapses_to_one_entry_a_level_at_a_256_pixel_tile() {
-    let dir = tempdir();
+fn the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses() {
+    // The arithmetic, first, because it is what the generated archives below
+    // are supposed to confirm.
+    for tile_size in [256u32, 128, 64, 46] {
+        assert!(
+            !scenarios::collapses_at(Source::Gradient, tile_size),
+            "the ported gradient would collapse at a {tile_size} pixel tile, which means its \
+             moduli are not the engine's"
+        );
+        assert!(!scenarios::collapses_at(Source::Noise, tile_size));
+        assert!(
+            scenarios::collapses_at(Source::Flat, tile_size),
+            "a solid fill repeats every pixel, so it collapses at every tile size"
+        );
+    }
+    assert!(
+        scenarios::collapses_at(Source::PeriodicGradient, 256),
+        "the control has to collapse at 256, or this test cannot tell a guard that fires from one \
+         that cannot"
+    );
+    assert!(!scenarios::collapses_at(Source::PeriodicGradient, 46));
+    assert_eq!(scenarios::period_px(Source::Gradient), Some(251 * 241 * 239));
 
-    let collapsing = tiny(Source::Gradient);
-    let levels = collapsing.plan().levels.len() as u64;
-    let (collapsed, _) = scenarios::root_shape(&write_archive(dir.path(), &collapsing));
+    // And the archives agree with the arithmetic.
+    let dir = tempdir();
+    let at_256 = tiny(Source::Gradient);
+    let levels = at_256.plan().levels.len() as u64;
+    let (entries, _) = scenarios::root_shape(&write_archive(dir.path(), &at_256));
+    println!(
+        "{} plans {} tiles over {levels} levels and its root holds {entries} entries",
+        at_256.spec(),
+        at_256.planned_tiles()
+    );
+    assert_eq!(
+        entries,
+        at_256.planned_tiles(),
+        "the ported gradient at a 256 pixel tile paid {entries} entries for {} tiles, so something \
+         deduplicated and the moduli are not prime any more",
+        at_256.planned_tiles()
+    );
+
+    // The control, at the same cell, really does collapse to one entry a level.
+    let periodic = tiny(Source::PeriodicGradient);
+    let (collapsed, _) = scenarios::root_shape(&write_archive(dir.path(), &periodic));
     println!(
         "{} plans {} tiles over {levels} levels and its root holds {collapsed} entries",
-        collapsing.spec(),
-        collapsing.planned_tiles()
+        periodic.spec(),
+        periodic.planned_tiles()
     );
-    assert!(scenarios::gradient_collapses_at(collapsing.tile_size));
     assert_eq!(
         collapsed, levels,
-        "a collapsing gradient pays one entry a level, and this archive paid {collapsed} over \
-         {levels} levels"
+        "the periodic ramp pays one entry a level, and this archive paid {collapsed} over {levels} \
+         levels; without that the test above cannot fail"
     );
-    assert!(collapsed < collapsing.planned_tiles() / 2);
-
-    // Control one: the same canvas and tile, filled from noise.
-    let noisy = tiny(Source::Noise);
-    let (noisy_entries, _) = scenarios::root_shape(&write_archive(dir.path(), &noisy));
-    assert_eq!(
-        noisy_entries,
-        noisy.planned_tiles(),
-        "the collapse has to be the gradient's, and noise at the same cell pays one entry a tile"
-    );
-
-    // Control two: the same source at a tile size that is not a whole number of
-    // periods.
-    let distinct = distinct_tiny(Source::Gradient);
-    assert!(!scenarios::gradient_collapses_at(distinct.tile_size));
-    let (distinct_entries, _) = scenarios::root_shape(&write_archive(dir.path(), &distinct));
-    assert_eq!(
-        distinct_entries,
-        distinct.planned_tiles(),
-        "the collapse has to be the tile size's, and a 46 pixel tile pays one entry a tile"
-    );
-
-    // Control three: the flat fill collapses at both tile sizes, so what is
-    // being watched is the run-length encoding and not this canvas.
-    let (flat_collapsing, _) =
-        scenarios::root_shape(&write_archive(dir.path(), &tiny(Source::Flat)));
-    let (flat_distinct, _) =
-        scenarios::root_shape(&write_archive(dir.path(), &distinct_tiny(Source::Flat)));
-    assert!(flat_collapsing < tiny(Source::Flat).planned_tiles());
-    assert!(flat_distinct < distinct_tiny(Source::Flat).planned_tiles());
 }
 
-/// A cell table may not claim a root a gradient at that tile size cannot give.
+/// Every source's root entry count, measured rather than assumed.
 ///
-/// RED against a table that pairs any source with any tile size. The sweep's
-/// smoke and mid cells are 256 pixel tiles, so paired with the gradient they are
-/// refused and the reason names the period; paired with noise they are fine, and
-/// the brink cell's 46 pixel tile is fine either way.
+/// RED against a cell table that reads a root-entry count off a tile count. It
+/// prints the table the module documents, so the numbers in the docs came out of
+/// a run rather than out of a head.
 #[test]
-fn the_cell_table_refuses_a_gradient_at_a_tile_size_that_collapses_it() {
-    let refusal = scenarios::source_suits_the_cell(&scenarios::smoke_cell(Source::Gradient))
-        .expect_err("a 256 pixel tile collapses the gradient");
+fn the_measured_root_entries_of_every_source() {
+    let dir = tempdir();
+    println!("cell\tplanned\tgradient\tnoise\tperiodic\tflat");
+    for (width, height, tile_size) in [
+        (1024u32, 1024u32, 256u32),
+        (1024, 1024, 128),
+        (1024, 1024, 64),
+        (1024, 1024, 46),
+        (2048, 2048, 256),
+    ] {
+        let base = Cell {
+            width,
+            height,
+            tile_size,
+            source: Source::Gradient,
+            regime: Regime::Root,
+        };
+        let mut counts = Vec::new();
+        for source in SOURCES {
+            let cell = base.with_source(source);
+            let (entries, leaves) = scenarios::root_shape(&write_archive(dir.path(), &cell));
+            assert_eq!(leaves, 0, "{} grew leaves at this scale", cell.spec());
+            counts.push((source, entries));
+        }
+        println!(
+            "{}x{}@{}\t{}\t{}\t{}\t{}\t{}",
+            width,
+            height,
+            tile_size,
+            base.planned_tiles(),
+            counts[0].1,
+            counts[1].1,
+            counts[3].1,
+            counts[2].1
+        );
+
+        let planned = base.planned_tiles();
+        for (source, entries) in &counts {
+            match source {
+                // The two sources the sweep publishes pay one entry a tile at
+                // every tile size, which is the claim the ramp's x axis rests
+                // on.
+                Source::Gradient | Source::Noise => assert_eq!(
+                    *entries,
+                    planned,
+                    "{}x{}@{} from {} paid {entries} entries for {planned} tiles",
+                    width,
+                    height,
+                    tile_size,
+                    source.label()
+                ),
+                // The controls collapse, and they have to, or nothing above is
+                // a distinction.
+                Source::Flat => assert!(*entries < planned),
+                Source::PeriodicGradient => {
+                    if scenarios::collapses_at(Source::PeriodicGradient, tile_size) {
+                        assert!(*entries < planned);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A cell table may not claim a root the source at that tile size cannot give.
+///
+/// RED against a table that pairs any source with any tile size. With the
+/// engine's gradient the rule never fires on a cell in this family, which is why
+/// the positive control is the periodic ramp: the guard is shown refusing
+/// something, so a green run is evidence rather than silence.
+#[test]
+fn the_cell_table_refuses_a_source_at_a_tile_size_that_collapses_it() {
+    let refusal =
+        scenarios::source_suits_the_cell(&scenarios::smoke_cell(Source::PeriodicGradient))
+            .expect_err("a 256 pixel tile collapses a ramp whose period is 256");
     assert!(
         refusal.contains("256") && refusal.contains("run-length"),
         "the refusal has to name the period and the mechanism: {refusal}"
     );
-    scenarios::source_suits_the_cell(&scenarios::mid_cell(Source::Gradient))
-        .expect_err("the mid cell is a 256 pixel tile too");
+    scenarios::source_suits_the_cell(&scenarios::mid_cell(Source::Flat))
+        .expect_err("a solid fill collapses at every tile size");
 
-    // The positive controls: the rule is about the pairing, not about a source
-    // or a cell.
-    scenarios::source_suits_the_cell(&scenarios::smoke_cell(Source::Noise))
-        .expect("noise is distinct at any tile size");
-    scenarios::source_suits_the_cell(&scenarios::brink_cell(Source::Gradient))
-        .expect("the brink cell's 46 pixel tile is not a whole number of periods");
-    scenarios::source_suits_the_cell(&scenarios::leaf_cell(Source::Gradient))
-        .expect("a 64 pixel tile leaves the identical tiles non-adjacent in Hilbert order");
+    // The engine's gradient suits every cell in the family, which is the point
+    // of porting it rather than reconstructing it.
+    for cell in [
+        scenarios::smoke_cell(Source::Gradient),
+        scenarios::mid_cell(Source::Gradient),
+        scenarios::brink_cell(Source::Gradient),
+        scenarios::leaf_cell(Source::Gradient),
+    ] {
+        scenarios::source_suits_the_cell(&cell)
+            .unwrap_or_else(|why| panic!("the ported gradient suits every cell: {why}"));
+    }
+    for cell in [
+        scenarios::smoke_cell(Source::Noise),
+        scenarios::leaf_cell(Source::Noise),
+    ] {
+        scenarios::source_suits_the_cell(&cell).expect("noise never repeats");
+    }
+}
+
+/// The gradient compiled into this binary is the engine's, pixel for pixel.
+///
+/// RED against a stale build. Every entry count this lane publishes is a
+/// property of the source the running binary actually contains, and
+/// `Compiling libviprs-bench` in a build log is a weaker witness than the
+/// pixels: a revert that lands inside one filesystem timestamp leaves cargo
+/// calling the target fresh, and then a clean-looking run reports the previous
+/// source's numbers. This asks the bytes.
+///
+/// The probes are computed for the same reason the tile-id probe is. `x % 251`
+/// and `x % 256` agree for every `x` under 251, so a coordinate picked by eye
+/// lands on a value both formulas produce and the test cannot fail against the
+/// reconstruction it exists to catch. So it builds both rasters, takes the set
+/// of offsets where they disagree, asserts that set is not empty, and checks a
+/// member of it.
+#[test]
+fn the_gradient_in_this_binary_has_the_engines_prime_moduli() {
+    const SIDE: u32 = 300;
+    let engine = scenarios::gradient(SIDE, SIDE);
+    let rounded = scenarios::periodic_gradient(SIDE, SIDE);
+    let engine_bytes = engine.data();
+    let rounded_bytes = rounded.data();
+    assert_eq!(engine_bytes.len(), rounded_bytes.len());
+
+    let disagree: Vec<usize> = engine_bytes
+        .iter()
+        .zip(rounded_bytes)
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(index, _)| index)
+        .collect();
+    assert!(
+        !disagree.is_empty(),
+        "the prime-moduli gradient and the 256 reconstruction produce identical pixels over \
+         {SIDE}x{SIDE}, so nothing below can tell them apart"
+    );
+
+    let probe = disagree[0];
+    let pixel = probe / 3;
+    let channel = probe % 3;
+    let (x, y) = ((pixel % SIDE as usize) as u32, (pixel / SIDE as usize) as u32);
+    println!(
+        "{} of {} bytes differ; first at pixel ({x}, {y}) channel {channel}: engine {} against a \
+         256 reconstruction's {}",
+        disagree.len(),
+        engine_bytes.len(),
+        engine_bytes[probe],
+        rounded_bytes[probe]
+    );
+
+    let expected = [
+        (x % 251) as u8,
+        (y % 241) as u8,
+        ((x * 7 + y * 13) % 239) as u8,
+    ];
+    assert_eq!(
+        engine_bytes[probe], expected[channel],
+        "at the one probe where the two formulas disagree, this binary's gradient is not the \
+         engine's"
+    );
+    assert_ne!(
+        engine_bytes[probe], rounded_bytes[probe],
+        "the probe has to be a byte the reconstruction gets wrong"
+    );
+
+    // And the whole raster follows the engine's formula, not just the probe.
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            let off = (y as usize * SIDE as usize + x as usize) * 3;
+            assert_eq!(engine_bytes[off], (x % 251) as u8);
+            assert_eq!(engine_bytes[off + 1], (y % 241) as u8);
+            assert_eq!(engine_bytes[off + 2], ((x * 7 + y * 13) % 239) as u8);
+        }
+    }
 }
