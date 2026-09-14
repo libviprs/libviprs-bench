@@ -26,18 +26,28 @@
 
 use sha2::{Digest, Sha256};
 
+/// Lowercase hex, no prefix and no separators.
+///
+/// One formatter, used by both the one-shot and the streaming form below, so
+/// the two cannot produce different spellings of the same digest. That is not
+/// hypothetical tidiness: this module and `storage::mod` each grew their own
+/// `sha2` wrapper in the same week and each wrote its own hex loop, and the
+/// merge is what noticed.
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from_digit((byte >> 4) as u32, 16).expect("nibble is < 16"));
+        out.push(char::from_digit((byte & 0x0f) as u32, 16).expect("nibble is < 16"));
+    }
+    out
+}
+
 /// SHA-256 of `bytes`, lowercase hex, no prefix.
 ///
 /// The `sha256:` prefix the archive stores belongs to the caller: it is part of
 /// the digest *format* the document declares, not part of the hash.
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = sha256(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(char::from_digit((byte >> 4) as u32, 16).expect("nibble is < 16"));
-        out.push(char::from_digit((byte & 0x0f) as u32, 16).expect("nibble is < 16"));
-    }
-    out
+    hex(&sha256(bytes))
 }
 
 /// SHA-256 of `bytes` as raw octets.
@@ -45,6 +55,42 @@ pub fn sha256(bytes: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     out.copy_from_slice(Sha256::digest(bytes).as_slice());
     out
+}
+
+/// SHA-256 over data that arrives in pieces.
+///
+/// [`sha256_hex`] takes a slice, which is the wrong shape for
+/// `storage::artefact_digest`: it hashes an artefact that can be hundreds of
+/// megabytes and must not read it into memory to do so. This is the same hash
+/// by the same code, fed a buffer at a time.
+///
+/// Both forms exist because both are needed, and they live in one file because
+/// the alternative is what the merge found: two wrappers around the same crate,
+/// with two hex loops, and nothing checking they agree.
+/// `the_streaming_form_agrees_with_the_one_shot_form` is what checks.
+pub struct Sha256Stream(Sha256);
+
+impl Default for Sha256Stream {
+    fn default() -> Sha256Stream {
+        Sha256Stream(Sha256::new())
+    }
+}
+
+impl Sha256Stream {
+    /// A hasher with nothing in it yet.
+    pub fn new() -> Sha256Stream {
+        Sha256Stream::default()
+    }
+
+    /// Add the next piece.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    /// Finish, lowercase hex, no prefix.
+    pub fn finish(self) -> String {
+        hex(self.0.finalize().as_slice())
+    }
 }
 
 #[cfg(test)]
@@ -68,6 +114,47 @@ mod tests {
         assert_eq!(
             sha256_hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+    }
+
+    // RED against the streaming form and the one-shot form disagreeing, which is
+    // the failure the collapse of two hand-written wrappers could introduce and
+    // the one no vector would catch on its own: both would still be "a SHA-256",
+    // just not the same one at the same call site.
+    //
+    // The chunk sizes are deliberately awkward. A hasher that mishandles a
+    // partial block only shows it when a feed boundary lands off a 64-byte
+    // multiple, so the splits below straddle one, sit exactly on one, and run
+    // past the 1 MiB buffer `artefact_digest` reads with.
+    #[test]
+    fn the_streaming_form_agrees_with_the_one_shot_form() {
+        let message: Vec<u8> = (0..=255u8).cycle().take(3_000_000).collect();
+        let expected = sha256_hex(&message);
+
+        for chunk in [1usize, 7, 63, 64, 65, 4096, 1 << 20, (1 << 20) + 1] {
+            let mut hasher = Sha256Stream::new();
+            for piece in message.chunks(chunk) {
+                hasher.update(piece);
+            }
+            assert_eq!(
+                hasher.finish(),
+                expected,
+                "streaming in {chunk}-byte pieces must equal the one-shot digest"
+            );
+        }
+
+        // The empty message, which is the case a loop that never runs produces.
+        assert_eq!(Sha256Stream::new().finish(), sha256_hex(b""));
+
+        // And the published vectors reach the streaming form too, so it is
+        // anchored to something outside this crate rather than only to its
+        // sibling.
+        let mut hasher = Sha256Stream::new();
+        hasher.update(b"a");
+        hasher.update(b"bc");
+        assert_eq!(
+            hasher.finish(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }
 

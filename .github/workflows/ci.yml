@@ -37,8 +37,6 @@ jobs:
             https://github.com/${{ github.repository_owner }}/libviprs.git libviprs 2>/dev/null \
             || git clone --depth 1 \
               https://github.com/${{ github.repository_owner }}/libviprs.git libviprs
-      - name: Install libvips
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -48,9 +46,20 @@ jobs:
       # Feature cells. Target selection is `--lib --bins --tests` so the
       # feature-gated FFI code is exercised without pulling the criterion
       # bench harness into every cell.
+      #
+      # The default cell runs BEFORE libvips is installed, and that ordering is
+      # the check. The `engines` family is the default build and it must need
+      # no libvips at all — not the headers, not the binary — so the only way to
+      # keep that true is to compile it on a runner where libvips is not there
+      # to be found (issue #64). Moving the install below this step costs
+      # nothing and is the difference between "needs no libvips" and "has
+      # libvips and does not happen to call it".
       - name: check (default)
         working-directory: libviprs-bench
         run: cargo check --lib --bins --tests
+      # Everything from here down is the libvips half.
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev
       - name: check (libvips)
         working-directory: libviprs-bench
         run: cargo check --lib --bins --tests --features libvips
@@ -78,12 +87,29 @@ jobs:
             https://github.com/${{ github.repository_owner }}/libviprs.git libviprs 2>/dev/null \
             || git clone --depth 1 \
               https://github.com/${{ github.repository_owner }}/libviprs.git libviprs
-      - name: Install libvips
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: libviprs-bench
+      # The default cell, on a runner with no libvips on it. The `check` job
+      # only compiles this configuration; the tests that only exist under
+      # `cfg(not(feature = "libvips"))` — the ones asserting that asking a
+      # libvips-free build for the `vips` family is REFUSED rather than run
+      # empty — have nowhere else to actually run (issue #64). It goes before
+      # the install for the same reason the check cell does: the claim is that
+      # the engines family needs no libvips, and the only way to test that is
+      # on a box without it.
+      #
+      # Node is already on the runner image, and this suite needs it:
+      # tests/engines_family_end_to_end.rs renders the charts and asserts they
+      # landed, rather than skipping when the renderer is absent.
+      - name: Test (default, no libvips installed)
+        working-directory: libviprs-bench
+        run: |
+          node --version
+          cargo test --lib --tests
+      - name: Install libvips
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev
       # Two invocations, not one: cargo rejects `--doc` mixed with any other
       # target selector, so the old single `--lib --tests --doc` line errored
       # out before running anything. Splitting it runs both halves for real.

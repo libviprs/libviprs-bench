@@ -3,7 +3,12 @@ name = "libviprs-bench"
 version = "0.3.0"
 edition = "2024"
 authors = ["Roman Goldmann <roman@devshell.org>"]
-rust-version = "1.85"
+# The measured core declares `rust-version = "1.97"` as of libviprs 0.4.0, and a
+# path dependency's floor is this crate's floor in practice: cargo refuses the
+# build outright below it. Declaring 1.85 here said nothing true — it only meant
+# the refusal came from the dependency rather than from the manifest that
+# actually has to hold. The Dockerfile's Rust pin moved with it (issue #64).
+rust-version = "1.97"
 publish = false
 
 [features]
@@ -55,31 +60,42 @@ polars = { version = "0.50", optional = true, default-features = false, features
     "rank",
 ] }
 serde = { version = "1", features = ["derive"] }
-# `float_roundtrip` is not optional here and it is not a performance knob.
-# Without it serde_json's number READER is not correctly rounded: it parses
-# `0.09090909090909091`, which is the coefficient of variation of `[10, 11, 12]`
-# and so a value this suite really produces, to the float one ULP above the one
-# `std` and the printer agree on. A digest recomputed from a re-parsed document
-# then does not match the digest its producer derived, and `--verify` refuses a
-# file that nothing is wrong with. Worse across languages: V8's `JSON.parse` IS
-# correctly rounded, so Rust and JavaScript would read one archived file as two
-# different floats and derive two different digests.
+# Two features, both load-bearing, and independent of each other.
 #
-# The feature gates serde_json's in-tree `lexical` module in at the float paths
-# in `de.rs`. It adds no crates to the graph, changes no API, and unlike
-# `arbitrary_precision` has no interaction with `to_value` or `preserve_order`.
-# `the_json_reader_is_correctly_rounded` in `tests/storage_provenance_k13.rs` is
-# its canary: delete this feature and that test goes red (libviprs-bench #66).
-serde_json = { version = "1", features = ["float_roundtrip"] }
+# `preserve_order` keeps a parsed object's keys in the order the producer wrote
+# them. Without it `serde_json::Map` is a `BTreeMap`, so a round trip through
+# `Value` alphabetises every object and the `storage` document's declared column
+# order becomes unobservable by anything that reads it back
+# (`tests/storage_document.rs`). Derived structs already serialise in declaration
+# order; this is about the reading side.
+#
+# `float_roundtrip` is not a performance knob. Without it serde_json's number
+# READER is not correctly rounded: it parses `0.09090909090909091`, which is the
+# coefficient of variation of `[10, 11, 12]` and so a value this suite really
+# produces, to the float one ULP above the one `std` and the printer agree on. A
+# digest recomputed from a re-parsed document then does not match the digest its
+# producer derived, and `--verify` refuses a file that nothing is wrong with.
+# Worse across languages: V8's `JSON.parse` IS correctly rounded, so Rust and
+# JavaScript would read one archived file as two different floats and derive two
+# different digests. The feature gates serde_json's in-tree `lexical` module in
+# at the float paths in `de.rs`. It adds no crates, changes no API, and has no
+# interaction with `preserve_order`. `the_json_reader_is_correctly_rounded` in
+# `tests/storage_provenance_k13.rs` is its canary: delete the feature and that
+# test goes red (libviprs-bench #66).
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 
-# SHA-256 for the storage archive's digests (`src/sha256.rs`) and for the
-# committed PDF fixture's integrity guard (`tests/pdf_fixture.rs`). It was a
+# SHA-256, for three things that all want the same one: the `storage` family's
+# artefact digests, the storage archive's document digests (`src/sha256.rs`), and
+# the committed PDF fixture's integrity guard (`tests/pdf_fixture.rs`). It was a
 # dev-dependency until the archive needed it, and promoting it costs nothing:
-# `libviprs` already depends on sha2 0.11 directly and is a normal path
-# dependency here, so this crate's binaries were already compiling it. Pinned to
-# 0.11 to match that. The graph is NOT single-version — `lopdf` (via libviprs)
-# still pulls a sha2 0.10.x transitively — so this pin dedups against libviprs's
-# direct dep rather than across the whole tree (libviprs-bench #66).
+# `libviprs` already depends on this exact major directly (its `checksum` module
+# hashes with it) and is a normal path dependency here, so this crate's binaries
+# were already compiling it. Its streaming form is `pub(crate)` over there, which
+# is why `src/sha256.rs` wraps `sha2` itself rather than reaching for it.
+#
+# Pinned to 0.11 to match libviprs. The graph is NOT single-version — `lopdf`
+# (via libviprs) still pulls a sha2 0.10.x transitively — so this pin dedups
+# against libviprs's direct dep rather than across the whole tree.
 sha2 = "0.11"
 
 [dev-dependencies]
@@ -89,6 +105,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # script cannot use its own crate's library, so the same `sha2` is listed again
 # here. This is the entire cost of not hand-rolling the hash: one extra
 # compilation of sha2 for the host, which never reaches a shipped binary.
+#
+# (`tests/pdf_fixture.rs` used to pull sha2 in as a dev-dependency; it still
+# compiles, because a normal dependency is in scope for tests too.)
 [build-dependencies]
 sha2 = "0.11"
 
@@ -149,3 +168,11 @@ required-features = ["pdfium"]
 name = "cross_version"
 path = "src/cross_version.rs"
 required-features = ["polars"]
+
+# The storage family: PMTiles against a directory tree (issue #65). Builds
+# without the `libvips` feature, which is the point: it measures libviprs
+# against itself, so it belongs in the cheap check job and in a Docker stage
+# that skips the libvips source build entirely.
+[[bin]]
+name = "storage"
+path = "src/storage_main.rs"
