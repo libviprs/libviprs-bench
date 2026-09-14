@@ -161,6 +161,45 @@ mod tests {
         );
     }
 
+    // RED against a chaining bug past two blocks, and against anything that
+    // treats a byte as signed.
+    //
+    // Writing out the gap the other vectors leave, because a hand-rolled hash is
+    // only as good as what its vectors reach. The three published examples and
+    // the boundary walk above top out at TWO blocks and are all ASCII, so
+    // between them they never exercise the `h` chaining across a third block,
+    // never put a byte above 0x7f through the word packing, and never push the
+    // length field past what fits in 32 bits. Documents digested here are tens
+    // of kilobytes, which is hundreds of blocks, so the first of those was a
+    // real hole rather than a theoretical one.
+    //
+    // Still not covered, and stated so nobody assumes otherwise: a message at or
+    // beyond 2^32 bits, which is 512 MiB, where a length field truncated to 32
+    // bits would go wrong and no document this suite produces would reach.
+    // Expected values from `sha256sum` and Python's `hashlib` in an arm64
+    // container, which agreed with each other.
+    #[test]
+    fn long_and_high_bit_messages_come_out_right() {
+        // 1000 bytes: 16 blocks, so the chaining runs fourteen times past the
+        // point the boundary walk stops.
+        assert_eq!(
+            sha256_hex(&vec![b'a'; 1000]),
+            "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3"
+        );
+        // 100000 bytes: 1563 blocks, and a length field past 16 bits.
+        assert_eq!(
+            sha256_hex(&vec![b'a'; 100_000]),
+            "6d1cf22d7cc09b085dfc25ee1a1f3ae0265804c607bc2074ad253bcc82fd81ee"
+        );
+        // Every byte value, four times over: 1024 bytes in which three quarters
+        // of the words carry a high bit somewhere.
+        let all_bytes: Vec<u8> = (0..=255u8).cycle().take(1024).collect();
+        assert_eq!(
+            sha256_hex(&all_bytes),
+            "785b0751fc2c53dc14a4ce3d800e69ef9ce1009eb327ccf458afe09c242c26c9"
+        );
+    }
+
     // RED against a padding bug that only shows up at a block boundary, which is
     // the single most likely way to get this wrong and the one the three vectors
     // above (0, 3 and 56 bytes) do not reach. 55, 56, 63, 64 and 65 bytes walk

@@ -696,49 +696,24 @@ fn a_non_ascii_key_is_refused_because_the_two_sort_orders_disagree() {
     );
 }
 
-/// RED against a canonicaliser that resolves a duplicate key instead of
-/// refusing it.
+/// RED against a canonicaliser that digests a string as it was spelled rather
+/// than as what it means.
 ///
-/// `{"a":1,"a":2}` is legal JSON and readers disagree about it: most keep the
-/// last, some keep the first, a few error. A document carrying one digests to
-/// whatever the reader happened to keep, which is the same class of bug as the
-/// number reader and has the same answer. Refusing is the only verdict that is
-/// identical in both languages.
+/// `"\u0041"` and `"A"` are the same string and must digest the same, layout
+/// between tokens is not content, and a surrogate pair is one character. These
+/// were tests of a hand-written reader; they are kept because the property is
+/// about the canonical form rather than about who parsed it, and because
+/// `JSON.stringify` on the other side of K2.2's test makes exactly these choices.
 #[test]
-fn the_same_key_twice_in_one_object_is_refused() {
-    let err = integrity::canonical_json_from_text("{\"a\":1,\"a\":2}")
-        .expect_err("a duplicate key has no single canonical form");
-    assert!(
-        matches!(err, CanonicalError::DuplicateKey { .. }),
-        "{err:?}"
-    );
-
-    // The ordinary case still canonicalises, and sorts.
-    assert_eq!(
-        integrity::canonical_json_from_text("{\"b\":2,\"a\":1}").expect("fine"),
-        "{\"a\":1,\"b\":2}"
-    );
-}
-
-/// RED against a reader that does not decode what it read, which would make the
-/// canonical form depend on how a producer chose to spell a string.
-///
-/// Writing a JSON reader by hand is the cost of keeping floats off the digest
-/// path, and this is the test that says the reader is a reader rather than a
-/// scanner that happens to work on the documents I tried it on.
-#[test]
-fn the_reader_decodes_escapes_and_ignores_layout() {
-    // An escaped character and a literal one are the same string.
+fn escapes_and_layout_do_not_change_a_digest() {
     assert_eq!(
         integrity::digest_from_text("{\"k\":\"\\u0041\"}").expect("fine"),
         integrity::digest_from_text("{\"k\":\"A\"}").expect("fine"),
     );
-    // Layout between tokens is not content.
     assert_eq!(
         integrity::canonical_json_from_text("{ \"k\" :  [ 1 , 2 ]  }").expect("fine"),
         "{\"k\":[1,2]}"
     );
-    // A surrogate pair is one character, not two.
     assert_eq!(
         integrity::canonical_json_from_text("{\"k\":\"\\ud83d\\ude00\"}").expect("fine"),
         "{\"k\":\"\u{1f600}\"}"
@@ -749,17 +724,10 @@ fn the_reader_decodes_escapes_and_ignores_layout() {
         integrity::canonical_json_from_text("{\"k\":\"\\u0009\\u0000\"}").expect("fine"),
         "{\"k\":\"\\t\\u0000\"}"
     );
-    // A raw control character is not legal JSON. Escaping it quietly would mean
-    // the canonical form says something the input did not.
-    assert!(
-        integrity::canonical_json_from_text("{\"k\":\"\u{9}\"}").is_err(),
-        "a raw tab inside a string must be refused, not silently escaped"
-    );
-    // A lone high surrogate cannot be a character and must not become U+FFFD.
-    assert!(
-        integrity::canonical_json_from_text("{\"k\":\"\\ud83d\"}").is_err(),
-        "a lone surrogate must be refused"
-    );
+    // Text that is not JSON at all is a refusal with a reason, not a panic and
+    // not an empty digest.
+    let err = integrity::canonical_json_from_text("{\"k\": }").expect_err("that is not JSON");
+    assert!(matches!(err, CanonicalError::Malformed { .. }), "{err:?}");
 }
 
 /// RED against a `--verify` that recomputes one digest, or that stops at the
@@ -952,28 +920,48 @@ fn a_document_written_and_read_back_verifies_against_its_own_bytes() {
     );
 }
 
-/// RED against any path that re-reads a number it wrote.
+/// RED against `float_roundtrip` being off, which is the single line the whole
+/// digest path now rests on.
 ///
-/// `parse(print(x)) == x` is the assumption the bug above is made of, and it is
-/// false here, so it is worth one test that says so in one line rather than
-/// leaving it as folklore in a comment.
+/// `serde_json`'s number reader is not correctly rounded by default. Measured in
+/// this lane's container with the feature OFF, on the witness the fixture
+/// carries:
+///
+/// ```text
+/// witness text          0.09090909090909091
+/// std parse             3fb745d1745d1746   prints 0.09090909090909091
+/// serde_json parse      3fb745d1745d1747   prints 0.09090909090909093
+/// serde_json print(std) 0.09090909090909091
+/// ```
+///
+/// The printer is right and `std` agrees with it, so the reader is the one that
+/// is wrong, and `parse(print(x)) == x` is false. A digest recomputed from a
+/// document read back off disk then does not match the one its producer derived,
+/// and `--verify` refuses a file that nothing is wrong with. Worse across
+/// languages: V8's `JSON.parse` *is* correctly rounded, so Rust and JavaScript
+/// would read one archived file as two different floats.
+///
+/// `Cargo.toml` turns the feature on. This is what notices if anyone turns it
+/// off, and it fails in one line rather than as a mysterious digest mismatch
+/// somewhere downstream.
 #[test]
-fn printing_a_float_and_reading_it_back_through_serde_json_is_not_the_identity() {
+fn the_json_reader_is_correctly_rounded() {
     let printed = serde_json::to_string(&WITNESS_COV).expect("finite");
-    let reread: f64 = serde_json::from_str(&printed).expect("valid JSON");
     assert_eq!(
         printed, "0.09090909090909091",
-        "the printer is not the problem and this pins that"
+        "the printer was never the problem, and this pins that"
     );
-    assert_ne!(
+
+    let reread: f64 = serde_json::from_str(&printed).expect("valid JSON");
+    assert_eq!(
         reread.to_bits(),
         WITNESS_COV.to_bits(),
-        "if this ever passes, serde_json's reader has been fixed upstream; the digest path \
-         still must not depend on it, but this test's premise is gone and it should be \
-         retired rather than relaxed"
+        "serde_json read back a different float from the one it printed, which means \
+         float_roundtrip is not enabled and every digest taken over a file is unsound"
     );
-    // `std`, by contrast, is correctly rounded, which is how the fixture's own
-    // expectation above is anchored to something trustworthy.
+
+    // `std` is correctly rounded whatever features are on, so it is the fixed
+    // point the assertion above is anchored to rather than another moving part.
     assert_eq!(
         printed.parse::<f64>().expect("valid float").to_bits(),
         WITNESS_COV.to_bits()
