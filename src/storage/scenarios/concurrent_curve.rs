@@ -62,7 +62,7 @@ pub fn ladder(ncpu: usize) -> Vec<Arm> {
 /// of the chunks is the original sequence. That last property is what makes the
 /// T=1 arm the same work as `read_random` rather than merely a similar amount
 /// of it.
-pub fn chunks<'a>(coords: &'a [TileCoord], threads: usize) -> Vec<&'a [TileCoord]> {
+pub fn chunks(coords: &[TileCoord], threads: usize) -> Vec<&[TileCoord]> {
     assert!(threads >= 1, "a thread ladder rung is at least one thread");
     if coords.is_empty() {
         return vec![&coords[0..0]; threads];
