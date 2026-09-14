@@ -1,16 +1,27 @@
 # ---------------------------------------------------------------------------
-# Dockerfile — libviprs benchmark environment with libvips + PDFium
+# Dockerfile — libviprs benchmark environments, one stage per family
 #
-# Provides a controlled, fully-pinned environment where libvips (C) and
-# libviprs (Rust) run side-by-side with identical inputs: both write PNG tiles
-# to a real on-disk sink with the same codec, so neither side gets a
-# filesystem-I/O or encoding advantage (issue #153).
+# TWO targets, because the families need different machines:
+#
+#   --target engines   the libviprs-only families (`engines`, `storage`). Rust
+#                      and the two crates and nothing else: no libvips headers,
+#                      no libvips binary, no cargo features. It builds in a
+#                      fraction of the time the comparison image takes, and the
+#                      absence is the point — a family that measures three
+#                      libviprs engines must not be able to find a fourth.
+#   (default)          the `vips` comparison, with libvips compiled from a
+#                      pinned upstream source tarball. Unchanged.
+#
+# Whichever family runs, every engine writes its tiles as PNG files to a real
+# on-disk sink under the same DeepZoom layout, so neither side gets an
+# in-RAM-sink or tile-codec advantage (issue #153).
 #
 # libvips is compiled from a pinned upstream *source* tarball (not Debian's
 # frozen `libvips-dev`), so the C oracle is a recent release matched to the
 # `libvips-rs` 8.18 bindings rather than a years-old ~8.14 mismatch (#33).
 #
-# Build:  docker build -t libviprs-bench .
+# Build:  docker build -t libviprs-bench .                        # vips comparison
+#         docker build --target engines -t libviprs-bench:engines .  # libviprs only
 # Run:    docker run --rm libviprs-bench
 # ---------------------------------------------------------------------------
 
@@ -92,11 +103,53 @@ RUN case "${TARGETARCH}" in \
     tar xzf /tmp/pdfium.tgz -C /opt/pdfium --strip-components=1 && \
     rm /tmp/pdfium.tgz
 
-# Stage 2: Build and run benchmarks
+# ---------------------------------------------------------------------------
+# Stage 2: the libviprs-only families (`engines`, `storage`).
+#
+# Rust, the two crates, and deliberately nothing else. No libvips source build,
+# no libvips headers, no `vips` binary, and no cargo features — the default
+# build. That is what makes an `engines` run mean the same thing wherever it is
+# measured: the engine set cannot quietly grow a fourth member because the image
+# happened to have libvips in it.
+#
+# It also costs a fraction of the comparison image: no meson, no ninja, no
+# multi-minute libvips compile, no codec `-dev` set, so the cheap CI cell and a
+# local iteration loop both get an image in the time cargo takes.
+#
+# This stage sits BEFORE the builder stage on purpose: the last stage in the
+# file is what a bare `docker build .` targets, and that has to stay the
+# comparison image the README documents.
+# ---------------------------------------------------------------------------
+FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS engines
+
+ENV CARGO_TERM_COLOR=always
+WORKDIR /src
+
+COPY libviprs/ libviprs/
+COPY libviprs-bench/ libviprs-bench/
+
+WORKDIR /src/libviprs-bench
+RUN cargo fetch
+# Default features. If this line ever needs a `--features`, the family split has
+# been undone.
+RUN cargo build --release --bin scalability --bin report
+
+CMD ["cargo", "run", "--release", "--bin", "scalability", "--", "--family", "engines"]
+
+# ---------------------------------------------------------------------------
+# Stage 3: the `vips` comparison family.
+#
 # Pinned Rust (was `rust:latest`) so the compiler and its bundled toolchain
 # do not drift between benchmark runs (issue #153); digest-pinned (not just
 # tag-pinned) so the exact base layer cannot shift under a rebuild (#35).
-FROM rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff AS builder
+#
+# The pin moved 1.89 -> 1.97 because the measured core declares
+# `rust-version = "1.97"` as of libviprs 0.4.0, so the old pin could not compile
+# the thing it exists to measure — `cargo` refused the build outright before any
+# benchmark ran. Bumping a measurement pin does invalidate cross-run comparison,
+# which is the deliberate cost of the core moving its floor.
+# ---------------------------------------------------------------------------
+FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
 
 ARG LIBVIPS_VERSION
 ARG LIBVIPS_SHA256
@@ -206,5 +259,5 @@ RUN cargo fetch
 # Build in release mode with libvips FFI feature for in-process comparison
 RUN cargo build --release --features libvips --bin scalability --bin report
 
-# Default: run the scalability benchmark
-CMD ["cargo", "run", "--release", "--features", "libvips", "--bin", "scalability"]
+# Default: run the scalability benchmark over the comparison family
+CMD ["cargo", "run", "--release", "--features", "libvips", "--bin", "scalability", "--", "--family", "vips"]

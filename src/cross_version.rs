@@ -34,13 +34,17 @@ use libviprs_bench::{BenchmarkSnapshot, RunMetrics};
 use polars::prelude::*;
 
 fn main() {
-    let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
+    // History is per-family now (issue #64): one file per family, because a
+    // trend across two engine sets is not a trend. `--family <name>` picks
+    // which one to analyse; it defaults to the libviprs-only one.
+    let family = parse_family();
+    let report_dir = family.report_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("report"));
     let history_path = report_dir.join("benchmark_history.json");
 
     let history = load_history(&history_path).unwrap_or_else(|e| {
         eprintln!("error: {e}");
         eprintln!();
-        eprintln!("Run `cargo run --release --bin report` against multiple");
+        eprintln!("Run `cargo run --release --bin report -- --family {family}` against multiple");
         eprintln!("libviprs versions first; each run appends a snapshot to");
         eprintln!("{}.", history_path.display());
         std::process::exit(1);
@@ -451,3 +455,31 @@ fn lookup_row(
 // helper that inlines them.
 #[allow(dead_code)]
 fn _ensure_uses(_: &RunMetrics) {}
+
+/// Read `--family <name>`, defaulting to the libviprs-only family. An unknown
+/// or unbuildable family is refused with the same message every other binary
+/// gives, rather than analysed as the default.
+fn parse_family() -> libviprs_bench::family::Family {
+    let mut args = std::env::args().skip(1);
+    let mut family = libviprs_bench::family::DEFAULT_FAMILY;
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--family" => {
+                let name = args.next().unwrap_or_else(|| {
+                    eprintln!("--family wants a family name");
+                    std::process::exit(2);
+                });
+                family = libviprs_bench::family::Family::resolve(&name).unwrap_or_else(|refusal| {
+                    eprintln!("{refusal}");
+                    std::process::exit(refusal.exit_code());
+                });
+            }
+            other => {
+                eprintln!("Unknown argument: {other}");
+                eprintln!("usage: cross_version [--family <engines|storage|vips>]");
+                std::process::exit(2);
+            }
+        }
+    }
+    family
+}

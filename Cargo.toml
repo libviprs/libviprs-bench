@@ -3,7 +3,12 @@ name = "libviprs-bench"
 version = "0.3.0"
 edition = "2024"
 authors = ["Roman Goldmann <roman@devshell.org>"]
-rust-version = "1.85"
+# The measured core declares `rust-version = "1.97"` as of libviprs 0.4.0, and a
+# path dependency's floor is this crate's floor in practice: cargo refuses the
+# build outright below it. Declaring 1.85 here said nothing true — it only meant
+# the refusal came from the dependency rather than from the manifest that
+# actually has to hold. The Dockerfile's Rust pin moved with it (issue #64).
+rust-version = "1.97"
 publish = false
 
 [features]

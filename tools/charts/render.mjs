@@ -4,9 +4,12 @@
  * the report/article embed. Consumes the JSON the Rust harness already
  * writes (nothing else changed on the data path):
  *
- *   report/benchmark_history.json   (Vec<BenchmarkSnapshot>)  → chart_history_*.svg
- *   report/benchmark_results.json   (Vec<RunMetrics>)         → chart_*.svg (grouped bars)
- *   report/scalability_results.json (Vec<ScalabilityPoint>)   → scalability_*.svg
+ *   <report-dir>/benchmark_history.json   (Vec<BenchmarkSnapshot>)  → chart_history_*.svg
+ *   <report-dir>/benchmark_results.json   (Vec<RunMetrics>)         → chart_*.svg (grouped bars)
+ *   <report-dir>/scalability_results.json (Vec<ScalabilityPoint>)   → scalability_*.svg
+ *
+ * A run writes into its family's directory (report/engines, report/vips), so
+ * `--report-dir report/engines` draws that family and nothing else (#64).
  *
  * The SVG generation used to live in the Rust `report` / `scalability`
  * binaries (plotters); it now lives here entirely, reusing the proven
