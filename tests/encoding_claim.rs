@@ -14,9 +14,24 @@ use std::path::{Path, PathBuf};
 
 use libviprs::{EngineKind, Layout, PyramidPlanner};
 use libviprs_bench::{
-    BENCH_TILE_FORMAT, BENCH_TILE_SUFFIX, TILE_ENCODING_CLAIM, TILE_ENCODING_CONTRADICTIONS,
-    gradient_raster, write_libviprs_pyramid,
+    BENCH_TILE_FORMAT, BENCH_TILE_SUFFIX, TILE_ENCODING_CLAIM, gradient_raster,
+    write_libviprs_pyramid,
 };
+
+/// The phrases that contradict [`TILE_ENCODING_CLAIM`] — the stale
+/// in-memory-sink story, written out.
+///
+/// They live in this test rather than beside the claim in `src/lib.rs` because
+/// `tests/vips_ffi.rs` scans that file for an in-RAM sink type by name as its
+/// own structural fairness guard (#153). Quoting the wrong story there fails
+/// the other guard with a quotation, which is a real thing that happened on the
+/// first push of this lane.
+const TILE_ENCODING_CONTRADICTIONS: &[&str] = &[
+    "Neither side encodes",
+    "neither side encodes",
+    "in-memory collection",
+    "writes raw tiles (no encoding)",
+];
 
 /// The first eight bytes of every PNG file, by the format's own spec. Reading
 /// the magic rather than trusting the `.png` name is the difference between

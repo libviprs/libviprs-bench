@@ -5,7 +5,7 @@
 <h1 align="center">libviprs-bench</h1>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/rust-1.85%2B-orange?logo=rust" alt="Rust 1.85+">
+  <img src="https://img.shields.io/badge/rust-1.97%2B-orange?logo=rust" alt="Rust 1.97+">
   <img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT License">
 </p>
 
@@ -272,7 +272,7 @@ report/
 
 ## Requirements
 
-- Rust 1.85+ (edition 2024)
+- Rust 1.97+ (edition 2024) — the floor the measured `libviprs` core declares
 - Docker (recommended, used by `run-bench.sh`)
 - For `--no-build`: `libvips-dev` and `pkg-config` on the host
 - **Node** (recent LTS) on the host to render the history/scalability SVGs (`tools/charts/render.mjs`). Optional for a benchmark run — without it the run still writes its JSON — but **required to run the test suite**, because `tests/engines_family_end_to_end.rs` asserts the charts are actually drawn and a chart assertion that quietly does not run is the same colour as one that passed

@@ -55,8 +55,8 @@ pub const BENCH_TILE_SUFFIX: &str = ".png";
 ///
 /// The README and the site article disagreed about this: the README said every
 /// engine writes PNG tiles to a real on-disk sink, and the benchmark article on
-/// libviprs.org said libviprs writes to a `MemorySink` and neither side encodes
-/// to PNG or JPEG. The code settles it — [`BENCH_TILE_FORMAT`] is
+/// libviprs.org said the engines collect tiles in memory and that no tile is
+/// ever encoded at all. The code settles it — [`BENCH_TILE_FORMAT`] is
 /// [`TileFormat::Png`], every timed libviprs cell runs through an [`FsSink`]
 /// rooted in a real temp directory, and both libvips paths (`vips dzsave` and
 /// the in-process `vips_dzsave`) are handed the matching
@@ -66,18 +66,17 @@ pub const BENCH_TILE_SUFFIX: &str = ".png";
 /// It lives here, once, so the prose has a single source. `tests/encoding_claim.rs`
 /// proves the sentence against a real run and then asserts every document this
 /// repository ships repeats it verbatim.
+///
+/// The phrases that CONTRADICT it deliberately do not live here. They are the
+/// stale story written out, and `tests/vips_ffi.rs` scans this very file for
+/// one of them (an in-RAM sink type by name) as its own structural fairness
+/// guard — so spelling them here would fail that guard with a quotation. Two
+/// prose guards over one file, and the negative list belongs to the test rather
+/// than to the source it reads.
 pub const TILE_ENCODING_CLAIM: &str = "every engine writes its tiles as PNG files to a real \
 on-disk sink under the same DeepZoom layout, so neither side gets an in-RAM-sink or tile-codec \
 advantage";
 
-/// Phrases that contradict [`TILE_ENCODING_CLAIM`]. Any of them in a document
-/// this repository ships is the stale in-memory-sink story coming back.
-pub const TILE_ENCODING_CONTRADICTIONS: &[&str] = &[
-    "Neither side encodes",
-    "neither side encodes",
-    "MemorySink (in-memory collection)",
-    "writes raw tiles (no encoding)",
-];
 
 /// The canonical measurement suite, defined once and shared by every axis so
 /// "the identical suite" is a compile-time fact rather than hand-copied
@@ -95,7 +94,7 @@ pub const BENCH_STREAMING_BUDGET: u64 = 1_000_000;
 
 /// A snapshot of benchmark results for a specific libviprs version.
 ///
-/// Stored in `report/benchmark_history.json` so that performance can be
+/// Stored in `report/<family>/benchmark_history.json` so that performance can be
 /// tracked across releases. Each run appends one entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkSnapshot {
