@@ -186,19 +186,37 @@ fn an_unknown_family_is_refused_naming_the_known_ones() {
     assert_ne!(refusal.exit_code(), 0);
 }
 
-/// RED against a `storage` family that resolves to an engines-shaped run before
-/// K1.2 has written its scenarios: that would publish a `storage` snapshot whose
-/// numbers are the engines family's, under a label nothing else would question.
+/// RED against a `storage` family that resolves to an engines-shaped run: that
+/// would publish a `storage` snapshot whose numbers are the engines family's,
+/// under a label nothing else would question.
+///
+/// The reason moved when K1.2's scenarios landed and the refusal did not. It
+/// used to be "no scenarios yet"; it is now "a different binary measures
+/// this", because `storage` has its own runner that builds with no cargo
+/// features. The engine runners still refuse it, still loudly, and the message
+/// still names the fix.
 #[test]
-fn the_storage_family_exists_and_refuses_until_its_scenarios_land() {
+fn the_storage_family_exists_and_is_refused_by_the_engine_runners() {
     assert_eq!(Family::parse("storage"), Some(Family::Storage));
-    let refusal = Family::resolve("storage").expect_err("storage has no scenarios yet");
-    assert!(matches!(refusal, FamilyRefusal::NotYet { .. }));
     assert!(
-        refusal.to_string().contains("K1.2"),
-        "the refusal says which lane fills it in: {refusal}"
+        Family::Storage.is_implemented(),
+        "the scenarios landed in K1.2"
+    );
+    let refusal = Family::resolve("storage").expect_err("report does not measure storage");
+    assert!(matches!(refusal, FamilyRefusal::OtherRunner { .. }));
+    assert!(
+        refusal.to_string().contains("storage` binary"),
+        "the refusal names the binary that does measure it: {refusal}"
     );
     assert_ne!(refusal.exit_code(), 0);
+
+    // The control: the other two families are measured by these binaries, so
+    // the refusal is about this family and not about `resolve` refusing
+    // everything.
+    assert_eq!(Family::resolve("engines"), Ok(Family::Engines));
+    assert!(Family::Engines.measured_by_engine_runners());
+    assert!(!Family::Storage.measured_by_engine_runners());
+    assert_eq!(Family::Storage.runner_bin(), "storage");
 }
 
 /// RED against a default that is anything but the libviprs-only family — the

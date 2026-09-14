@@ -60,17 +60,24 @@ polars = { version = "0.50", optional = true, default-features = false, features
     "rank",
 ] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps a parsed object's keys in the order the producer
+# wrote them. Without it `serde_json::Map` is a `BTreeMap`, so a round trip
+# through `Value` alphabetises every object and the `storage` document's
+# declared column order becomes unobservable by anything that reads it back
+# (`tests/storage_document.rs`). Derived structs already serialise in
+# declaration order; this is about the reading side.
+serde_json = { version = "1", features = ["preserve_order"] }
+# SHA-256 for the `storage` family's artefact digests. `libviprs` already
+# carries this exact major (its `checksum` module hashes with it) and its
+# streaming form is `pub(crate)` there, so the stream lives in
+# `storage::mod` and hashes through the same crate rather than a second one.
+sha2 = "0.11"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-# SHA-256 for the committed real-content fixture's integrity guard
-# (tests/pdf_fixture.rs). Pinned to 0.11 to match `libviprs`'s own direct
-# sha2 dep, so this dev-dep adds no new major of its own. Note the graph is
-# NOT single-version: `lopdf` (via libviprs) still pulls a sha2 0.10.x
-# transitively, so both majors are present — this pin only dedups against
-# libviprs's direct dep, not the whole tree.
-sha2 = "0.11"
+# NOTE: sha2 moved to [dependencies] with the `storage` family, which needs
+# it to digest an artefact. tests/pdf_fixture.rs still uses it and still
+# compiles, because a normal dependency is in scope for tests too.
 
 [[bench]]
 name = "engine_comparison"
@@ -112,3 +119,11 @@ required-features = ["pdfium"]
 name = "cross_version"
 path = "src/cross_version.rs"
 required-features = ["polars"]
+
+# The storage family: PMTiles against a directory tree (issue #65). Builds
+# without the `libvips` feature, which is the point: it measures libviprs
+# against itself, so it belongs in the cheap check job and in a Docker stage
+# that skips the libvips source build entirely.
+[[bin]]
+name = "storage"
+path = "src/storage_main.rs"

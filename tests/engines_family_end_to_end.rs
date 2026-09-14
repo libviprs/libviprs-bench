@@ -192,15 +192,23 @@ fn the_vips_family_is_refused_by_the_report_binary_without_its_feature() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// RED against a `storage` family that quietly measures the engines family's
-/// cells before K1.2 has written its own.
+/// RED against a `report` binary that quietly measures the engines family's
+/// cells when asked for `storage`.
+///
+/// The refusal outlived the reason for it. K1.2's scenarios landed, so
+/// `storage` is no longer a skeleton, but `report` still does not measure it:
+/// it has its own binary, built with no cargo features, and that is what the
+/// message now says.
 #[test]
-fn the_storage_family_is_refused_by_the_report_binary_until_its_scenarios_land() {
+fn the_storage_family_is_refused_by_the_report_binary_which_does_not_measure_it() {
     let dir = scratch("storage-refused");
     let out = run_family("storage", &dir);
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("K1.2"), "{stderr}");
+    assert!(
+        stderr.contains("--bin storage"),
+        "the refusal names the binary that measures it: {stderr}"
+    );
     assert!(!dir.join("benchmark_results.json").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
