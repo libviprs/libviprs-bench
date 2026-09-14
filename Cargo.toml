@@ -55,7 +55,22 @@ polars = { version = "0.50", optional = true, default-features = false, features
     "rank",
 ] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip` is not optional here and it is not a performance knob.
+# Without it serde_json's number READER is not correctly rounded: it parses
+# `0.09090909090909091`, which is the coefficient of variation of `[10, 11, 12]`
+# and so a value this suite really produces, to the float one ULP above the one
+# `std` and the printer agree on. A digest recomputed from a re-parsed document
+# then does not match the digest its producer derived, and `--verify` refuses a
+# file that nothing is wrong with. Worse across languages: V8's `JSON.parse` IS
+# correctly rounded, so Rust and JavaScript would read one archived file as two
+# different floats and derive two different digests.
+#
+# The feature gates serde_json's in-tree `lexical` module in at the float paths
+# in `de.rs`. It adds no crates to the graph, changes no API, and unlike
+# `arbitrary_precision` has no interaction with `to_value` or `preserve_order`.
+# `the_json_reader_is_correctly_rounded` in `tests/storage_provenance_k13.rs` is
+# its canary: delete this feature and that test goes red (libviprs-bench #66).
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

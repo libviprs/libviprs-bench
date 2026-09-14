@@ -30,10 +30,10 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use crate::sha256::sha256_hex;
-use crate::storage::integrity::{self, CanonicalError, Digests, RawJson};
+use crate::storage::integrity::{self, CanonicalError, Digests};
 
 /// Where archived storage runs live, relative to the crate root.
 pub const ARCHIVE_DIR: &str = "archive/storage";
@@ -104,18 +104,16 @@ pub fn admit(doc: &Value) -> Vec<Refusal> {
     refusals
 }
 
-/// Every reason this document may not be archived, read from its own bytes.
+/// Every reason this document may not be archived, read from its stored text.
 ///
 /// This is the entry point for anything that came off disk. It adds the
-/// integrity verdict, which is the one check that cannot survive a round trip
-/// through `serde_json`'s number reader.
+/// integrity verdict, which is the check that needs the document to survive
+/// being read: see `integrity`'s header for why the reader has to be correctly
+/// rounded for this to mean anything.
 pub fn admit_text(text: &str) -> Result<Vec<Refusal>, CanonicalError> {
-    let value: Value = serde_json::from_str(text).map_err(|err| CanonicalError::Malformed {
-        detail: err.to_string(),
-    })?;
-    let raw = RawJson::parse(text)?;
+    let value = integrity::parse_document(text)?;
     let mut refusals = admit(&value);
-    refusals.extend(integrity_refusals(&raw));
+    refusals.extend(integrity_refusals(&value));
     Ok(refusals)
 }
 
@@ -459,19 +457,14 @@ fn check_cells(doc: &Value, refusals: &mut Vec<Refusal>) {
 }
 
 /// If the document carries digests, they have to still hold.
-///
-/// Taken over the document's own bytes. A digest recomputed from a re-parsed
-/// value is a digest of whatever the reader rounded to, which for
-/// `serde_json` is one ULP away from what the producer wrote often enough to
-/// matter.
-fn integrity_refusals(raw: &RawJson) -> Vec<Refusal> {
+fn integrity_refusals(raw: &Value) -> Vec<Refusal> {
     if raw.get("integrity").is_none() {
         // An unsealed document is the ordinary input to `--archive`: sealing is
         // what archiving does. It is only a refusal under `--verify`, which is
         // the aggregator's other mode.
         return Vec::new();
     }
-    match integrity::verify_raw(raw) {
+    match integrity::verify(raw) {
         Ok(report) if report.ok() => Vec::new(),
         Ok(report) => report
             .lines()
@@ -616,53 +609,45 @@ pub struct Sealed {
     pub digests: Digests,
 }
 
-/// Seal a document from its own text.
+/// Seal a document from its stored text.
+pub fn seal_text(text: &str) -> Result<Sealed, CanonicalError> {
+    seal(&integrity::parse_document(text)?)
+}
+
+/// Seal a document: the same evidence, plus the four digests and the time it
+/// was combined.
 ///
 /// Sealing is idempotent in the only sense that matters. `combinedAt` moves on
 /// every call and `integrity` is written fresh, but neither is covered by the
 /// `document` digest, so the digest, and therefore the run id and the archive
 /// path, are the same on the second call as on the first.
 ///
-/// The sealed text is re-printed from a tree that kept every number token
-/// exactly as it arrived, so the bytes that get filed are the bytes that were
-/// handed over. That is not tidiness: re-printing through `f64` would move the
-/// last digit of a value like `0.09090909090909091`, and the file would no
-/// longer match the digest stamped into it.
-pub fn seal_text(text: &str) -> Result<Sealed, CanonicalError> {
-    let mut raw = RawJson::parse(text)?;
-    let digests = integrity::compute_digests_raw(&raw)?;
-    raw.insert(
-        "combinedAt",
-        RawJson::Str(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
+/// Returns the bytes to write rather than a `Value`, because the caller must not
+/// have to decide how to print it: the text here and the digests here are taken
+/// from the same values in the same call, which is what makes an archived file
+/// verify against the digest stamped inside it.
+pub fn seal(doc: &Value) -> Result<Sealed, CanonicalError> {
+    let digests = integrity::compute_digests(doc)?;
+    let mut map: Map<String, Value> = match doc {
+        Value::Object(m) => m.clone(),
+        _ => Map::new(),
+    };
+    map.insert(
+        "combinedAt".to_string(),
+        json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     );
-    raw.insert(
-        "integrity",
-        RawJson::Object(vec![
-            ("cells".to_string(), RawJson::Str(digests.cells.clone())),
-            ("runners".to_string(), RawJson::Str(digests.runners.clone())),
-            (
-                "measurements".to_string(),
-                RawJson::Str(digests.measurements.clone()),
-            ),
-            (
-                "document".to_string(),
-                RawJson::Str(digests.document.clone()),
-            ),
-        ]),
+    map.insert(
+        "integrity".to_string(),
+        serde_json::to_value(&digests).expect("Digests is four strings and always serialises"),
     );
+    let sealed = Value::Object(map);
+    let body = serde_json::to_string_pretty(&sealed).map_err(|err| CanonicalError::Malformed {
+        detail: err.to_string(),
+    })?;
     Ok(Sealed {
-        text: raw.to_pretty(),
+        text: format!("{body}\n"),
         digests,
     })
-}
-
-/// Seal a document built in memory.
-pub fn seal(doc: &Value) -> Result<Sealed, CanonicalError> {
-    seal_text(
-        &serde_json::to_string(doc).map_err(|err| CanonicalError::Malformed {
-            detail: err.to_string(),
-        })?,
-    )
 }
 
 /// What happened when a document was archived.
@@ -745,30 +730,25 @@ impl From<std::io::Error> for ArchiveError {
 /// Archiving the same document twice files it once. The second call recomputes
 /// the id from the same evidence, finds the file, checks that the digest on disk
 /// matches, and returns `written: false` having touched nothing.
-///
-/// Nothing here turns a number into a float. The text goes in, the same number
-/// tokens come out, and the digest is over those bytes, so an archived file
-/// verifies against the digest stamped inside it.
 pub fn archive_text(text: &str, root: &Path) -> Result<ArchiveEntry, ArchiveError> {
     let refusals = admit_text(text).map_err(ArchiveError::Canonical)?;
     if !refusals.is_empty() {
         return Err(ArchiveError::Refused(refusals));
     }
-    let value: Value =
-        serde_json::from_str(text).map_err(|e| ArchiveError::Io(std::io::Error::other(e)))?;
+    let value = integrity::parse_document(text).map_err(ArchiveError::Canonical)?;
     let run_id = run_id(&value).map_err(ArchiveError::RunId)?;
-    let sealed = seal_text(text).map_err(ArchiveError::Canonical)?;
+    let sealed = seal(&value).map_err(ArchiveError::Canonical)?;
 
     std::fs::create_dir_all(root)?;
     let path = root.join(format!("{run_id}.json"));
 
     if path.exists() {
-        let existing =
-            RawJson::parse(&std::fs::read_to_string(&path)?).map_err(ArchiveError::Canonical)?;
+        let existing = integrity::parse_document(&std::fs::read_to_string(&path)?)
+            .map_err(ArchiveError::Canonical)?;
         let existing_digest = existing
             .get("integrity")
             .and_then(|i| i.get("document"))
-            .and_then(RawJson::as_str)
+            .and_then(|d| d.as_str())
             .unwrap_or("")
             .to_string();
         if existing_digest == sealed.digests.document {
