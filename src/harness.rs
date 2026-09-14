@@ -351,7 +351,17 @@ pub fn run_isolated_suite(
         // another engine's or configuration's score. `None` when libvips is
         // unavailable (logged inside `build`); the tree is cleaned when `equiv`
         // drops at the end of the size.
-        let equiv = EquivalenceReference::build(w, h, tile_size, budget_bytes);
+        //
+        // Only a suite that actually measures libvips builds one. A
+        // libviprs-only family has no libvips row to be equivalent TO, and
+        // shelling out to `vips` for a reference nothing scores against would
+        // put the very dependency the family exists without back into the run
+        // on any machine that happens to have it installed (issue #64).
+        let equiv = if engines.contains(&Engine::Libvips) {
+            EquivalenceReference::build(w, h, tile_size, budget_bytes)
+        } else {
+            None
+        };
         for &conc in concurrency_levels {
             // Collect `iters` interleaved samples per engine: outer loop is
             // the iteration, inner loop the engine, so any slow machine
