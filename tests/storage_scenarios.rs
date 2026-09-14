@@ -1,0 +1,1194 @@
+//! The scenarios and cells the old sweep never had (libviprs-bench#67).
+//!
+//! Every test here names, in a comment above it, the wrong implementation it is
+//! written to go red against. A test that stays green under that mutation is
+//! not the test, and the PR body carries the table of what each mutation
+//! actually did when it was run.
+//!
+//! # Nothing here asserts a timing
+//!
+//! The measured p99 noise floor across a free replicate pair on an *idle* host,
+//! at one commit, is 74.5%. Four other lanes are building on this one. So every
+//! assertion below is about a shape: a count, an order, an outcome, a flag, a
+//! reconciliation. The calibrated sweeps are K2.3's and K2.5's job and they get
+//! a quiet host to do it on.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use libviprs::planner::TileCoord;
+use libviprs::pyramid_reader::PmTilesPyramidReader;
+use libviprs::sink::TileFormat;
+use libviprs::sink_pmtiles::PmTilesSink;
+use libviprs::{EngineBuilder, FsSink};
+
+use libviprs_bench::storage::model::{Modelled, RemoteModel, SyncModel};
+use libviprs_bench::storage::scenarios::{
+    self, Cell, LARGEST_FLAT_ROOT, Origin, Outcome, ROOT_ONLY_MAX_ENTRIES, Regime, SEED, SOURCES,
+    Source, concurrent_curve, decode_root, first_lookup, open, plan_order, replicate, requests,
+    tileid_order,
+};
+
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+/// A cell small enough to generate inside an ordinary debug test.
+///
+/// 1024 by 1024 at a 256 pixel tile: 29 planned tiles across eleven levels, a
+/// 3 MB raster, and a deepest level of 4 by 4 that divides exactly, so no edge
+/// tile is clipped and a flat source really does produce identical payloads.
+fn tiny(source: Source) -> Cell {
+    Cell {
+        width: 1024,
+        height: 1024,
+        tile_size: 256,
+        source,
+        regime: Regime::Root,
+    }
+}
+
+/// A cell whose tile size does **not** divide the gradient's period, so the
+/// gradient really is all distinct there.
+///
+/// 1024 by 1024 at a 46 pixel tile, which is the brink cell's tile size: 728
+/// planned tiles and a gradient root of 728 entries, against 80 for the flat
+/// fill. A 256 pixel tile cannot be used for anything that needs distinct tiles,
+/// and `the_gradient_collapses_to_one_entry_a_level_at_a_256_pixel_tile` is why.
+fn distinct_tiny(source: Source) -> Cell {
+    Cell {
+        width: 1024,
+        height: 1024,
+        tile_size: 46,
+        source,
+        regime: Regime::Root,
+    }
+}
+
+fn write_archive(dir: &Path, cell: &Cell) -> PathBuf {
+    let plan = cell.plan();
+    let raster = cell.source.raster(cell.width, cell.height);
+    let archive = dir.join(format!("{}.pmtiles", cell.source.label()));
+    let sink = PmTilesSink::builder(&archive)
+        .plan(plan.clone())
+        .tile_format(TileFormat::Png)
+        .build()
+        .expect("the archive sink builds");
+    EngineBuilder::new(&raster, plan, sink)
+        .run()
+        .expect("the archive run succeeds");
+    archive
+}
+
+fn write_tree(dir: &Path, cell: &Cell) -> PathBuf {
+    let plan = cell.plan();
+    let raster = cell.source.raster(cell.width, cell.height);
+    let root = dir.join(format!("{}-tree", cell.source.label()));
+    let sink = FsSink::new(&root, plan.clone()).with_format(TileFormat::Png);
+    EngineBuilder::new(&raster, plan, sink)
+        .run()
+        .expect("the directory run succeeds");
+    root
+}
+
+/// A coordinate the archive really holds: the first one the plan names.
+fn first_coord(cell: &Cell) -> TileCoord {
+    scenarios::plan_coordinates(&cell.plan())[0]
+}
+
+// ---------------------------------------------------------------------------
+// The cutoff, and the cells around it
+// ---------------------------------------------------------------------------
+
+/// The writer's cutoff is still what this crate copied, and the comparison is
+/// still strict.
+///
+/// RED against a crate that hard-codes 16384 as the largest flat root, which is
+/// what libviprs#1021 said and what a reader would assume: the writer's test is
+/// `<`, so 16384 entries already spill into leaves and 16383 is the biggest
+/// flat root there is.
+#[test]
+fn the_writers_cutoff_is_the_number_this_crate_copied() {
+    let writer = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../libviprs/src/pmtiles/writer.rs"
+    ))
+    .expect("the engine sits alongside as a path dependency, so its writer is readable");
+
+    let declaration = format!("const ROOT_ONLY_MAX_ENTRIES: u64 = {ROOT_ONLY_MAX_ENTRIES};");
+    assert!(
+        writer.contains(&declaration),
+        "the engine no longer declares `{declaration}`, so every cutoff this crate names came \
+         from somewhere else"
+    );
+    assert!(
+        writer.contains("if plan.entry_count < ROOT_ONLY_MAX_ENTRIES"),
+        "the writer no longer decides a flat root with a strict `<`, so the largest flat root may \
+         not be {LARGEST_FLAT_ROOT} any more"
+    );
+    assert_eq!(
+        LARGEST_FLAT_ROOT,
+        ROOT_ONLY_MAX_ENTRIES - 1,
+        "a strict comparison puts the largest flat root one under the cutoff"
+    );
+}
+
+/// The brink cell is still the best cell the search space reaches.
+///
+/// RED against a canvas picked by eye, or against one that used to be the brink
+/// and stopped being it when the planner's rounding moved. It is arithmetic,
+/// and it says which cell to build; what the archive came out as is
+/// `the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it`.
+#[test]
+fn the_brink_search_still_picks_the_canvas_the_cell_names() {
+    let (found, tiles) = scenarios::brink_search();
+    let configured = scenarios::brink_cell(Source::Gradient);
+    assert_eq!(
+        (found.width, found.height, found.tile_size),
+        (
+            configured.width,
+            configured.height,
+            configured.tile_size
+        ),
+        "the search space's best cell is now {} planning {tiles} tiles, and the table still names \
+         {}",
+        found.spec(),
+        configured.spec()
+    );
+    assert!(
+        tiles <= LARGEST_FLAT_ROOT,
+        "the brink cell plans {tiles} tiles, at or over the {LARGEST_FLAT_ROOT} entries the writer \
+         will still keep flat"
+    );
+    let short_by = LARGEST_FLAT_ROOT - tiles;
+    assert!(
+        short_by * 100 < LARGEST_FLAT_ROOT,
+        "the brink cell plans {tiles} tiles, {short_by} short of the cutoff, which is far enough \
+         off it that the cell brackets the peak of the ramp instead of measuring it"
+    );
+}
+
+/// Ask each archive what it came out as, rather than trusting the arithmetic.
+///
+/// RED against the wrong canvas: a brink cell whose archive grew leaves is
+/// measuring the far side of the cliff, and a leaf cell whose archive stayed
+/// flat is measuring the ramp. If the planner disagrees with the arithmetic the
+/// cell moves and this test is what says so.
+///
+/// `#[ignore]`d because it generates a fifty megabyte archive and a two hundred
+/// megabyte one. Run it with:
+///
+/// ```text
+/// cargo test --release --test storage_scenarios -- --ignored \
+///   the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it --nocapture
+/// ```
+#[test]
+#[ignore = "generates the brink and leaf archives; run with --ignored"]
+fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
+    let dir = tempdir();
+
+    let brink = scenarios::brink_cell(Source::Gradient);
+    let brink_archive = write_archive(dir.path(), &brink);
+    let (brink_entries, brink_leaves) = scenarios::root_shape(&brink_archive);
+    println!(
+        "brink {} planned {} tiles, root holds {brink_entries} entries, {brink_leaves} of them \
+         leaf pointers, {} under the {LARGEST_FLAT_ROOT} the writer still keeps flat",
+        brink.spec(),
+        brink.planned_tiles(),
+        LARGEST_FLAT_ROOT - brink_entries
+    );
+
+    assert_eq!(
+        brink_leaves, 0,
+        "the brink cell's archive grew leaf directories, so its root is a handful of pointers and \
+         it measures the far side of the cliff rather than the top of the ramp"
+    );
+    assert!(
+        brink_entries <= LARGEST_FLAT_ROOT,
+        "the brink cell's root holds {brink_entries} entries, at or past the {LARGEST_FLAT_ROOT} \
+         the writer will keep flat, which is not a root this writer emits"
+    );
+    let short_by = LARGEST_FLAT_ROOT - brink_entries;
+    assert!(
+        short_by * 100 < LARGEST_FLAT_ROOT,
+        "the brink cell's root holds {brink_entries} entries, {short_by} under the cutoff, so the \
+         sweep brackets the worst case again instead of measuring it"
+    );
+    assert_eq!(
+        brink_entries,
+        brink.planned_tiles(),
+        "the gradient's tiles are all distinct, so every planned tile should cost one root entry; \
+         a run collapsed and the root is smaller than the cell's tile count"
+    );
+    assert_eq!(scenarios::observed_regime(&brink_archive), brink.regime);
+
+    let leaf = scenarios::leaf_cell(Source::Gradient);
+    let leaf_archive = write_archive(dir.path(), &leaf);
+    let (leaf_entries, leaf_leaves) = scenarios::root_shape(&leaf_archive);
+    println!(
+        "leaf {} planned {} tiles, root holds {leaf_entries} entries, {leaf_leaves} of them leaf \
+         pointers",
+        leaf.spec(),
+        leaf.planned_tiles()
+    );
+    assert!(
+        leaf_leaves >= 1,
+        "the leaf cell's archive stayed flat, so it measures the ramp rather than the cliff after \
+         it"
+    );
+    assert!(
+        leaf.planned_tiles() > LARGEST_FLAT_ROOT,
+        "the leaf cell plans {} tiles, which the writer would still keep in a flat root",
+        leaf.planned_tiles()
+    );
+    assert_eq!(scenarios::observed_regime(&leaf_archive), leaf.regime);
+}
+
+// ---------------------------------------------------------------------------
+// Sources
+// ---------------------------------------------------------------------------
+
+/// A flat source collapses the root, and no sweep may publish a row from one.
+///
+/// RED against a `publishes_rows` that says yes to everything, and against a
+/// `publishable` that filters nothing. The positive control is in the same
+/// test twice: the two real sources must still publish, or a rule that refused
+/// everything would pass; and the archive must really collapse, or "flat is
+/// special" is a claim about a `match` arm rather than about the writer.
+#[test]
+fn a_flat_source_never_produces_a_published_row() {
+    let dir = tempdir();
+
+    let flat = distinct_tiny(Source::Flat);
+    let flat_archive = write_archive(dir.path(), &flat);
+    let (flat_entries, _) = scenarios::root_shape(&flat_archive);
+
+    let gradient = distinct_tiny(Source::Gradient);
+    let gradient_archive = write_archive(dir.path(), &gradient);
+    let (gradient_entries, _) = scenarios::root_shape(&gradient_archive);
+
+    println!(
+        "{} planned tiles: flat root {flat_entries} entries, gradient root {gradient_entries}",
+        flat.planned_tiles()
+    );
+
+    // The reason flat is not a cell: its root is not the cell's tile count.
+    assert!(
+        flat_entries < flat.planned_tiles(),
+        "the flat source's root holds {flat_entries} entries for {} planned tiles, so nothing \
+         deduplicated and this source is not the dedupe guard it is here to be",
+        flat.planned_tiles()
+    );
+    // The positive control for that: a source whose tiles are all distinct pays
+    // one entry per tile, so the collapse above is the writer's run-length
+    // encoding and not something about this canvas.
+    assert_eq!(
+        gradient_entries,
+        gradient.planned_tiles(),
+        "the gradient's tiles are meant to be all distinct"
+    );
+
+    assert!(!Source::Flat.publishes_rows());
+    assert!(Source::Gradient.publishes_rows() && Source::Noise.publishes_rows());
+
+    let sweep: Vec<Cell> = SOURCES.iter().map(|source| distinct_tiny(*source)).collect();
+    let published = scenarios::publishable(&sweep);
+    assert_eq!(
+        published.len(),
+        2,
+        "a sweep over every source publishes the gradient and the noise rows and nothing else, \
+         and it published {published:?}"
+    );
+    assert!(published.iter().all(|cell| cell.source != Source::Flat));
+}
+
+/// The noise source really is the incompressible one.
+///
+/// RED against a `noise` that is another gradient, another flat fill, or a
+/// per-tile constant: any of those compresses, and then the source axis this
+/// lane added measures nothing. The gradient in the same test is the control
+/// that the comparison is about the pixels rather than about the encoder.
+#[test]
+fn the_noise_source_is_incompressible_and_the_gradient_is_not() {
+    let dir = tempdir();
+
+    let noise = tiny(Source::Noise);
+    let gradient = tiny(Source::Gradient);
+    let noise_bytes = std::fs::metadata(write_archive(dir.path(), &noise))
+        .expect("the noise archive exists")
+        .len();
+    let gradient_bytes = std::fs::metadata(write_archive(dir.path(), &gradient))
+        .expect("the gradient archive exists")
+        .len();
+
+    println!("noise archive {noise_bytes} bytes, gradient archive {gradient_bytes} bytes");
+    assert!(
+        noise_bytes > gradient_bytes * 2,
+        "the noise archive is {noise_bytes} bytes against the gradient's {gradient_bytes}, which \
+         is not the gap an incompressible source makes"
+    );
+
+    // And it is deterministic, because a benchmark source that moves between
+    // runs is a different amount of work each time.
+    let again = scenarios::noise(64, 64);
+    let once = scenarios::noise(64, 64);
+    assert_eq!(again.data(), once.data(), "the noise source is seeded");
+}
+
+// ---------------------------------------------------------------------------
+// open
+// ---------------------------------------------------------------------------
+
+/// An open reads the header and the root and touches no tile.
+///
+/// RED against an open that prefetches: one extra range read puts the count
+/// over two, and a prefetch of the first tile lands a request inside the tile
+/// data section. The lookup in the same test is the positive control, because
+/// "no request landed in the tile section" is also what an open whose requests
+/// nobody counted would say.
+#[test]
+fn open_counts_exactly_the_header_and_root_reads_and_no_tile() {
+    let dir = tempdir();
+    let cell = tiny(Source::Gradient);
+    let archive = write_archive(dir.path(), &cell);
+    let coord = first_coord(&cell);
+
+    let (observation, lookup_requests) = open::observe_with_lookup(&archive, coord);
+
+    assert_eq!(
+        observation.request_count(),
+        2,
+        "an open is the 127-byte header and the root directory and nothing else; it made {:?}",
+        observation.requests
+    );
+    assert!(
+        observation.tile_section_requests().is_empty(),
+        "the open reached into the tile data section at {:?}",
+        observation.tile_section_requests()
+    );
+
+    let end = observation.tile_data_offset + observation.tile_data_length;
+    let in_tiles: Vec<_> = lookup_requests
+        .iter()
+        .filter(|r| r.offset < end && r.end() > observation.tile_data_offset)
+        .collect();
+    assert!(
+        !in_tiles.is_empty(),
+        "the lookup after the open fetched no tile bytes, so this test cannot tell an open that \
+         prefetches from one whose requests nobody counted; requests were {lookup_requests:?}"
+    );
+
+    // The plain observe() path is the scenario, and it agrees with the one that
+    // also looks a tile up.
+    let plain = open::observe(&archive);
+    assert_eq!(plain.request_count(), 2);
+    assert_eq!(plain.root_entries, observation.root_entries);
+}
+
+/// The reconciliation guard says no to a cell too small to reconcile on.
+///
+/// RED against a guard that accepts every cell, which is what a split guard
+/// becomes the moment somebody widens its allowance until the 93-entry cell
+/// passes. That cell drifts -24% on arm64 and -34% on x86_64 with nothing wrong
+/// with the split, because the whole open there is a few microseconds and
+/// per-iteration overhead is a fifth of it.
+#[test]
+fn the_cold_split_guard_refuses_a_root_too_small_to_reconcile() {
+    let refusal = open::reconciliation_is_meaningful(93)
+        .expect_err("a 93-entry root is too small for the phases to reconcile against");
+    assert!(
+        refusal.contains("93"),
+        "the refusal has to name the root it refused: {refusal}"
+    );
+
+    // The positive control: the guard is not simply a `no`. The cell the
+    // engine's own split guard measures is about 1400 entries and it passes.
+    open::reconciliation_is_meaningful(1_373)
+        .expect("a 1373-entry root is what the engine's own split guard reconciles on");
+    open::reconciliation_is_meaningful(open::MIN_RECONCILABLE_ROOT_ENTRIES)
+        .expect("the floor itself is meaningful");
+    assert!(open::reconciliation_is_meaningful(open::MIN_RECONCILABLE_ROOT_ENTRIES - 1).is_err());
+}
+
+/// The drift arithmetic is signed and the allowance is two-sided.
+///
+/// RED against a `reconciles` that compares a raw difference, or an unsigned
+/// one: the split comes out *under* the combined row on a small cell and over
+/// it on a large one, so a one-sided check passes the half of the failures it
+/// was not written for.
+#[test]
+fn the_reconciliation_allowance_is_two_sided() {
+    assert!(open::reconciles(100.0, 100.0));
+    assert!(open::reconciles(120.0, 100.0));
+    assert!(open::reconciles(80.0, 100.0));
+    assert!(!open::reconciles(126.0, 100.0));
+    assert!(!open::reconciles(74.0, 100.0));
+    assert!(open::drift_pct(76.0, 100.0) < 0.0);
+    assert!(open::drift_pct(124.0, 100.0) > 0.0);
+}
+
+/// The six phases add up to the combined row on a cell big enough to say so.
+///
+/// RED against a split that measures some other piece of work: a phase timing
+/// the wrong call, a walk that skips the inflate, a lookup phase that reuses
+/// the reader the decode phase built. `#[ignore]`d because it needs a root
+/// around 1400 entries, which is a 200 MB raster.
+#[test]
+#[ignore = "generates the mid cell; run with --ignored"]
+fn the_cold_split_accounts_for_the_whole_combined_row() {
+    let dir = tempdir();
+    // 2048x2048 at a 64 pixel tile: 1371 planned tiles and a gradient root of
+    // 1290 entries, which is the size the engine's own split guard reconciles
+    // on and small enough to generate in a minute. The plan's mid cell is
+    // 8192x8192 at a 256 pixel tile, and the gradient collapses that one to a
+    // root of thirteen entries, which the reconciliation guard rightly refuses.
+    let cell = Cell {
+        width: 2048,
+        height: 2048,
+        tile_size: 64,
+        source: Source::Gradient,
+        regime: Regime::Root,
+    };
+    let archive = write_archive(dir.path(), &cell);
+    let (entries, _) = scenarios::root_shape(&archive);
+    open::reconciliation_is_meaningful(entries).expect("the mid cell's root is big enough");
+
+    let coords: Vec<TileCoord> = scenarios::plan_coordinates(&cell.plan())
+        .into_iter()
+        .take(32)
+        .collect();
+    let pass = open::split_pass(&archive, &coords, entries);
+
+    let split_us = median_micros(&pass.totals());
+    let combined_us = median_micros(&pass.combined);
+    let drift = open::drift_pct(split_us, combined_us);
+    println!(
+        "root {entries} entries: split {split_us:.2} us, combined {combined_us:.2} us, drift \
+         {drift:.1}%"
+    );
+    assert!(
+        open::reconciles(split_us, combined_us),
+        "the phases sum to {split_us:.2} us against a combined row of {combined_us:.2}, a drift of \
+         {drift:.1}% and the allowance is {}%",
+        open::RECONCILIATION_ALLOWANCE_PCT
+    );
+    assert_eq!(pass.by_phase().len(), open::COLD_PHASES.len());
+}
+
+// ---------------------------------------------------------------------------
+// first_lookup
+// ---------------------------------------------------------------------------
+
+/// The child entry point.
+///
+/// Does nothing at all unless a parent asked for it, so an ordinary run of this
+/// binary passes it in microseconds.
+#[test]
+fn k14_first_lookup_child() {
+    let Ok(spec) = std::env::var(first_lookup::CHILD_VAR) else {
+        return;
+    };
+    println!("{}", first_lookup::child_main(&spec));
+}
+
+/// Every repetition of `first_lookup` runs in a process of its own.
+///
+/// RED against a loop in one process, which is what `read_cold` was: the pids
+/// then collapse to one, and to the parent's own. The pid comes out of the
+/// child, so an implementation that never spawned one cannot report a pid it
+/// does not have.
+#[test]
+fn first_lookup_runs_in_a_fresh_process_per_rep() {
+    let dir = tempdir();
+    let cell = tiny(Source::Gradient);
+    let archive = write_archive(dir.path(), &cell);
+    let coord = first_coord(&cell);
+    let exe = std::env::current_exe().expect("a test binary knows where it is");
+
+    let reps = 4;
+    let measured = first_lookup::run(reps, |_| {
+        let mut command = first_lookup::child_command(&exe, &archive, coord);
+        command.args(["--exact", "k14_first_lookup_child", "--nocapture"]);
+        command
+    })
+    .expect("every repetition spawns and answers");
+
+    assert_eq!(measured.len(), reps);
+    assert_eq!(
+        first_lookup::distinct_pids(&measured),
+        reps,
+        "{reps} repetitions ran in {} distinct processes: {measured:?}",
+        first_lookup::distinct_pids(&measured)
+    );
+    let mine = std::process::id();
+    assert!(
+        measured.iter().all(|rep| rep.pid != mine),
+        "a repetition reported this process's own pid ({mine}), so it never left it: {measured:?}"
+    );
+    assert!(
+        measured.iter().all(|rep| rep.hit),
+        "the coordinate every repetition looked up is the first tile of the plan and the archive \
+         holds it: {measured:?}"
+    );
+}
+
+/// The child spec survives the round trip.
+///
+/// RED against a spec that loses the level, which would send every child to
+/// (0, 0, 0) and make the scenario measure one coordinate under four names.
+#[test]
+fn the_child_spec_round_trips() {
+    let coord = TileCoord {
+        level: 7,
+        col: 41,
+        row: 3,
+    };
+    let spec = first_lookup::child_spec(Path::new("/tmp/a b/pyramid.pmtiles"), coord);
+    let (path, back) = first_lookup::parse_child_spec(&spec).expect("the spec parses");
+    assert_eq!(path, PathBuf::from("/tmp/a b/pyramid.pmtiles"));
+    assert_eq!(back, coord);
+}
+
+// ---------------------------------------------------------------------------
+// decode_root
+// ---------------------------------------------------------------------------
+
+/// `decode_root` reports the archive's entry count, not the cell's tile count.
+///
+/// RED against a scenario that reports the planned tile count, or the cell's
+/// label, or a constant. The flat source is what makes it a real distinction:
+/// its run-length-encoded root is far smaller than its plan, so the two numbers
+/// cannot be confused with each other. The gradient archive in the same test is
+/// the control that the two *can* coincide, which is why quoting the plan looks
+/// right on every cell the sweep used to have.
+#[test]
+fn decode_root_reports_the_archives_own_entry_count_not_the_plans_tile_count() {
+    let dir = tempdir();
+
+    let flat = distinct_tiny(Source::Flat);
+    let flat_archive = write_archive(dir.path(), &flat);
+    let (flat_entries, _) = scenarios::root_shape(&flat_archive);
+    let decoded = decode_root::observe(&flat_archive, 3);
+
+    assert_eq!(
+        decoded.entries, flat_entries,
+        "the decode produced {} entries and the archive's root holds {flat_entries}",
+        decoded.entries
+    );
+    assert_ne!(
+        decoded.entries,
+        flat.planned_tiles(),
+        "on a deduplicating source the root entry count and the tile count have to differ, or \
+         this test cannot tell a decode from a restatement of the plan"
+    );
+    assert_eq!(decoded.samples.len(), 3);
+    assert!(decoded.plain_bytes > 0 && decoded.compressed_bytes > 0);
+    assert!(decoded.nanos_per_entry(decoded.samples[0]).is_some());
+
+    let gradient = distinct_tiny(Source::Gradient);
+    let gradient_archive = write_archive(dir.path(), &gradient);
+    let gradient_decoded = decode_root::observe(&gradient_archive, 1);
+    assert_eq!(gradient_decoded.entries, gradient.planned_tiles());
+}
+
+// ---------------------------------------------------------------------------
+// plan_order and tileid_order
+// ---------------------------------------------------------------------------
+
+/// The tile-id walk is monotone in tile id and the plan walk is not.
+///
+/// RED against a copy-paste of `plan_order` that sorts neither. The trap this
+/// test is written around is that a hand-picked pair of coordinates can land on
+/// a position the sort leaves alone, and then the assertion is green under
+/// exactly the mutation it was written for. So the probe is **computed**:
+/// `positions_the_sort_moves` is the set of positions the wrong implementation
+/// actually moves, the test asserts that set is not empty before it asserts
+/// anything else, and the probe it prints comes out of it.
+#[test]
+fn tileid_order_is_monotone_in_tile_id_and_plan_order_is_not() {
+    let cell = scenarios::smoke_cell(Source::Gradient);
+    let plan = cell.plan();
+    let n = plan_order::coordinates(&plan, usize::MAX).len();
+    let walked = plan_order::coordinates(&plan, n);
+    let sorted = tileid_order::coordinates(&plan, n);
+
+    assert_eq!(walked.len(), sorted.len());
+    assert!(
+        tileid_order::same_multiset(&walked, &sorted),
+        "the two walks have to cover the same tiles, or they are two different amounts of work"
+    );
+
+    // The fixed-point check, and it comes first. If the sort moved nothing on
+    // this cell, everything below is green against an implementation that sorts
+    // nothing, and the test would be a decoration.
+    let moved = tileid_order::positions_the_sort_moves(&walked, &sorted);
+    assert!(
+        !moved.is_empty(),
+        "the plan order and the tile-id order coincide on {}, so nothing here can fail against an \
+         implementation that sorts neither; the cell has to move, not the test",
+        cell.spec()
+    );
+    let probe = tileid_order::probe(&walked, &sorted).expect("a moved position is a probe");
+    println!(
+        "{}: {} of {n} positions move; probe at index {} is {:?} (tile id {:?}) in plan order and \
+         {:?} (tile id {:?}) in tile-id order",
+        cell.spec(),
+        moved.len(),
+        probe.index,
+        probe.in_plan_order,
+        probe.in_plan_order_tile_id,
+        probe.in_tileid_order,
+        probe.in_tileid_order_tile_id
+    );
+    assert_ne!(
+        probe.in_plan_order_tile_id, probe.in_tileid_order_tile_id,
+        "a position the sort moves holds two different tiles, so it holds two different tile ids"
+    );
+
+    // The claim itself.
+    assert!(
+        tileid_order::is_monotone(&sorted),
+        "the tile-id walk goes backwards at {:?}",
+        tileid_order::first_inversion(&sorted)
+    );
+    let inversion = tileid_order::first_inversion(&walked).expect(
+        "the plan walk is row-major within a level and the archive is a Hilbert curve, so the plan \
+         walk has to go backwards somewhere",
+    );
+    println!(
+        "plan order first goes backwards at index {}: tile id {} then {}",
+        inversion.index, inversion.before, inversion.after
+    );
+}
+
+/// Both walks truncate to the same `n`, and `n` past the end is the whole plan.
+///
+/// RED against a tile-id walk that sorts the whole plan and *then* truncates,
+/// which would walk a different set of tiles from the plan walk at every `n`
+/// short of the pyramid.
+#[test]
+fn both_walks_take_the_same_n_coordinates() {
+    let plan = scenarios::smoke_cell(Source::Gradient).plan();
+    let whole = plan_order::coordinates(&plan, usize::MAX).len();
+
+    for n in [1usize, 7, 16, whole, whole + 100] {
+        let walked = plan_order::coordinates(&plan, n);
+        let sorted = tileid_order::coordinates(&plan, n);
+        assert_eq!(walked.len(), n.min(whole));
+        assert_eq!(sorted.len(), n.min(whole));
+        assert!(
+            tileid_order::same_multiset(&walked, &sorted),
+            "at n={n} the two walks cover different tiles"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// concurrent_curve
+// ---------------------------------------------------------------------------
+
+/// A rung the host has no cores for is skipped with a reason and stays in the
+/// document.
+///
+/// RED against omission. A dropped row reads as a measurement nobody took,
+/// which is a different and worse claim than one this host declined, and it is
+/// the one a reader makes when a 6-core box publishes three points of a
+/// four-point curve.
+#[test]
+fn cells_above_ncpu_are_skipped_with_a_reason_not_dropped() {
+    let ladder = concurrent_curve::ladder(6);
+    assert_eq!(
+        ladder.len(),
+        concurrent_curve::THREAD_LADDER.len(),
+        "every rung stays in the document: {ladder:?}"
+    );
+    assert_eq!(
+        ladder.iter().map(|arm| arm.threads).collect::<Vec<_>>(),
+        concurrent_curve::THREAD_LADDER.to_vec()
+    );
+
+    let skipped: Vec<_> = ladder.iter().filter(|arm| !arm.outcome.is_ok()).collect();
+    assert_eq!(
+        skipped.len(),
+        1,
+        "on six cores exactly the eight-thread rung is declined: {ladder:?}"
+    );
+    assert_eq!(skipped[0].threads, 8);
+    let reason = skipped[0]
+        .outcome
+        .reason()
+        .expect("a skipped rung carries its reason");
+    assert!(
+        reason.contains('6') && reason.contains('8'),
+        "the reason has to name the cores and the rung: {reason}"
+    );
+
+    // The positive control: the rule is about the host, not a constant that
+    // always refuses eight.
+    let roomy = concurrent_curve::ladder(16);
+    assert!(
+        roomy.iter().all(|arm| arm.outcome.is_ok()),
+        "a sixteen-core host measures every rung: {roomy:?}"
+    );
+    let cramped = concurrent_curve::ladder(1);
+    assert_eq!(
+        cramped
+            .iter()
+            .filter(|arm| arm.outcome == Outcome::Ok)
+            .count(),
+        1,
+        "a single-core host measures only the control"
+    );
+}
+
+/// The T=1 control is the same work as `read_random`, on the calling thread.
+///
+/// RED against a T=1 path that carries thread overhead, or a different
+/// coordinate set. It is written as a structural check rather than as a
+/// comparison of two timings on purpose: the replicate spread on p99 is 74.5%
+/// on an idle host, so a tie-band assertion between two timed passes is a coin
+/// toss and would be one even if nothing else were running. What makes the two
+/// agree is that they walk the identical sequence with no spawn and no join,
+/// and that is observable.
+#[test]
+fn the_t1_control_agrees_with_read_random_within_the_tie_band() {
+    let dir = tempdir();
+    let cell = tiny(Source::Gradient);
+    let archive = write_archive(dir.path(), &cell);
+    let reader = PmTilesPyramidReader::try_open(&archive).expect("the archive opens for reading");
+
+    let coords = scenarios::random_order(&scenarios::plan_coordinates(&cell.plan()), SEED);
+
+    // The same coordinate set, in the same order.
+    let pieces = concurrent_curve::chunks(&coords, 1);
+    assert_eq!(pieces.len(), 1);
+    assert_eq!(
+        pieces[0],
+        coords.as_slice(),
+        "the T=1 rung walks `read_random`'s sequence, not a reshuffle of it"
+    );
+
+    let me = std::thread::current().id();
+    let control = concurrent_curve::run_arm(&reader, &coords, 1);
+    assert_eq!(control.coordinates_walked, coords.len());
+    assert_eq!(control.latencies.len(), coords.len());
+    assert!(
+        control.ran_on_only(me),
+        "the control ran on {:?} and this thread is {me:?}, so it paid for a spawn and a join the \
+         pass it is a control for does not",
+        control.thread_ids
+    );
+
+    // The positive control: a rung that really does spawn is visible here, so
+    // `ran_on_only` is an observation rather than a constant.
+    let two = concurrent_curve::run_arm(&reader, &coords, 2);
+    assert!(
+        !two.ran_on_only(me),
+        "the two-thread rung reported only this thread, so the thread-id evidence cannot tell a \
+         spawn from an inline walk"
+    );
+    assert_eq!(two.coordinates_walked, coords.len());
+    assert_eq!(two.latencies.len(), coords.len());
+}
+
+/// Chunks are contiguous, cover everything, and stay balanced.
+///
+/// RED against a split that drops the remainder, which silently shortens the
+/// walk at every thread count that does not divide the coordinate set.
+#[test]
+fn the_thread_chunks_concatenate_back_to_the_whole_walk() {
+    let coords: Vec<TileCoord> = (0..37)
+        .map(|index| TileCoord {
+            level: 5,
+            col: index,
+            row: 0,
+        })
+        .collect();
+
+    for threads in concurrent_curve::THREAD_LADDER {
+        let pieces = concurrent_curve::chunks(&coords, threads);
+        assert_eq!(pieces.len(), threads);
+        let rejoined: Vec<TileCoord> = pieces.iter().flat_map(|p| p.iter().copied()).collect();
+        assert_eq!(rejoined, coords, "at T={threads} the chunks lost a tile");
+        let longest = pieces.iter().map(|p| p.len()).max().unwrap_or(0);
+        let shortest = pieces.iter().map(|p| p.len()).min().unwrap_or(0);
+        assert!(
+            longest - shortest <= 1,
+            "at T={threads} the chunks are {shortest}..{longest} long, so one thread is measuring \
+             a different amount of work"
+        );
+    }
+}
+
+/// Scaling efficiency refuses to invent a denominator.
+///
+/// RED against a derivation that divides by a missing T=1 figure and publishes
+/// an infinity or a zero, both of which chart.
+#[test]
+fn scaling_efficiency_has_no_answer_without_the_control() {
+    assert_eq!(
+        concurrent_curve::scaling_efficiency(4, Some(400.0), Some(100.0)),
+        Some(1.0)
+    );
+    assert_eq!(
+        concurrent_curve::scaling_efficiency(4, Some(200.0), Some(100.0)),
+        Some(0.5)
+    );
+    assert_eq!(concurrent_curve::scaling_efficiency(4, Some(200.0), None), None);
+    assert_eq!(concurrent_curve::scaling_efficiency(4, None, Some(100.0)), None);
+    assert_eq!(
+        concurrent_curve::scaling_efficiency(4, Some(200.0), Some(0.0)),
+        None
+    );
+}
+
+// ---------------------------------------------------------------------------
+// requests
+// ---------------------------------------------------------------------------
+
+/// The archive's request counts are observed and the tree's are declared.
+///
+/// RED against publishing both as measured, which is the single most misleading
+/// thing this family could put on a page: nothing counts a `std::fs::read`, so
+/// the tree's numbers come from the model "one whole object per tile" and have
+/// to say so. The test is self-controlling: a hard-coded `Origin` fails one of
+/// the two assertions whichever value it is hard-coded to.
+#[test]
+fn the_directory_request_count_is_declared_and_the_archive_count_is_observed() {
+    let dir = tempdir();
+    let cell = tiny(Source::Gradient);
+    let archive = write_archive(dir.path(), &cell);
+    let tree = write_tree(dir.path(), &cell);
+    assert!(tree.is_dir(), "the tree backend really wrote a tree");
+
+    let coords = scenarios::plan_coordinates(&cell.plan());
+    let walk = scenarios::random_order(&coords, SEED);
+    let archive_counts = requests::pmtiles(&archive, coords[0], None, &walk);
+    let tree_counts = requests::directory(cell.planned_tiles(), 4_096, walk.len() as u64, false);
+
+    assert!(
+        requests::all_observed(&archive_counts),
+        "every archive row came out of a counting range reader: {archive_counts:?}"
+    );
+    assert!(
+        requests::all_declared(&tree_counts),
+        "every tree row came out of the model: {tree_counts:?}"
+    );
+
+    let operations = |rows: &[requests::OperationCount]| {
+        rows.iter().map(|row| row.operation).collect::<Vec<_>>()
+    };
+    assert_eq!(
+        operations(&archive_counts),
+        operations(&tree_counts),
+        "the two backends have to break the same operations down, or the page compares two \
+         different lists"
+    );
+
+    let open_row = &archive_counts[0];
+    assert_eq!(open_row.operation, "open");
+    assert_eq!(
+        open_row.requests, 2,
+        "an open is the header and the root: {open_row:?}"
+    );
+    assert_eq!(open_row.origin, Origin::Observed);
+    assert!(open_row.bytes > 0);
+
+    let walk_row = archive_counts
+        .iter()
+        .find(|row| row.operation == "random_walk")
+        .expect("the walk is counted");
+    assert_eq!(
+        walk_row.requests,
+        walk.len() as u64,
+        "a root-only archive is one pread a tile: {walk_row:?}"
+    );
+
+    // A root-only archive performs no leaf lookup, so the leaf rows are absent
+    // rather than zero: a zero there reads as a leaf lookup that cost nothing.
+    assert!(
+        !archive_counts
+            .iter()
+            .any(|row| row.operation.starts_with("leaf_")),
+        "a root-only archive published a leaf row: {archive_counts:?}"
+    );
+    assert!(Origin::Declared.is_declared() && !Origin::Observed.is_declared());
+}
+
+// ---------------------------------------------------------------------------
+// The models
+// ---------------------------------------------------------------------------
+
+/// A modelled cost follows the parameters it was handed and names them.
+///
+/// RED against a hard-coded round trip. The model is built with an rtt and a
+/// bandwidth that are not the declared ones, so an implementation that reaches
+/// for `DECLARED_RTT_MS` comes out with the declared answer instead of this
+/// one.
+#[test]
+fn the_remote_model_uses_the_declared_parameters_and_names_them() {
+    let model = RemoteModel {
+        rtt_ms: 7.5,
+        bandwidth_bytes_per_s: 1_048_576.0,
+    };
+    // Four round trips at 7.5 ms, plus 2 MiB at 1 MiB a second.
+    assert_eq!(model.cost_ms(4, 2 * 1_048_576), 30.0 + 2_000.0);
+
+    let modelled = model.modelled("remote_cost_ms", 4, 2 * 1_048_576);
+    assert_eq!(modelled.unit, "ms");
+    assert_eq!(modelled.value, 2_030.0);
+    assert_eq!(
+        modelled.parameter_names(),
+        vec!["rtt_ms", "bandwidth_bytes_per_s"]
+    );
+    let rtt = modelled.parameter("rtt_ms").expect("the model names its rtt");
+    assert_eq!(rtt.value, 7.5, "the published value came from a declared 30");
+    assert_eq!(rtt.unit, "ms");
+
+    // The declared model is a different answer, which is what makes the check
+    // above a check rather than a coincidence.
+    let declared = RemoteModel::declared().modelled("remote_cost_ms", 4, 2 * 1_048_576);
+    assert_ne!(declared.value, modelled.value);
+    assert_eq!(
+        declared.parameter("rtt_ms").map(|p| p.value),
+        Some(libviprs_bench::storage::model::DECLARED_RTT_MS)
+    );
+
+    // And a modelled number never shares an axis with a measured one.
+    assert!(!Modelled::CHARTABLE_BESIDE_MEASURED);
+}
+
+/// The sync model does the same, per filesystem entry.
+///
+/// RED against a per-file cost baked into the arithmetic.
+#[test]
+fn the_sync_model_uses_the_declared_parameters_and_names_them() {
+    let model = SyncModel { per_file_ms: 0.25 };
+    assert_eq!(model.cost_ms(1_000), 250.0);
+    let modelled = model.modelled("sync_cost_ms", 1_000);
+    assert_eq!(modelled.parameter_names(), vec!["per_file_ms"]);
+    assert_eq!(modelled.parameter("per_file_ms").map(|p| p.value), Some(0.25));
+    assert_ne!(
+        SyncModel::declared().cost_ms(1_000),
+        model.cost_ms(1_000),
+        "the declared per-file cost is a different number, so the test above is not a coincidence"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// replicate
+// ---------------------------------------------------------------------------
+
+/// The replicate cell is measured at both ends of the sweep and publishes its
+/// own spread.
+///
+/// RED against a schedule that measures it once, and against a block computed
+/// from one measurement: the spread then comes out zero, which reads as a
+/// perfectly quiet host and disables every noise verdict downstream.
+#[test]
+fn the_replicate_cell_is_measured_first_and_last_and_its_spread_is_published() {
+    let control = scenarios::smoke_cell(Source::Gradient);
+    let rest = [
+        scenarios::mid_cell(Source::Gradient),
+        scenarios::brink_cell(Source::Gradient),
+        scenarios::leaf_cell(Source::Gradient),
+    ];
+
+    let schedule = replicate::schedule(control, &rest);
+    assert_eq!(schedule.len(), rest.len() + 2);
+    assert!(replicate::measured_first_and_last(&schedule, control));
+    assert_eq!(&schedule[1..schedule.len() - 1], &rest[..]);
+
+    // The positive control: a schedule that measures it only at the front is
+    // not one this rule accepts.
+    let once = {
+        let mut cells = vec![control];
+        cells.extend_from_slice(&rest);
+        cells
+    };
+    assert!(!replicate::measured_first_and_last(&once, control));
+
+    let first = BTreeMap::from([
+        ("p50_us".to_string(), 8.0),
+        ("p99_us".to_string(), 5.71),
+        ("wall_ms".to_string(), 100.0),
+    ]);
+    let last = BTreeMap::from([
+        ("p50_us".to_string(), 8.4),
+        ("p99_us".to_string(), 9.96),
+        ("wall_ms".to_string(), 110.0),
+    ]);
+    let block = replicate::block(&control, &[first.clone(), last.clone()])
+        .expect("two measurements make a block");
+
+    assert_eq!(block.reps, replicate::REPLICATE_REPS);
+    assert_eq!(block.cell, control.spec());
+    assert_eq!(block.spread_pct.len(), 3);
+    let p99 = block.spread_pct["p99_us"];
+    assert!(
+        (p99 - 74.4).abs() < 0.2,
+        "the spread is a percentage of the smaller measurement, and it came out {p99}"
+    );
+    assert!(block.spread_pct["p50_us"] < p99);
+
+    // A delta the spread covers is noise, and one it does not is not.
+    assert!(replicate::covered_by_noise(&block, "p99_us", 60.0));
+    assert!(!replicate::covered_by_noise(&block, "p99_us", 90.0));
+    assert!(!replicate::covered_by_noise(&block, "p50_us", 60.0));
+
+    // One measurement is refused rather than published as a zero spread.
+    let refusal = replicate::block(&control, &[first])
+        .expect_err("a block over one measurement is not a spread");
+    assert!(refusal.contains(&control.spec()));
+}
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+/// A scratch directory that cleans up after itself.
+///
+/// `std::env::temp_dir()` plus the process id, the way every other test in this
+/// crate does it, rather than a new dependency for four tests. The archives
+/// here run to tens of megabytes on the `--ignored` cells, so the `Drop` is not
+/// a nicety.
+struct Scratch {
+    root: PathBuf,
+}
+
+impl Scratch {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "libviprs_bench_storage_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("a scratch directory");
+        Self { root }
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn tempdir() -> Scratch {
+    Scratch::new()
+}
+
+fn median_micros(samples: &[std::time::Duration]) -> f64 {
+    let mut micros: Vec<f64> = samples
+        .iter()
+        .map(|d| d.as_secs_f64() * 1e6)
+        .collect();
+    micros.sort_by(|a, b| a.partial_cmp(b).expect("no NaN in a duration"));
+    micros[micros.len() / 2]
+}
+
+
+// ---------------------------------------------------------------------------
+// The gradient's period
+// ---------------------------------------------------------------------------
+
+/// A gradient at a 256 pixel tile collapses to one root entry a level.
+///
+/// RED against a cell table that reads a root-entry count off a tile count,
+/// which is what the sweep's three 256-pixel cells do when they call themselves
+/// the 93, 1373 and 5469 entry cells. The gradient is `(x % 256, y % 256,
+/// (x + y) % 256)`, so at a tile that is a whole number of periods wide every
+/// tile of a level is the same bytes, a level's tile ids are one contiguous
+/// range, and the writer's run-length encoding merges the lot into a single
+/// entry.
+///
+/// Three controls in the same test, because "the root is smaller than the plan"
+/// has three uninteresting explanations: the noise source at the same cell pays
+/// one entry a tile, so the collapse is the gradient's; the gradient at a 46
+/// pixel tile pays one entry a tile, so the collapse is the tile size's; and the
+/// flat fill collapses at both, so the mechanism is the run-length encoding
+/// rather than anything about this canvas.
+#[test]
+fn the_gradient_collapses_to_one_entry_a_level_at_a_256_pixel_tile() {
+    let dir = tempdir();
+
+    let collapsing = tiny(Source::Gradient);
+    let levels = collapsing.plan().levels.len() as u64;
+    let (collapsed, _) = scenarios::root_shape(&write_archive(dir.path(), &collapsing));
+    println!(
+        "{} plans {} tiles over {levels} levels and its root holds {collapsed} entries",
+        collapsing.spec(),
+        collapsing.planned_tiles()
+    );
+    assert!(scenarios::gradient_collapses_at(collapsing.tile_size));
+    assert_eq!(
+        collapsed, levels,
+        "a collapsing gradient pays one entry a level, and this archive paid {collapsed} over \
+         {levels} levels"
+    );
+    assert!(collapsed < collapsing.planned_tiles() / 2);
+
+    // Control one: the same canvas and tile, filled from noise.
+    let noisy = tiny(Source::Noise);
+    let (noisy_entries, _) = scenarios::root_shape(&write_archive(dir.path(), &noisy));
+    assert_eq!(
+        noisy_entries,
+        noisy.planned_tiles(),
+        "the collapse has to be the gradient's, and noise at the same cell pays one entry a tile"
+    );
+
+    // Control two: the same source at a tile size that is not a whole number of
+    // periods.
+    let distinct = distinct_tiny(Source::Gradient);
+    assert!(!scenarios::gradient_collapses_at(distinct.tile_size));
+    let (distinct_entries, _) = scenarios::root_shape(&write_archive(dir.path(), &distinct));
+    assert_eq!(
+        distinct_entries,
+        distinct.planned_tiles(),
+        "the collapse has to be the tile size's, and a 46 pixel tile pays one entry a tile"
+    );
+
+    // Control three: the flat fill collapses at both tile sizes, so what is
+    // being watched is the run-length encoding and not this canvas.
+    let (flat_collapsing, _) =
+        scenarios::root_shape(&write_archive(dir.path(), &tiny(Source::Flat)));
+    let (flat_distinct, _) =
+        scenarios::root_shape(&write_archive(dir.path(), &distinct_tiny(Source::Flat)));
+    assert!(flat_collapsing < tiny(Source::Flat).planned_tiles());
+    assert!(flat_distinct < distinct_tiny(Source::Flat).planned_tiles());
+}
+
+/// A cell table may not claim a root a gradient at that tile size cannot give.
+///
+/// RED against a table that pairs any source with any tile size. The sweep's
+/// smoke and mid cells are 256 pixel tiles, so paired with the gradient they are
+/// refused and the reason names the period; paired with noise they are fine, and
+/// the brink cell's 46 pixel tile is fine either way.
+#[test]
+fn the_cell_table_refuses_a_gradient_at_a_tile_size_that_collapses_it() {
+    let refusal = scenarios::source_suits_the_cell(&scenarios::smoke_cell(Source::Gradient))
+        .expect_err("a 256 pixel tile collapses the gradient");
+    assert!(
+        refusal.contains("256") && refusal.contains("run-length"),
+        "the refusal has to name the period and the mechanism: {refusal}"
+    );
+    scenarios::source_suits_the_cell(&scenarios::mid_cell(Source::Gradient))
+        .expect_err("the mid cell is a 256 pixel tile too");
+
+    // The positive controls: the rule is about the pairing, not about a source
+    // or a cell.
+    scenarios::source_suits_the_cell(&scenarios::smoke_cell(Source::Noise))
+        .expect("noise is distinct at any tile size");
+    scenarios::source_suits_the_cell(&scenarios::brink_cell(Source::Gradient))
+        .expect("the brink cell's 46 pixel tile is not a whole number of periods");
+    scenarios::source_suits_the_cell(&scenarios::leaf_cell(Source::Gradient))
+        .expect("a 64 pixel tile leaves the identical tiles non-adjacent in Hilbert order");
+}
