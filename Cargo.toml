@@ -93,6 +93,13 @@ path = "src/probe_emulation_main.rs"
 name = "flamegraph"
 path = "src/flamegraph.rs"
 
+# The door to the storage archive: --check, --archive, --verify, --provenance.
+# It refuses a run it cannot vouch for rather than averaging it in, which is the
+# whole reason it is a binary and not a flag on the sweep (#66).
+[[bin]]
+name = "storage-aggregate"
+path = "src/storage_aggregate_main.rs"
+
 [[bin]]
 name = "report"
 path = "src/report.rs"
