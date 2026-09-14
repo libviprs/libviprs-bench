@@ -18,6 +18,7 @@ set -euo pipefail
 #   ./run-bench.sh                             # engines scalability sweep (default)
 #   ./run-bench.sh report                      # engines comparison matrix
 #   ./run-bench.sh report --family vips        # the libvips comparison
+#   ./run-bench.sh --family storage            # PMTiles vs a directory tree
 #   ./run-bench.sh versions --versions v0.2.0,v0.3.1,HEAD
 #                                              # release-history axis (one snapshot per tag)
 #   ./run-bench.sh --arch arm                  # force arm64 build
@@ -34,6 +35,9 @@ BENCH_CMD="scalability"
 VERSIONS=""
 # libviprs first: a run that names no family measures libviprs against itself.
 FAMILY="engines"
+# Which sweep the storage family walks. `ci` proves the harness runs and is
+# never published; `full` and `xl` are the publishable ones.
+STORAGE_PROFILE="ci"
 
 usage() {
     cat <<'EOF'
@@ -50,12 +54,16 @@ Commands (default: scalability):
 Families (default: engines):
   engines   monolithic vs streaming vs mapreduce. libviprs only: no cargo
             features, and no libvips anywhere in the image.
-  storage   PMTiles vs a directory tree. Skeleton only; the cells land in K1.2.
+  storage   PMTiles vs a directory tree. libviprs only: its own binary, built
+            with no cargo features, in the small 'storage' stage. Ignores the
+            command above and takes --storage-profile instead.
   vips      the libvips dzsave comparison. Builds the pinned libvips stage and
             runs with --features libvips.
 
 Options:
   --family <name>             Which family to measure (default: engines)
+  --storage-profile <p>       ci, full or xl, for --family storage (default: ci).
+                              'ci' proves the harness runs and is never published.
   --versions <tag,tag,HEAD>   Refs to benchmark for the 'versions' command
   --arch <arm|amd64>          Force the target architecture (default: host uname -m)
   --memory <MB>               Container memory limit in MB (default: 4096)
@@ -95,6 +103,17 @@ while [[ $# -gt 0 ]]; do
             shift
             FAMILY="${1:-}"
             ;;
+        --storage-profile)
+            shift
+            STORAGE_PROFILE="${1:-}"
+            ;;
+        storage)
+            # `storage` is a family, not a command. It used to be a command on
+            # the K1.2 branch, and a script that accepted both would have two
+            # ways to ask for one thing.
+            echo "Error: 'storage' is a family, not a command. Use: $0 --family storage" >&2
+            exit 2
+            ;;
         report|scalability)
             BENCH_CMD="$1"
             ;;
@@ -127,10 +146,18 @@ MEMORY_MB="${MEMORY_MB:-4096}"
 # establish, and the only way to keep it true is to never install libvips where
 # they build.
 case "$FAMILY" in
-    engines|storage)
+    engines)
         FEATURES=""
         DOCKER_TARGET="engines"
         IMAGE_TAG="libviprs-bench:engines"
+        ;;
+    storage)
+        # Its own binary and its own stage. The binary is what lets the family
+        # build with no `libvips` feature at all, and the stage is what keeps
+        # the libvips source build out of a job that cannot use it.
+        FEATURES=""
+        DOCKER_TARGET="storage"
+        IMAGE_TAG="libviprs-bench:storage"
         ;;
     vips)
         FEATURES="--features libvips"
@@ -268,6 +295,18 @@ if [ "$NO_BUILD" = true ]; then
         exit 0
     fi
 
+    # The storage family has its own binary, so the command word does not
+    # reach it; --storage-profile does. It never takes $FEATURES, even where
+    # the host has libvips to offer, which is the same rule every
+    # libviprs-only family follows.
+    if [ "$FAMILY" = "storage" ]; then
+        cargo run --release --bin storage -- \
+            --family storage --profile "$STORAGE_PROFILE"
+        echo ""
+        echo "Results written to ${SCRIPT_DIR}/report/storage/"
+        exit 0
+    fi
+
     cargo run --release $FEATURES --bin "$BENCH_CMD" -- --family "$FAMILY"
 
     regenerate_charts "$SCRIPT_DIR/report/$FAMILY"
@@ -306,7 +345,11 @@ if [ "$FAMILY" = "vips" ]; then
 else
     echo "  libvips:   not in this image (libviprs-only family)"
 fi
-echo "  Command:   ${BENCH_CMD}"
+if [ "$FAMILY" = "storage" ]; then
+    echo "  Command:   storage --profile ${STORAGE_PROFILE}"
+else
+    echo "  Command:   ${BENCH_CMD}"
+fi
 echo ""
 
 DOCKER_BUILDKIT=1 docker build \
@@ -326,6 +369,22 @@ echo ""
 
 # Mount report/ so charts persist after the container exits
 mkdir -p "$SCRIPT_DIR/report/$FAMILY"
+
+if [ "$FAMILY" = "storage" ]; then
+    docker run --rm \
+        --platform "$PLATFORM" \
+        --name "$CONTAINER_NAME" \
+        --memory="${MEMORY_MB}m" \
+        -e RUSTFLAGS="$RUSTFLAGS" \
+        -v "$SCRIPT_DIR/report:/src/libviprs-bench/report" \
+        "$IMAGE_NAME" \
+        cargo run --release --bin storage -- \
+            --family storage --profile "$STORAGE_PROFILE"
+    echo ""
+    echo "Results written to ${SCRIPT_DIR}/report/storage/"
+    echo "  Data:    report/storage/storage-results.json"
+    exit 0
+fi
 
 docker run --rm \
     --platform "$PLATFORM" \

@@ -3,7 +3,7 @@
 #
 # TWO targets, because the families need different machines:
 #
-#   --target engines   the libviprs-only families (`engines`, `storage`). Rust
+#   --target engines   the `engines` family. Rust
 #                      and the two crates and nothing else: no libvips headers,
 #                      no libvips binary, no cargo features. It builds in a
 #                      fraction of the time the comparison image takes, and the
@@ -62,6 +62,49 @@ ARG LIBVIPS_SHA256=2677bad6c422617fd1172d359c16af34e736965d042c214203a87187d26ff
 # lands on a real snapshot.
 ARG DEBIAN_SNAPSHOT=20250929T000000Z
 
+# ---------------------------------------------------------------------------
+# The `storage` stage: the libviprs-only families, no libvips at all.
+#
+# `storage` compares PMTiles against a directory tree, which is libviprs
+# against libviprs, so nothing in it links the C oracle. Building libvips from
+# source for it would add ten minutes and a hundred apt packages to a job that
+# cannot use any of it, so this stage starts at the same digest-pinned Rust
+# base the builder does and stops there. Same toolchain, same base image, a
+# fraction of the build.
+#
+# It is its own stage and not a second consumer of the `engines` stage,
+# because the two build different binaries: `engines` builds `scalability` and
+# `report`, this builds `storage`. They share a base image and a platform, and
+# collapsing them into one stage that builds all three would put a longer build
+# in front of both jobs for no gain.
+#
+# It sits ahead of the builder stage on purpose: BuildKit skips a stage nothing
+# depends on, so a plain `docker build` with no `--target` still produces the
+# builder image and `run-bench.sh`'s default path is untouched.
+#
+#   docker build --platform linux/arm64 --target storage -t libviprs-bench:storage .
+#   docker run --rm --platform linux/arm64 libviprs-bench:storage
+# ---------------------------------------------------------------------------
+# The Rust pin is 1.97 because libviprs declares `rust-version = "1.97"` and
+# cargo refuses to compile it on the old 1.89 pin outright. Every stage in this
+# file now carries the same digest, which the families lane moved at the same
+# time and for the same reason.
+FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS storage
+
+WORKDIR /src
+COPY libviprs/ libviprs/
+COPY libviprs-bench/ libviprs-bench/
+
+WORKDIR /src/libviprs-bench
+RUN cargo fetch
+
+# Default features only. The `storage` family must build without `libvips`,
+# and this is where that is enforced rather than asserted.
+RUN cargo build --release --bin storage
+
+CMD ["cargo", "run", "--release", "--bin", "storage", "--", \
+     "--family", "storage", "--profile", "ci"]
+
 # Stage 1: Download PDFium for the target architecture. Base image digest-pinned
 # (not just tag-pinned) so the exact layer cannot shift under a rebuild (#35).
 FROM debian:bookworm-20250929-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 AS pdfium
@@ -104,7 +147,7 @@ RUN case "${TARGETARCH}" in \
     rm /tmp/pdfium.tgz
 
 # ---------------------------------------------------------------------------
-# Stage 2: the libviprs-only families (`engines`, `storage`).
+# Stage 2: the `engines` family.
 #
 # Rust, the two crates, and deliberately nothing else. No libvips source build,
 # no libvips headers, no `vips` binary, and no cargo features — the default

@@ -12,9 +12,12 @@
 //! * [`Family::Engines`] — monolithic against streaming against mapreduce. No
 //!   `libvips` feature, no FFI, no libvips in the container. This is the
 //!   default, and it builds and runs with **no cargo features at all**.
-//! * [`Family::Storage`] — PMTiles against a directory tree. The member and its
-//!   dispatch live here; the scenarios land in K1.2 (issue #65), so asking for
-//!   it today is refused loudly rather than producing an empty run.
+//! * [`Family::Storage`] — PMTiles against a directory tree. Its scenarios
+//!   landed in K1.2 (issue #65) and they live in [`crate::storage`], measured
+//!   by the `storage` binary rather than by `report`: it builds with no cargo
+//!   features at all, which is what lets the family run in the mirrored
+//!   `check` job. Asking one of the engine runners for it is refused loudly,
+//!   naming the binary that does measure it.
 //! * [`Family::Vips`] — the libvips comparison, gated on `feature = "libvips"`,
 //!   keeping its pinned Dockerfile stage, its `libvips-rs` FFI, its provenance
 //!   pin check and its upstream pin validator exactly as they were.
@@ -42,7 +45,7 @@ pub const VIPS_FEATURE: &str = "libvips";
 pub enum Family {
     /// Monolithic against streaming against mapreduce. The default.
     Engines,
-    /// PMTiles against a directory tree. Skeleton only until K1.2 (issue #65).
+    /// PMTiles against a directory tree, measured by the `storage` binary.
     Storage,
     /// The libvips comparison, behind `feature = "libvips"`.
     Vips,
@@ -69,7 +72,7 @@ impl Family {
     pub fn summary(self) -> &'static str {
         match self {
             Family::Engines => "monolithic vs streaming vs mapreduce (libviprs only, no features)",
-            Family::Storage => "PMTiles vs a directory tree (libviprs only) — lands in K1.2 (#65)",
+            Family::Storage => "PMTiles vs a directory tree (libviprs only, its own `storage` bin)",
             Family::Vips => "the libvips dzsave comparison (needs --features libvips)",
         }
     }
@@ -100,11 +103,37 @@ impl Family {
         }
     }
 
-    /// Whether the family's scenarios exist yet. `storage` is a skeleton until
-    /// K1.2 fills it in; asking for it before then is refused rather than
-    /// silently measured as something else.
+    /// Whether the family's scenarios exist. All three do: `storage`'s landed
+    /// with K1.2 (issue #65).
+    ///
+    /// The gate stays because it is the one that refuses a *skeleton* family,
+    /// which is how a new member should arrive: the enum entry and the
+    /// dispatch first, refusing loudly, and the scenarios after. It fires for
+    /// nothing today and that is the correct state, not a dead branch.
     pub fn is_implemented(self) -> bool {
+        match self {
+            Family::Engines | Family::Storage | Family::Vips => true,
+        }
+    }
+
+    /// Whether the binaries that measure engine sets are the ones that measure
+    /// this family.
+    ///
+    /// `report`, `scalability`, `version_matrix` and `cross_version` all walk
+    /// an engine set at a series of sizes. `storage` does not: it compares two
+    /// storage backends for one engine, over scenarios those binaries have no
+    /// notion of, and it lives in a binary that links no `libvips` feature.
+    /// Asking one of them for it produces a refusal and never a run.
+    pub fn measured_by_engine_runners(self) -> bool {
         !matches!(self, Family::Storage)
+    }
+
+    /// The binary that measures this family.
+    pub fn runner_bin(self) -> &'static str {
+        match self {
+            Family::Storage => "storage",
+            Family::Engines | Family::Vips => "report",
+        }
     }
 
     /// The engines this family measures.
@@ -143,6 +172,12 @@ impl Family {
         if !family.is_implemented() {
             return Err(FamilyRefusal::NotYet { family });
         }
+        if !family.measured_by_engine_runners() {
+            return Err(FamilyRefusal::OtherRunner {
+                family,
+                runner: family.runner_bin(),
+            });
+        }
         Ok(family)
     }
 
@@ -179,6 +214,13 @@ pub enum FamilyRefusal {
     },
     /// The family exists and is compiled in, but its scenarios have not landed.
     NotYet { family: Family },
+    /// The family exists and is implemented, but a different binary measures
+    /// it. This is `storage` asked of `report`, and the answer names the
+    /// binary that does the job rather than running the wrong thing.
+    OtherRunner {
+        family: Family,
+        runner: &'static str,
+    },
 }
 
 impl FamilyRefusal {
@@ -213,8 +255,14 @@ impl std::fmt::Display for FamilyRefusal {
             FamilyRefusal::NotYet { family } => write!(
                 f,
                 "the {family} family has no scenarios yet: its skeleton is here and the cells \
-                 land in K1.2 (libviprs-bench#65). Ask for the `{default}` family meanwhile.",
+                 have not landed. Ask for the `{default}` family meanwhile.",
                 default = DEFAULT_FAMILY.as_str(),
+            ),
+            FamilyRefusal::OtherRunner { family, runner } => write!(
+                f,
+                "the {family} family is measured by the `{runner}` binary, not by this one. Run \
+                 `cargo run --release --bin {runner} -- --family {family}`. It builds with no \
+                 cargo features, which is why it is a separate binary.",
             ),
         }
     }
