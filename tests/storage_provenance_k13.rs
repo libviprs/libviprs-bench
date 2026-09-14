@@ -20,6 +20,7 @@ use libviprs_bench::provenance::{
     FilesystemInfo, MainRelation, Provenance, SourceTrees, ToolchainInfo,
 };
 use libviprs_bench::storage::archive::{self, ArchiveError};
+use libviprs_bench::storage::artefact_digest;
 use libviprs_bench::storage::attest::{
     EquivalenceSample, ObservedArchive, Regime, RootEntry, attest,
 };
@@ -1002,6 +1003,81 @@ fn the_archive_refuses_rather_than_reports() {
 // ---------------------------------------------------------------------------
 // The filesystem
 // ---------------------------------------------------------------------------
+
+/// RED against anything that changes what `artefact_digest` produces.
+///
+/// K1.4 owns the function; this pins its output, and it exists because of what
+/// rests on it. K1.4 took the composed tree to the NAS and ran it natively on
+/// both architectures: all 14 invariant entries agree exactly across arm64 and
+/// x86_64, `artefact_digest` included, while throughput moves 2x to 5x. That is
+/// the epic's claim demonstrated rather than asserted, and it is a property of
+/// the *value*, not just of the two runs agreeing with each other on a given
+/// day.
+///
+/// Cross-architecture agreement cannot catch a change that moves the digest on
+/// both architectures at once, which is exactly what collapsing two SHA-256
+/// wrappers into one could have done. These five values were captured from the
+/// merged tree before that collapse and asserted after it; they were identical,
+/// and they are written down here so the next change to the hashing path has to
+/// answer for them rather than rediscover the question.
+///
+/// The sizes are chosen to reach the code: empty, three bytes, 100000 bytes,
+/// and one file of 3 MB that crosses the 1 MiB buffer `artefact_digest` reads
+/// with, so the streaming path is exercised across chunk boundaries. The tree
+/// digest is over the sorted `(relative path, sha256)` list, which is what makes
+/// it depend on the bytes and the layout rather than on directory iteration
+/// order.
+#[test]
+fn artefact_digest_is_pinned_to_the_values_the_two_architectures_agreed_on() {
+    let root = scratch("artefact-digest");
+    std::fs::create_dir_all(root.join("z/inner")).expect("writable");
+    std::fs::write(root.join("a.bin"), b"").expect("writable");
+    std::fs::write(root.join("b.bin"), b"abc").expect("writable");
+    std::fs::write(root.join("z/c.bin"), vec![b'a'; 100_000]).expect("writable");
+    let big: Vec<u8> = (0..=255u8).cycle().take(3_000_000).collect();
+    std::fs::write(root.join("z/inner/d.bin"), &big).expect("writable");
+
+    for (name, expected) in [
+        (
+            "a.bin",
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+        (
+            "b.bin",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        ),
+        (
+            "z/c.bin",
+            "6d1cf22d7cc09b085dfc25ee1a1f3ae0265804c607bc2074ad253bcc82fd81ee",
+        ),
+        (
+            "z/inner/d.bin",
+            "1913233a0a87fe912497ee543021c40adc5d414614fc76fdff3e0c08b6a1d981",
+        ),
+    ] {
+        assert_eq!(
+            artefact_digest(&root.join(name)).as_deref(),
+            Some(expected),
+            "the file digest for {name} moved"
+        );
+    }
+
+    assert_eq!(
+        artefact_digest(&root).as_deref(),
+        Some("49ae1d007e6f05625180663add937b87d73b3f72505187d102c0ef3f1b0a84bb"),
+        "the tree digest moved, which would invalidate the cross-architecture \
+         agreement rather than merely disagree with it"
+    );
+
+    // The file digests are also the canonical SHA-256 of their contents, which
+    // is worth asserting once: it says `artefact_digest` on a file is the plain
+    // hash and not a hash of something wrapped, so anyone can reproduce one with
+    // `sha256sum` and no knowledge of this crate.
+    assert_eq!(
+        artefact_digest(&root.join("b.bin")).as_deref(),
+        Some(libviprs_bench::sha256::sha256_hex(b"abc").as_str())
+    );
+}
 
 /// RED against a core that is not on its own `main` passing silently, and
 /// equally against it being refused.

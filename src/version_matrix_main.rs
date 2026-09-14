@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use libviprs_bench::family::{DEFAULT_FAMILY, Family};
 use libviprs_bench::provenance::Provenance;
 use libviprs_bench::version_id::version_key;
 use libviprs_bench::version_matrix::{MatrixConfig, VersionOutcome, core_repo_dir, run_matrix};
@@ -29,8 +30,10 @@ const USAGE: &str = "\
 usage: version_matrix --versions <tag,tag,HEAD> [options]
 
   --versions <list>      comma-separated refs (tags/SHAs/HEAD) to benchmark
+  --family <name>        family to hold constant across the sweep
+                         (engines | storage | vips; default: engines)
   --history <path>       history JSON to append to
-                         (default: <crate>/report/benchmark_history.json)
+                         (default: <crate>/report/<family>/benchmark_history.json)
   --sizes <WxH,...>      image sizes (default: 512x512,1024x1024,2048x2048,4096x4096)
   --concurrency <N,...>  concurrency levels (default: 0,4)
 
@@ -44,6 +47,7 @@ exit codes:
 
 struct Options {
     versions: Vec<String>,
+    family: Family,
     history: PathBuf,
     sizes: Option<Vec<(u32, u32)>>,
     concurrency: Option<Vec<usize>>,
@@ -51,11 +55,9 @@ struct Options {
 
 impl Options {
     fn parse(args: &[String]) -> Result<Options, String> {
-        let default_history = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("report")
-            .join("benchmark_history.json");
         let mut versions: Option<Vec<String>> = None;
-        let mut history = default_history;
+        let mut family = DEFAULT_FAMILY;
+        let mut history: Option<PathBuf> = None;
         let mut sizes = None;
         let mut concurrency = None;
 
@@ -63,7 +65,14 @@ impl Options {
         while i < args.len() {
             match args[i].as_str() {
                 "--versions" => versions = Some(parse_versions(next(args, &mut i, "--versions")?)?),
-                "--history" => history = PathBuf::from(next(args, &mut i, "--history")?),
+                // A release trend has to hold one family constant, or it charts
+                // two different engine sets on one line (issue #64). The refusal
+                // is the same one the report binary gives.
+                "--family" => {
+                    family = Family::resolve(next(args, &mut i, "--family")?)
+                        .map_err(|refusal| refusal.to_string())?
+                }
+                "--history" => history = Some(PathBuf::from(next(args, &mut i, "--history")?)),
                 "--sizes" => sizes = Some(parse_sizes(next(args, &mut i, "--sizes")?)?),
                 "--concurrency" => {
                     concurrency = Some(parse_concurrency(next(args, &mut i, "--concurrency")?)?)
@@ -78,8 +87,14 @@ impl Options {
         if versions.is_empty() {
             return Err("--versions must list at least one ref".to_string());
         }
+        let history = history.unwrap_or_else(|| {
+            family
+                .report_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("report"))
+                .join("benchmark_history.json")
+        });
         Ok(Options {
             versions,
+            family,
             history,
             sizes,
             concurrency,
@@ -163,7 +178,10 @@ fn main() -> ExitCode {
         }
     };
 
-    let mut cfg = MatrixConfig::default();
+    let mut cfg = MatrixConfig {
+        family: opts.family,
+        ..MatrixConfig::default()
+    };
     if let Some(sizes) = opts.sizes {
         cfg.sizes = sizes;
     }

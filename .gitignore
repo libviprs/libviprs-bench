@@ -13,12 +13,13 @@ Cargo.lock
 *.swo
 *~
 
-# Generated benchmark reports
-report/*.svg
-report/*.json
-report/*.txt
-report/*.csv
-report/*.md
+# Generated benchmark reports. Each family writes into its own report/<family>/
+# subdirectory now (issue #64), so the glob has to reach a level deeper.
+report/**/*.svg
+report/**/*.json
+report/**/*.txt
+report/**/*.csv
+report/**/*.md
 
 # Generated scalability charts (copied to libviprs-org for publishing)
 scalability_*.svg

@@ -16,12 +16,14 @@ use libviprs::{
 use serde::{Deserialize, Serialize};
 
 pub mod emulation;
+pub mod family;
 pub mod flame;
 pub mod harness;
 pub mod pin_check;
 pub mod provenance;
 /// SHA-256 over `sha2`, shared with `build.rs` by `include!`.
 pub mod sha256;
+/// PMTiles against a directory tree, with repetitions (issue #65).
 pub mod storage;
 pub mod version_id;
 pub mod version_matrix;
@@ -31,7 +33,19 @@ pub mod version_matrix;
 /// changes so [`load_history`] can migrate older files forward. History
 /// written before this field existed deserializes as `0` (via
 /// `#[serde(default)]`) and is normalized on load.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+///
+/// Schema 3 added [`BenchmarkSnapshot::family`] (issue #64). Every snapshot
+/// written before it was a libvips comparison run, because that was the only
+/// run this crate could produce, so the migration stamps those
+/// [`LEGACY_SNAPSHOT_FAMILY`] rather than leaving them unlabelled — an
+/// unlabelled snapshot is exactly what lets two families' histories merge by
+/// accident.
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+
+/// The family every pre-schema-3 snapshot is migrated to. History written
+/// before families existed came out of the one benchmark this crate had, which
+/// was the libvips comparison.
+pub const LEGACY_SNAPSHOT_FAMILY: &str = "vips";
 
 /// The single tile codec used on **both** sides of the cross-engine
 /// comparison. The libviprs engines encode their tiles in this format via
@@ -41,6 +55,32 @@ pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const BENCH_TILE_FORMAT: TileFormat = TileFormat::Png;
 /// dzsave `--suffix` (and file extension) matching [`BENCH_TILE_FORMAT`].
 pub const BENCH_TILE_SUFFIX: &str = ".png";
+
+/// The one sentence that says what the measured pipeline does with its tiles.
+///
+/// The README and the site article disagreed about this: the README said every
+/// engine writes PNG tiles to a real on-disk sink, and the benchmark article on
+/// libviprs.org said the engines collect tiles in memory and that no tile is
+/// ever encoded at all. The code settles it — [`BENCH_TILE_FORMAT`] is
+/// [`TileFormat::Png`], every timed libviprs cell runs through an [`FsSink`]
+/// rooted in a real temp directory, and both libvips paths (`vips dzsave` and
+/// the in-process `vips_dzsave`) are handed the matching
+/// [`BENCH_TILE_SUFFIX`] — so the README was right and the article is stale
+/// prose from before issue #153 put both sides on the same codec.
+///
+/// It lives here, once, so the prose has a single source. `tests/encoding_claim.rs`
+/// proves the sentence against a real run and then asserts every document this
+/// repository ships repeats it verbatim.
+///
+/// The phrases that CONTRADICT it deliberately do not live here. They are the
+/// stale story written out, and `tests/vips_ffi.rs` scans this very file for
+/// one of them (an in-RAM sink type by name) as its own structural fairness
+/// guard — so spelling them here would fail that guard with a quotation. Two
+/// prose guards over one file, and the negative list belongs to the test rather
+/// than to the source it reads.
+pub const TILE_ENCODING_CLAIM: &str = "every engine writes its tiles as PNG files to a real \
+on-disk sink under the same DeepZoom layout, so neither side gets an in-RAM-sink or tile-codec \
+advantage";
 
 /// The canonical measurement suite, defined once and shared by every axis so
 /// "the identical suite" is a compile-time fact rather than hand-copied
@@ -58,7 +98,7 @@ pub const BENCH_STREAMING_BUDGET: u64 = 1_000_000;
 
 /// A snapshot of benchmark results for a specific libviprs version.
 ///
-/// Stored in `report/benchmark_history.json` so that performance can be
+/// Stored in `report/<family>/benchmark_history.json` so that performance can be
 /// tracked across releases. Each run appends one entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkSnapshot {
@@ -68,6 +108,17 @@ pub struct BenchmarkSnapshot {
     /// `peak_memory_bytes` field onto `tracked_memory_bytes`).
     #[serde(default)]
     pub schema_version: u32,
+    /// The benchmark [`family`](crate::family::Family) this snapshot came out
+    /// of, by name: `engines`, `storage` or `vips`.
+    ///
+    /// Load-bearing, not decorative. Two families measure different engine sets
+    /// on the same sizes, so an unlabelled snapshot appended to another
+    /// family's history produces a trend line that silently compares three
+    /// engines against four. [`push_snapshot`] refuses that append, and it can
+    /// only do so because the label is here. Pre-schema-3 history deserializes
+    /// empty and [`migrate_snapshot`] stamps it [`LEGACY_SNAPSHOT_FAMILY`].
+    #[serde(default)]
+    pub family: String,
     /// Environment fingerprint under which this snapshot was measured:
     /// libvips version, host CPU/OS/arch, container flag, rustc, and the
     /// bench build profile. Deltas across snapshots with *different*
@@ -1507,11 +1558,13 @@ pub fn per_level_png_tiles(tiles_dir: &std::path::Path) -> Vec<u64> {
     levels.into_iter().map(|(_, c)| c).collect()
 }
 
-/// Run all four engines across a matrix of image sizes and concurrency levels.
+/// Run the family's engines across a matrix of image sizes and concurrency
+/// levels, in-process.
 ///
 /// `streaming_budget_floor_bytes` is the streaming / mapreduce budget *floor*;
 /// each cell sizes it up per canvas via [`streaming_budget_for`] (issue #38).
 pub fn comparison_suite(
+    family: family::Family,
     sizes: &[(u32, u32)],
     concurrency_levels: &[usize],
     tile_size: u32,
@@ -1519,11 +1572,16 @@ pub fn comparison_suite(
 ) -> Vec<RunMetrics> {
     let mut results = Vec::new();
 
-    let has_vips = vips_available();
-    if has_vips {
-        eprintln!("libvips CLI detected — including in benchmarks");
-    } else {
-        eprintln!("libvips CLI not found — skipping libvips benchmarks");
+    // The family decides whether libvips is measured, not the environment. A
+    // libviprs-only family on a box that happens to have `vips` on PATH must
+    // measure the same three engines as one on a box that does not (issue #64).
+    let has_vips = family.measures_libvips() && vips_available();
+    if family.measures_libvips() {
+        if has_vips {
+            eprintln!("libvips CLI detected — including in benchmarks");
+        } else {
+            eprintln!("libvips CLI not found — skipping libvips benchmarks");
+        }
     }
 
     for &(w, h) in sizes {
@@ -1578,9 +1636,9 @@ pub fn comparison_suite(
             // libvips: prefer in-process FFI when available, fall back to CLI.
             // `vips_done` is only reassigned under the `libvips` feature.
             #[cfg_attr(not(feature = "libvips"), allow(unused_mut))]
-            let mut vips_done = false;
+            let mut vips_done = !family.measures_libvips();
             #[cfg(feature = "libvips")]
-            {
+            if family.measures_libvips() {
                 if let Some(vips) =
                     bench_libvips_inprocess(&src, tile_size, conc, &format!("{label}_vips"))
                 {
@@ -1769,9 +1827,53 @@ pub fn migrate_snapshot(snap: &mut BenchmarkSnapshot) {
     for run in &mut snap.runs {
         run.label = normalize_run_label(&run.label);
     }
+    // Schema 3 (issue #64): a snapshot names its family. Everything written
+    // before it came out of the one benchmark this crate had, the libvips
+    // comparison, so that is what those snapshots are — leaving the field empty
+    // would let `push_snapshot` wave them into any family's history.
+    if snap.family.trim().is_empty() {
+        snap.family = LEGACY_SNAPSHOT_FAMILY.to_string();
+    }
     if snap.schema_version < CURRENT_SCHEMA_VERSION {
         snap.schema_version = CURRENT_SCHEMA_VERSION;
     }
+}
+
+/// Append `snapshot` to `history`, refusing to mix families in one file.
+///
+/// A history file is a time series, and a trend only means anything if every
+/// point in it measured the same thing. `engines` measures three engines and
+/// `vips` measures four on the identical sizes, so appending one to the other
+/// yields a chart where an engine appears and disappears between runs and the
+/// executive verdict compares a ratio against a libvips row that is present in
+/// half the snapshots. Each family writes into its own
+/// [`report_dir`](crate::family::Family::report_dir), so crossing the streams
+/// takes a deliberate `--report-dir`, and this is the guard that catches it.
+///
+/// # Errors
+/// Returns a message naming both families when `snapshot` does not belong to
+/// the family the existing snapshots do. `history` is left untouched.
+pub fn push_snapshot(
+    history: &mut Vec<BenchmarkSnapshot>,
+    snapshot: BenchmarkSnapshot,
+) -> Result<(), String> {
+    if snapshot.family.trim().is_empty() {
+        return Err(
+            "refusing to append a snapshot that names no family: an unlabelled snapshot merges \
+             into any family's history and invents a trend across two different engine sets"
+                .to_string(),
+        );
+    }
+    if let Some(existing) = history.iter().find(|s| s.family != snapshot.family) {
+        return Err(format!(
+            "refusing to append a `{}` snapshot to a history of `{}` snapshots: the two families \
+             measure different engine sets, so one trend line across both is not a trend. Each \
+             family writes under report/<family>/, so point this run at its own history file.",
+            snapshot.family, existing.family
+        ));
+    }
+    history.push(snapshot);
+    Ok(())
 }
 
 /// Normalize a legacy space-separated run label to the current
@@ -1855,12 +1957,14 @@ pub fn save_history(path: &std::path::Path, history: &[BenchmarkSnapshot]) -> Re
 /// would record the tail of the benchmark's own load curve and disagree with the
 /// figure the run printed and wrote to `comparison_table.txt` (#25 review).
 pub fn create_snapshot(
+    family: family::Family,
     provenance: provenance::Provenance,
     runs: Vec<RunMetrics>,
     tile_size: u32,
     memory_budget_bytes: u64,
 ) -> BenchmarkSnapshot {
     create_snapshot_for(
+        family,
         provenance,
         core_version(),
         core_git_sha(),
@@ -1880,6 +1984,7 @@ pub fn create_snapshot(
 /// captured live from the current host/toolchain by the caller and passed in as
 /// `provenance` (one capture per run — see [`create_snapshot`]).
 pub fn create_snapshot_for(
+    family: family::Family,
     provenance: provenance::Provenance,
     version: &str,
     git_sha: &str,
@@ -1889,6 +1994,7 @@ pub fn create_snapshot_for(
 ) -> BenchmarkSnapshot {
     BenchmarkSnapshot {
         schema_version: CURRENT_SCHEMA_VERSION,
+        family: family.as_str().to_string(),
         provenance,
         version: version.to_string(),
         git_sha: git_sha.to_string(),
@@ -1910,21 +2016,45 @@ pub fn create_snapshot_for(
 pub fn executive_verdict(results: &[RunMetrics]) -> String {
     use std::fmt::Write as _;
     let groups = grouped_results(results);
+    // A libviprs-only family has no libvips row, so the two ratio columns have
+    // nothing to divide by. Printing them full of `-` under a header that
+    // promises "ratios vs libvips" reads as a failed comparison rather than a
+    // run that was never comparing (issue #64), so the whole libvips apparatus
+    // comes off when no row carries it.
+    let has_vips_row = results.iter().any(|r| r.engine == "libvips");
     let mut out = String::new();
     out.push_str("=== Executive verdict (per configuration) ===\n");
     out.push_str(
         "T = pyramid tiles (never pixels). wall (ms) & RSS (MB): lower is better. \
-         eff = throughput per peak-RSS MB (T/s/RSS-MB): higher is better.\n\
-         Ratios are vs libvips in the SAME snapshot: wall/RSS <1 beats libvips; eff >1 \
-         beats libvips.\n\n",
+         eff = throughput per peak-RSS MB (T/s/RSS-MB): higher is better.\n",
     );
+    if has_vips_row {
+        out.push_str(
+            "Ratios are vs libvips in the SAME snapshot: wall/RSS <1 beats libvips; eff >1 \
+             beats libvips.\n",
+        );
+    } else {
+        out.push_str(
+            "libviprs engines only: the engines are ranked against each other, with no \
+             libvips column to divide by.\n",
+        );
+    }
+    out.push('\n');
     // The efficiency column names its full RSS-MB basis ("eff T/s/RSS-MB"), not
     // the ambiguous "T/s/MB", and is widened to 14 to fit it (#25 review).
-    out.push_str(&format!(
-        "{:<16} {:<12} {:>12} {:>12} {:>14} {:>12} {:>12}\n",
-        "Config", "Engine", "wall ms", "RSS MB", "eff T/s/RSS-MB", "wall/vips", "RSS/vips",
-    ));
-    out.push_str(&format!("{}\n", "-".repeat(94)));
+    if has_vips_row {
+        out.push_str(&format!(
+            "{:<16} {:<12} {:>12} {:>12} {:>14} {:>12} {:>12}\n",
+            "Config", "Engine", "wall ms", "RSS MB", "eff T/s/RSS-MB", "wall/vips", "RSS/vips",
+        ));
+        out.push_str(&format!("{}\n", "-".repeat(94)));
+    } else {
+        out.push_str(&format!(
+            "{:<16} {:<12} {:>12} {:>12} {:>14}\n",
+            "Config", "Engine", "wall ms", "RSS MB", "eff T/s/RSS-MB",
+        ));
+        out.push_str(&format!("{}\n", "-".repeat(68)));
+    }
 
     for group in &groups {
         let cfg = format!(
@@ -1966,17 +2096,29 @@ pub fn executive_verdict(results: &[RunMetrics]) -> String {
                 (Some(v), true) => format!("{:.2}", r.peak_rss_mb() / v),
                 _ => "-".to_string(),
             };
-            let _ = writeln!(
-                out,
-                "{:<16} {:<12} {:>12.1} {:>12.2} {:>14.1} {:>12} {:>12}",
-                cfg_col,
-                r.engine,
-                r.wall_time_ms(),
-                r.peak_rss_mb(),
-                r.tiles_per_second_per_mb(),
-                wall_ratio,
-                rss_ratio,
-            );
+            if has_vips_row {
+                let _ = writeln!(
+                    out,
+                    "{:<16} {:<12} {:>12.1} {:>12.2} {:>14.1} {:>12} {:>12}",
+                    cfg_col,
+                    r.engine,
+                    r.wall_time_ms(),
+                    r.peak_rss_mb(),
+                    r.tiles_per_second_per_mb(),
+                    wall_ratio,
+                    rss_ratio,
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "{:<16} {:<12} {:>12.1} {:>12.2} {:>14.1}",
+                    cfg_col,
+                    r.engine,
+                    r.wall_time_ms(),
+                    r.peak_rss_mb(),
+                    r.tiles_per_second_per_mb(),
+                );
+            }
         }
         let _ = writeln!(
             out,
@@ -2057,6 +2199,7 @@ mod history_tests {
     fn valid_history_round_trips() {
         let path = scratch_path("valid");
         let history = vec![create_snapshot(
+            family::DEFAULT_FAMILY,
             provenance::Provenance::default(),
             Vec::new(),
             256,
@@ -2127,6 +2270,7 @@ mod history_tests {
     #[test]
     fn migrate_snapshot_is_idempotent_on_current_labels() {
         let mut snap = create_snapshot(
+            family::DEFAULT_FAMILY,
             provenance::Provenance::default(),
             Vec::new(),
             256,
@@ -2145,6 +2289,7 @@ mod history_tests {
         // A regression to `env!("CARGO_PKG_VERSION")` would fail here
         // whenever core and bench versions differ (the real-world case).
         let snap = create_snapshot(
+            family::DEFAULT_FAMILY,
             provenance::Provenance::default(),
             Vec::new(),
             256,
