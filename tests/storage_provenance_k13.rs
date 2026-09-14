@@ -137,9 +137,23 @@ fn cell(backend: &str, scenario: &str, scale: u64, reps: u64) -> Value {
         "regime": "leaf",
         "unit": "us",
         "samples": [1210.0, 1198.5, 1205.25, 1211.0, 1199.75, 1202.5, 1207.0],
-        "median": 1205.25
+        "median": 1205.25,
+        // The coefficient of variation of `[10, 11, 12]`, which is `1.0 / 11.0`.
+        // It is in the fixture rather than in one test because it is a value this
+        // suite really produces and because `serde_json`'s number *reader* does not
+        // round it correctly: the printer writes `0.09090909090909091`, which is
+        // right, and the reader hands back the float one ULP above it. Every test
+        // that goes near a file therefore carries the witness.
+        "cov": WITNESS_COV
     })
 }
+
+/// `1.0 / 11.0`, the coefficient of variation of `[10, 11, 12]`.
+///
+/// Written as the division rather than as a literal on purpose: a literal would
+/// be parsed by `rustc`, which is correctly rounded, and the point of the value
+/// is what happens to it on the way through a JSON file.
+const WITNESS_COV: f64 = 1.0 / 11.0;
 
 /// The refusal codes a document produced.
 fn codes(doc: &Value) -> Vec<&'static str> {
@@ -192,15 +206,25 @@ fn remove(doc: &mut Value, path: &str) {
 /// never writes into the source tree and never needs to delete anything to
 /// clean up after itself.
 ///
-/// The process id is in the name because nothing here deletes. Without it the
-/// second run of the suite finds the first run's archive already filed, and
-/// `run_id_is_derived_from_the_document_not_the_clock` fails on its
-/// `written: true` assertion for a reason that has nothing to do with what it
-/// is testing. That is a test whose result depends on whether anyone ran it
-/// before, which is its own kind of wrong answer.
+/// The name is made unique because nothing here deletes. Without that, the
+/// second run of the suite finds the first run's archive already filed and
+/// `run_id_is_derived_from_the_document_not_the_clock` fails its `written: true`
+/// assertion for a reason that has nothing to do with what it is testing.
+///
+/// The process id alone is not enough, and finding that out cost a confusing
+/// red. Every run of the suite happens in a fresh container, pids there start
+/// from the low numbers and repeat, and the target directory is a volume that
+/// outlives the container: eleven runs had left `k13-archive-idempotent-20`,
+/// `-101`, `-191`, `-738` and so on behind, and the twelfth drew a pid it had
+/// drawn before. The clock is the part that does not repeat, so it is in the
+/// name too.
 fn scratch(name: &str) -> PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("k13-{name}-{}", std::process::id()));
+        .join(format!("k13-{name}-{}-{unique}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("cargo's target tmpdir is writable");
     dir
 }
@@ -672,6 +696,72 @@ fn a_non_ascii_key_is_refused_because_the_two_sort_orders_disagree() {
     );
 }
 
+/// RED against a canonicaliser that resolves a duplicate key instead of
+/// refusing it.
+///
+/// `{"a":1,"a":2}` is legal JSON and readers disagree about it: most keep the
+/// last, some keep the first, a few error. A document carrying one digests to
+/// whatever the reader happened to keep, which is the same class of bug as the
+/// number reader and has the same answer. Refusing is the only verdict that is
+/// identical in both languages.
+#[test]
+fn the_same_key_twice_in_one_object_is_refused() {
+    let err = integrity::canonical_json_from_text("{\"a\":1,\"a\":2}")
+        .expect_err("a duplicate key has no single canonical form");
+    assert!(
+        matches!(err, CanonicalError::DuplicateKey { .. }),
+        "{err:?}"
+    );
+
+    // The ordinary case still canonicalises, and sorts.
+    assert_eq!(
+        integrity::canonical_json_from_text("{\"b\":2,\"a\":1}").expect("fine"),
+        "{\"a\":1,\"b\":2}"
+    );
+}
+
+/// RED against a reader that does not decode what it read, which would make the
+/// canonical form depend on how a producer chose to spell a string.
+///
+/// Writing a JSON reader by hand is the cost of keeping floats off the digest
+/// path, and this is the test that says the reader is a reader rather than a
+/// scanner that happens to work on the documents I tried it on.
+#[test]
+fn the_reader_decodes_escapes_and_ignores_layout() {
+    // An escaped character and a literal one are the same string.
+    assert_eq!(
+        integrity::digest_from_text("{\"k\":\"\\u0041\"}").expect("fine"),
+        integrity::digest_from_text("{\"k\":\"A\"}").expect("fine"),
+    );
+    // Layout between tokens is not content.
+    assert_eq!(
+        integrity::canonical_json_from_text("{ \"k\" :  [ 1 , 2 ]  }").expect("fine"),
+        "{\"k\":[1,2]}"
+    );
+    // A surrogate pair is one character, not two.
+    assert_eq!(
+        integrity::canonical_json_from_text("{\"k\":\"\\ud83d\\ude00\"}").expect("fine"),
+        "{\"k\":\"\u{1f600}\"}"
+    );
+    // Control characters come back out escaped the way JSON.stringify writes
+    // them: the five short forms, and \u00xx for the rest.
+    assert_eq!(
+        integrity::canonical_json_from_text("{\"k\":\"\\u0009\\u0000\"}").expect("fine"),
+        "{\"k\":\"\\t\\u0000\"}"
+    );
+    // A raw control character is not legal JSON. Escaping it quietly would mean
+    // the canonical form says something the input did not.
+    assert!(
+        integrity::canonical_json_from_text("{\"k\":\"\u{9}\"}").is_err(),
+        "a raw tab inside a string must be refused, not silently escaped"
+    );
+    // A lone high surrogate cannot be a character and must not become U+FFFD.
+    assert!(
+        integrity::canonical_json_from_text("{\"k\":\"\\ud83d\"}").is_err(),
+        "a lone surrogate must be refused"
+    );
+}
+
 /// RED against a `--verify` that recomputes one digest, or that stops at the
 /// first mismatch.
 ///
@@ -682,15 +772,19 @@ fn a_non_ascii_key_is_refused_because_the_two_sort_orders_disagree() {
 #[test]
 fn verify_recomputes_all_four_digests_and_names_the_block_that_moved() {
     let doc = clean_document();
-    let (sealed, _) = archive::seal(&doc).expect("the fixture canonicalises");
+    let sealed = archive::seal(&doc).expect("the fixture canonicalises");
 
-    let clean = integrity::verify(&sealed).expect("still canonicalises");
+    let clean = integrity::verify_text(&sealed.text).expect("still canonicalises");
     assert!(clean.ok(), "a freshly sealed document verifies: {clean:?}");
     assert_eq!(clean.unchanged.len(), 4);
 
-    let mut edited = sealed.clone();
-    edited["cells"][0]["samples"][3] = json!(1211.5);
-    let report = integrity::verify(&edited).expect("still canonicalises");
+    // Edited in the text rather than by parsing, editing and re-serialising,
+    // which is both what a person tampering with an archive would do and the
+    // only way to change one sample without every other number in the file
+    // going through `serde_json`'s reader on the way past.
+    let edited = sealed.text.replacen("1211.0", "1211.5", 1);
+    assert_ne!(edited, sealed.text, "the edit has to have landed");
+    let report = integrity::verify_text(&edited).expect("still canonicalises");
 
     assert_eq!(
         report.moved,
@@ -711,10 +805,10 @@ fn verify_recomputes_all_four_digests_and_names_the_block_that_moved() {
 
     // A document that carries digests which no longer hold is refused outright,
     // rather than being quietly re-sealed with the new numbers.
+    let refusals = archive::admit_text(&edited).expect("still canonicalises");
     assert!(
-        codes(&edited).contains(&"integrity"),
-        "{:?}",
-        archive::admit(&edited)
+        refusals.iter().any(|r| r.code == "integrity"),
+        "{refusals:?}"
     );
 }
 
@@ -724,15 +818,22 @@ fn verify_recomputes_all_four_digests_and_names_the_block_that_moved() {
 #[test]
 fn sealing_a_document_does_not_change_what_was_sealed() {
     let doc = clean_document();
-    let (first, digests_a) = archive::seal(&doc).expect("canonicalises");
-    let (second, digests_b) = archive::seal(&first).expect("canonicalises");
+    let first = archive::seal(&doc).expect("canonicalises");
+    let second = archive::seal_text(&first.text).expect("canonicalises");
     assert_eq!(
-        digests_a, digests_b,
+        first.digests, second.digests,
         "sealing an already-sealed document is the same evidence and must digest the same"
     );
     assert!(
-        second["combinedAt"].is_string(),
+        first.text.contains("\"combinedAt\""),
         "the sealed copy records when it was combined"
+    );
+    // And the second seal is over the first's bytes, so the witness survived the
+    // trip: a re-seal that went through floats would have moved it.
+    assert!(
+        second.text.contains("0.09090909090909091"),
+        "re-sealing must not rewrite a number it read: {}",
+        second.text
     );
 }
 
@@ -789,6 +890,93 @@ fn run_id_is_derived_from_the_document_not_the_clock() {
     assert_ne!(
         first.run_id, other_id,
         "a different cpu model is a different environment bucket"
+    );
+}
+
+/// RED against a digest path that re-parses the file into floats and
+/// canonicalises those, which is what `--verify` did until this test existed.
+///
+/// `serde_json`'s number reader is not correctly rounded. Measured in this
+/// lane's container on the witness the fixture carries:
+///
+/// ```text
+/// witness text          0.09090909090909091
+/// std parse             3fb745d1745d1746   prints 0.09090909090909091
+/// serde_json parse      3fb745d1745d1747   prints 0.09090909090909093
+/// serde_json print(std) 0.09090909090909091
+/// ```
+///
+/// So the printer and `std` agree and the reader is the one that is wrong, and a
+/// document whose bytes are exactly what the producer emitted comes back a ULP
+/// away. A digest recomputed from those floats does not match the one the
+/// producer derived, and the archive refuses a file that nothing is wrong with.
+///
+/// The direction that matters more is the one this lane cannot see: V8's
+/// `JSON.parse` *is* correctly rounded, so Rust and JavaScript read one archived
+/// file as two different floats and derive two different digests. K2.2's
+/// cross-language test would go red with neither implementation at fault.
+///
+/// The fix is that a digest is taken from the producer's own bytes and never
+/// from a re-serialised parse, so nothing on the digest path builds a float at
+/// all.
+#[test]
+fn a_document_written_and_read_back_verifies_against_its_own_bytes() {
+    let root = scratch("byte-roundtrip");
+    let entry = archive::archive(&clean_document(), &root).expect("the fixture is admissible");
+    let text = std::fs::read_to_string(&entry.path).expect("the archive was written");
+
+    assert!(
+        text.contains("0.09090909090909091"),
+        "the witness must survive into the file as the digits the printer chose, so that \
+         reading it back is the thing under test: {text}"
+    );
+
+    let report = integrity::verify_text(&text).expect("the archived text canonicalises");
+    assert!(
+        report.ok(),
+        "a document that is byte for byte what the producer wrote must verify, and this one \
+         did not: {:?}",
+        report.lines()
+    );
+
+    // And the digest the file claims is the one the producer derived, rather than
+    // one that happens to agree with a lossy re-read of itself.
+    assert_eq!(
+        report
+            .stated
+            .as_ref()
+            .expect("a sealed document states its digests")
+            .document,
+        entry.document_digest,
+        "the archived digest must be the one archive() returned"
+    );
+}
+
+/// RED against any path that re-reads a number it wrote.
+///
+/// `parse(print(x)) == x` is the assumption the bug above is made of, and it is
+/// false here, so it is worth one test that says so in one line rather than
+/// leaving it as folklore in a comment.
+#[test]
+fn printing_a_float_and_reading_it_back_through_serde_json_is_not_the_identity() {
+    let printed = serde_json::to_string(&WITNESS_COV).expect("finite");
+    let reread: f64 = serde_json::from_str(&printed).expect("valid JSON");
+    assert_eq!(
+        printed, "0.09090909090909091",
+        "the printer is not the problem and this pins that"
+    );
+    assert_ne!(
+        reread.to_bits(),
+        WITNESS_COV.to_bits(),
+        "if this ever passes, serde_json's reader has been fixed upstream; the digest path \
+         still must not depend on it, but this test's premise is gone and it should be \
+         retired rather than relaxed"
+    );
+    // `std`, by contrast, is correctly rounded, which is how the fixture's own
+    // expectation above is anchored to something trustworthy.
+    assert_eq!(
+        printed.parse::<f64>().expect("valid float").to_bits(),
+        WITNESS_COV.to_bits()
     );
 }
 

@@ -77,7 +77,7 @@
 //! sealing a document does not change the thing that was sealed.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
 
 use crate::sha256::sha256_hex;
 
@@ -88,11 +88,11 @@ use crate::sha256::sha256_hex;
 /// different values while both believing they had read the file correctly.
 pub const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
-/// Below this magnitude `Number.prototype.toString` switches to exponent form.
-const SMALLEST_PLAIN_MAGNITUDE: f64 = 1e-6;
-/// At and above this magnitude `Number.prototype.toString` switches to exponent
-/// form.
-const LARGEST_PLAIN_MAGNITUDE: f64 = 1e21;
+// The two thresholds where `Number.prototype.toString` switches to exponent
+// form, `1e-6` and `1e21`, used to live here as `f64` constants. They are gone
+// on purpose: nothing on the digest path constructs a float any more, so both
+// bounds are checked by counting digits in `canonical_number`, which is exact
+// and cannot round.
 
 /// Why a document could not be canonicalised.
 ///
@@ -104,13 +104,20 @@ pub enum CanonicalError {
     /// `NaN` or an infinity. JavaScript would write `null` here and lose the
     /// fact that a measurement went wrong.
     NonFinite { path: String },
-    /// A finite number that `Number.prototype.toString` would print in
-    /// exponent form, where Rust prints the digits out in full.
-    OutOfPlainRange { path: String, value: f64 },
+    /// A number `Number.prototype.toString` would print in exponent form,
+    /// where Rust prints the digits out in full.
+    ///
+    /// Carries the token rather than a value, because nothing on this path
+    /// builds a float and an error is a poor reason to start.
+    OutOfPlainRange { path: String, token: String },
     /// An integer JavaScript cannot hold exactly.
     UnsafeInteger { path: String, value: String },
+    /// The same key twice in one object.
+    DuplicateKey { path: String, key: String },
     /// A key whose sort position differs between UTF-16 and UTF-8 order.
     NonAsciiKey { path: String, key: String },
+    /// The text is not JSON.
+    Malformed { detail: String },
 }
 
 impl std::fmt::Display for CanonicalError {
@@ -121,9 +128,9 @@ impl std::fmt::Display for CanonicalError {
                 "{path} is NaN or an infinity; a digest over it would be a digest over a \
                  measurement that went wrong, written as though it had not"
             ),
-            CanonicalError::OutOfPlainRange { path, value } => write!(
+            CanonicalError::OutOfPlainRange { path, token } => write!(
                 f,
-                "{path} is {value:e}, which JavaScript prints in exponent form and Rust prints \
+                "{path} is {token}, which JavaScript prints in exponent form and Rust prints \
                  in full, so the two languages would digest different bytes"
             ),
             CanonicalError::UnsafeInteger { path, value } => write!(
@@ -136,139 +143,638 @@ impl std::fmt::Display for CanonicalError {
                 "{path} has the non-ASCII key {key:?}; JavaScript sorts keys by UTF-16 code \
                  unit and Rust by UTF-8 byte, and those two orders only agree on ASCII"
             ),
+            CanonicalError::DuplicateKey { path, key } => write!(
+                f,
+                "{path} has the key {key:?} twice; every JSON reader resolves that \
+                 differently, so the document would digest to whatever the reader kept"
+            ),
+            CanonicalError::Malformed { detail } => {
+                write!(f, "the document is not JSON: {detail}")
+            }
         }
     }
 }
 
 impl std::error::Error for CanonicalError {}
 
-/// The canonical JSON string for `value`, per the rules in this module's docs.
-pub fn canonical_json(value: &Value) -> Result<String, CanonicalError> {
-    let mut out = String::new();
-    write_canonical(value, "$", &mut out)?;
-    Ok(out)
+// ---------------------------------------------------------------------------
+// A JSON reader that never builds a float
+//
+// `serde_json`'s number *reader* is not correctly rounded. Measured in this
+// lane's container:
+//
+//     witness text          0.09090909090909091     (the cov of [10, 11, 12])
+//     std parse             3fb745d1745d1746        prints 0.09090909090909091
+//     serde_json parse      3fb745d1745d1747        prints 0.09090909090909093
+//     serde_json print(std) 0.09090909090909091
+//
+// The printer is right and `std` agrees with it, so the reader is the one that
+// is wrong, and `parse(print(x)) == x` is false through `serde_json`. A digest
+// recomputed from re-parsed floats therefore does not match the digest the
+// producer derived, and `--verify` refuses a file that nothing is wrong with.
+//
+// It is worse across languages. V8's `JSON.parse` *is* correctly rounded, so
+// Rust and JavaScript read one archived file as two different floats and derive
+// two different digests from a file neither of them wrote incorrectly. K2.2's
+// cross-language test would go red with nothing wrong in either implementation,
+// and the parser is the last place anybody would look.
+//
+// So the rule, and it is a rule rather than a workaround: **a digest comes from
+// the producer's own bytes and never from a re-serialised parse**. Everything
+// below reads JSON into a tree that keeps each number as the text it was written
+// as, and canonicalises that text by moving the decimal point and trimming
+// zeros. No float is constructed anywhere on the digest path, so there is
+// nothing for a reader to round.
+//
+// The cost is a JSON parser in this file. The alternative was `serde_json`'s
+// `arbitrary_precision` feature, which does exactly this but is graph-wide: it
+// would turn on for every crate in the build, it has documented interactions
+// with `to_value`, and it needed checking against the `preserve_order` K1.2 has
+// already enabled. Two hundred lines that only this module depends on is the
+// smaller commitment.
+// ---------------------------------------------------------------------------
+
+/// A JSON tree in which every number is still the text it was written as.
+///
+/// Object entries keep their file order; [`RawJson::canonical`] sorts. That is
+/// deliberate: the archive file stays readable in the order the producer wrote,
+/// and the digest is over the sorted form, so the two never have to agree.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RawJson {
+    /// `null`.
+    Null,
+    /// `true` or `false`.
+    Bool(bool),
+    /// A number, exactly as it appeared in the text.
+    Number(String),
+    /// A string, with its escapes decoded.
+    Str(String),
+    /// An array.
+    Array(Vec<RawJson>),
+    /// An object, in file order.
+    Object(Vec<(String, RawJson)>),
 }
 
-/// `sha256:<64 lowercase hex>` over the UTF-8 bytes of [`canonical_json`].
-pub fn digest(value: &Value) -> Result<String, CanonicalError> {
-    Ok(format!(
-        "sha256:{}",
-        sha256_hex(canonical_json(value)?.as_bytes())
-    ))
-}
+/// How deep a document may nest before this refuses to follow it.
+///
+/// A recursive-descent parser on a hostile input is a stack overflow, which is
+/// an abort rather than an error. Storage documents are five or six deep.
+const MAX_DEPTH: usize = 128;
 
-fn write_canonical(value: &Value, path: &str, out: &mut String) -> Result<(), CanonicalError> {
-    match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(true) => out.push_str("true"),
-        Value::Bool(false) => out.push_str("false"),
-        Value::Number(n) => out.push_str(&canonical_number(n, path)?),
-        Value::String(s) => out.push_str(&canonical_string(s)),
-        Value::Array(items) => {
-            out.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_canonical(item, &format!("{path}[{i}]"), out)?;
-            }
-            out.push(']');
+impl RawJson {
+    /// Read JSON text, keeping every number token verbatim.
+    pub fn parse(text: &str) -> Result<RawJson, CanonicalError> {
+        let mut reader = Reader {
+            bytes: text.as_bytes(),
+            pos: 0,
+            depth: 0,
+        };
+        reader.skip_whitespace();
+        let value = reader.value()?;
+        reader.skip_whitespace();
+        if reader.pos != reader.bytes.len() {
+            return Err(CanonicalError::Malformed {
+                detail: format!("trailing input at byte {}", reader.pos),
+            });
         }
-        Value::Object(map) => {
-            out.push('{');
-            for (i, key) in sorted_keys(map, path)?.into_iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                out.push_str(&canonical_string(key));
-                out.push(':');
-                write_canonical(&map[key], &format!("{path}.{key}"), out)?;
-            }
-            out.push('}');
+        Ok(value)
+    }
+
+    /// The value at `key`, when this is an object that has one.
+    pub fn get(&self, key: &str) -> Option<&RawJson> {
+        match self {
+            RawJson::Object(entries) => entries.iter().find(|(k, _)| k == key).map(|(_, v)| v),
+            _ => None,
         }
     }
-    Ok(())
+
+    /// The string, when this is one.
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            RawJson::Str(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Drop `key`, if this is an object.
+    pub fn remove(&mut self, key: &str) {
+        if let RawJson::Object(entries) = self {
+            entries.retain(|(k, _)| k != key);
+        }
+    }
+
+    /// Set `key`, replacing it in place if it is already there so that the file
+    /// order does not shuffle when a document is re-sealed.
+    pub fn insert(&mut self, key: &str, value: RawJson) {
+        if let RawJson::Object(entries) = self {
+            if let Some(slot) = entries.iter_mut().find(|(k, _)| k == key) {
+                slot.1 = value;
+            } else {
+                entries.push((key.to_string(), value));
+            }
+        }
+    }
+
+    /// The canonical JSON string for this value, per the rules in this module's
+    /// docs.
+    pub fn canonical(&self) -> Result<String, CanonicalError> {
+        let mut out = String::new();
+        self.write_canonical("$", &mut out)?;
+        Ok(out)
+    }
+
+    fn write_canonical(&self, path: &str, out: &mut String) -> Result<(), CanonicalError> {
+        match self {
+            RawJson::Null => out.push_str("null"),
+            RawJson::Bool(true) => out.push_str("true"),
+            RawJson::Bool(false) => out.push_str("false"),
+            RawJson::Number(token) => out.push_str(&canonical_number(token, path)?),
+            RawJson::Str(s) => out.push_str(&canonical_string(s)),
+            RawJson::Array(items) => {
+                out.push('[');
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    item.write_canonical(&format!("{path}[{i}]"), out)?;
+                }
+                out.push(']');
+            }
+            RawJson::Object(entries) => {
+                let mut sorted: Vec<&(String, RawJson)> = entries.iter().collect();
+                for (key, _) in &sorted {
+                    if !key.is_ascii() {
+                        return Err(CanonicalError::NonAsciiKey {
+                            path: path.to_string(),
+                            key: key.clone(),
+                        });
+                    }
+                }
+                sorted.sort_by(|a, b| a.0.cmp(&b.0));
+                // Duplicate keys are legal JSON and every parser resolves them
+                // differently, so a document carrying one digests to whatever the
+                // reader happened to keep. Refusing is the only answer that is the
+                // same in both languages.
+                for pair in sorted.windows(2) {
+                    if pair[0].0 == pair[1].0 {
+                        return Err(CanonicalError::DuplicateKey {
+                            path: path.to_string(),
+                            key: pair[0].0.clone(),
+                        });
+                    }
+                }
+                out.push('{');
+                for (i, (key, value)) in sorted.iter().enumerate() {
+                    if i > 0 {
+                        out.push(',');
+                    }
+                    out.push_str(&canonical_string(key));
+                    out.push(':');
+                    value.write_canonical(&format!("{path}.{key}"), out)?;
+                }
+                out.push('}');
+            }
+        }
+        Ok(())
+    }
+
+    /// Print this back out as an indented JSON file, numbers verbatim.
+    ///
+    /// Verbatim is the whole point: the archiver writes a document it has read,
+    /// and re-printing a number it never turned into a float is the only way the
+    /// bytes it files are the bytes it was given.
+    pub fn to_pretty(&self) -> String {
+        let mut out = String::new();
+        self.write_pretty(0, &mut out);
+        out.push('\n');
+        out
+    }
+
+    fn write_pretty(&self, indent: usize, out: &mut String) {
+        let pad = |n: usize| "  ".repeat(n);
+        match self {
+            RawJson::Null => out.push_str("null"),
+            RawJson::Bool(true) => out.push_str("true"),
+            RawJson::Bool(false) => out.push_str("false"),
+            RawJson::Number(token) => out.push_str(token),
+            RawJson::Str(s) => out.push_str(&canonical_string(s)),
+            RawJson::Array(items) if items.is_empty() => out.push_str("[]"),
+            RawJson::Array(items) => {
+                out.push_str("[\n");
+                for (i, item) in items.iter().enumerate() {
+                    out.push_str(&pad(indent + 1));
+                    item.write_pretty(indent + 1, out);
+                    out.push_str(if i + 1 == items.len() { "\n" } else { ",\n" });
+                }
+                out.push_str(&pad(indent));
+                out.push(']');
+            }
+            RawJson::Object(entries) if entries.is_empty() => out.push_str("{}"),
+            RawJson::Object(entries) => {
+                out.push_str("{\n");
+                for (i, (key, value)) in entries.iter().enumerate() {
+                    out.push_str(&pad(indent + 1));
+                    out.push_str(&canonical_string(key));
+                    out.push_str(": ");
+                    value.write_pretty(indent + 1, out);
+                    out.push_str(if i + 1 == entries.len() { "\n" } else { ",\n" });
+                }
+                out.push_str(&pad(indent));
+                out.push('}');
+            }
+        }
+    }
 }
 
-/// Object keys in ascending order, having first established that ascending
-/// order means the same thing in both languages.
-fn sorted_keys<'a>(
-    map: &'a Map<String, Value>,
-    path: &str,
-) -> Result<Vec<&'a String>, CanonicalError> {
-    let mut keys: Vec<&String> = map.keys().collect();
-    for key in &keys {
-        if !key.is_ascii() {
-            return Err(CanonicalError::NonAsciiKey {
+/// The recursive-descent reader behind [`RawJson::parse`].
+struct Reader<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+    depth: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn malformed(&self, detail: impl Into<String>) -> CanonicalError {
+        CanonicalError::Malformed {
+            detail: format!("{} at byte {}", detail.into(), self.pos),
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while let Some(b) = self.bytes.get(self.pos) {
+            match b {
+                b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
+                _ => break,
+            }
+        }
+    }
+
+    fn eat(&mut self, literal: &str) -> Result<(), CanonicalError> {
+        if self.bytes[self.pos..].starts_with(literal.as_bytes()) {
+            self.pos += literal.len();
+            Ok(())
+        } else {
+            Err(self.malformed(format!("expected {literal:?}")))
+        }
+    }
+
+    fn value(&mut self) -> Result<RawJson, CanonicalError> {
+        if self.depth > MAX_DEPTH {
+            return Err(self.malformed(format!("nested deeper than {MAX_DEPTH}")));
+        }
+        match self.bytes.get(self.pos) {
+            None => Err(self.malformed("unexpected end of input")),
+            Some(b'n') => self.eat("null").map(|()| RawJson::Null),
+            Some(b't') => self.eat("true").map(|()| RawJson::Bool(true)),
+            Some(b'f') => self.eat("false").map(|()| RawJson::Bool(false)),
+            Some(b'"') => self.string().map(RawJson::Str),
+            Some(b'[') => self.array(),
+            Some(b'{') => self.object(),
+            Some(b'-') => self.number(),
+            Some(b) if b.is_ascii_digit() => self.number(),
+            Some(b) => Err(self.malformed(format!("unexpected byte {:?}", *b as char))),
+        }
+    }
+
+    fn array(&mut self) -> Result<RawJson, CanonicalError> {
+        self.pos += 1;
+        self.depth += 1;
+        let mut items = Vec::new();
+        self.skip_whitespace();
+        if self.bytes.get(self.pos) == Some(&b']') {
+            self.pos += 1;
+            self.depth -= 1;
+            return Ok(RawJson::Array(items));
+        }
+        loop {
+            self.skip_whitespace();
+            items.push(self.value()?);
+            self.skip_whitespace();
+            match self.bytes.get(self.pos) {
+                Some(b',') => self.pos += 1,
+                Some(b']') => {
+                    self.pos += 1;
+                    self.depth -= 1;
+                    return Ok(RawJson::Array(items));
+                }
+                _ => return Err(self.malformed("expected ',' or ']'")),
+            }
+        }
+    }
+
+    fn object(&mut self) -> Result<RawJson, CanonicalError> {
+        self.pos += 1;
+        self.depth += 1;
+        let mut entries = Vec::new();
+        self.skip_whitespace();
+        if self.bytes.get(self.pos) == Some(&b'}') {
+            self.pos += 1;
+            self.depth -= 1;
+            return Ok(RawJson::Object(entries));
+        }
+        loop {
+            self.skip_whitespace();
+            let key = self.string()?;
+            self.skip_whitespace();
+            if self.bytes.get(self.pos) != Some(&b':') {
+                return Err(self.malformed("expected ':'"));
+            }
+            self.pos += 1;
+            self.skip_whitespace();
+            let value = self.value()?;
+            entries.push((key, value));
+            self.skip_whitespace();
+            match self.bytes.get(self.pos) {
+                Some(b',') => self.pos += 1,
+                Some(b'}') => {
+                    self.pos += 1;
+                    self.depth -= 1;
+                    return Ok(RawJson::Object(entries));
+                }
+                _ => return Err(self.malformed("expected ',' or '}'")),
+            }
+        }
+    }
+
+    fn string(&mut self) -> Result<String, CanonicalError> {
+        if self.bytes.get(self.pos) != Some(&b'"') {
+            return Err(self.malformed("expected a string"));
+        }
+        self.pos += 1;
+        let mut out = String::new();
+        loop {
+            let byte = *self
+                .bytes
+                .get(self.pos)
+                .ok_or_else(|| self.malformed("unterminated string"))?;
+            match byte {
+                b'"' => {
+                    self.pos += 1;
+                    return Ok(out);
+                }
+                b'\\' => {
+                    self.pos += 1;
+                    let escape = *self
+                        .bytes
+                        .get(self.pos)
+                        .ok_or_else(|| self.malformed("unterminated escape"))?;
+                    self.pos += 1;
+                    match escape {
+                        b'"' => out.push('"'),
+                        b'\\' => out.push('\\'),
+                        b'/' => out.push('/'),
+                        b'b' => out.push('\u{0008}'),
+                        b'f' => out.push('\u{000c}'),
+                        b'n' => out.push('\n'),
+                        b'r' => out.push('\r'),
+                        b't' => out.push('\t'),
+                        b'u' => out.push(self.unicode_escape()?),
+                        other => {
+                            return Err(
+                                self.malformed(format!("unknown escape \\{}", other as char))
+                            );
+                        }
+                    }
+                }
+                // A raw control character is not legal JSON, and letting one
+                // through would mean the canonical form escapes something the
+                // input did not, which is a silent rewrite.
+                b if b < 0x20 => return Err(self.malformed("raw control character in a string")),
+                _ => {
+                    let start = self.pos;
+                    while self
+                        .bytes
+                        .get(self.pos)
+                        .is_some_and(|b| *b != b'"' && *b != b'\\' && *b >= 0x20)
+                    {
+                        self.pos += 1;
+                    }
+                    out.push_str(
+                        std::str::from_utf8(&self.bytes[start..self.pos])
+                            .map_err(|e| self.malformed(format!("invalid UTF-8: {e}")))?,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A `\uXXXX` escape, joining a surrogate pair when it is one.
+    fn unicode_escape(&mut self) -> Result<char, CanonicalError> {
+        let first = self.hex4()?;
+        if (0xD800..0xDC00).contains(&first) {
+            if !self.bytes[self.pos..].starts_with(b"\\u") {
+                return Err(self.malformed("a high surrogate with no low surrogate after it"));
+            }
+            self.pos += 2;
+            let second = self.hex4()?;
+            if !(0xDC00..0xE000).contains(&second) {
+                return Err(self.malformed("a high surrogate followed by a non-surrogate"));
+            }
+            let combined = 0x10000 + ((first - 0xD800) << 10) + (second - 0xDC00);
+            return char::from_u32(combined).ok_or_else(|| self.malformed("bad surrogate pair"));
+        }
+        char::from_u32(first).ok_or_else(|| self.malformed("a lone low surrogate"))
+    }
+
+    fn hex4(&mut self) -> Result<u32, CanonicalError> {
+        let slice = self
+            .bytes
+            .get(self.pos..self.pos + 4)
+            .ok_or_else(|| self.malformed("truncated \\u escape"))?;
+        let text = std::str::from_utf8(slice).map_err(|_| self.malformed("bad \\u escape"))?;
+        let value = u32::from_str_radix(text, 16).map_err(|_| self.malformed("bad \\u escape"))?;
+        self.pos += 4;
+        Ok(value)
+    }
+
+    /// A number token, taken as text and never as a value.
+    fn number(&mut self) -> Result<RawJson, CanonicalError> {
+        let start = self.pos;
+        if self.bytes.get(self.pos) == Some(&b'-') {
+            self.pos += 1;
+        }
+        let int_start = self.pos;
+        while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+            self.pos += 1;
+        }
+        if self.pos == int_start {
+            return Err(self.malformed("a number with no integer part"));
+        }
+        if self.bytes[int_start] == b'0' && self.pos - int_start > 1 {
+            return Err(self.malformed("a number with a leading zero"));
+        }
+        if self.bytes.get(self.pos) == Some(&b'.') {
+            self.pos += 1;
+            let frac_start = self.pos;
+            while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+                self.pos += 1;
+            }
+            if self.pos == frac_start {
+                return Err(self.malformed("a number with an empty fraction"));
+            }
+        }
+        if matches!(self.bytes.get(self.pos), Some(b'e' | b'E')) {
+            self.pos += 1;
+            if matches!(self.bytes.get(self.pos), Some(b'+' | b'-')) {
+                self.pos += 1;
+            }
+            let exp_start = self.pos;
+            while self.bytes.get(self.pos).is_some_and(u8::is_ascii_digit) {
+                self.pos += 1;
+            }
+            if self.pos == exp_start {
+                return Err(self.malformed("a number with an empty exponent"));
+            }
+        }
+        Ok(RawJson::Number(
+            std::str::from_utf8(&self.bytes[start..self.pos])
+                .expect("digits, sign and exponent marker are all ASCII")
+                .to_string(),
+        ))
+    }
+}
+
+/// The canonical spelling of a number token, worked out by moving its decimal
+/// point rather than by parsing it.
+///
+/// Nothing here constructs a float, which is the point. The digits that come out
+/// are the digits that went in, so a document digests to the same value however
+/// many times it is read and written, and a reader that rounds differently
+/// cannot change the answer.
+///
+/// The rules, in order:
+///
+/// * the exponent is applied by shifting the decimal point, which is exact;
+/// * leading zeros in the integer part and trailing zeros in the fraction go,
+///   and a fraction that empties takes its `.` with it, so `1.0` prints as `1`
+///   the way `JSON.stringify` does;
+/// * every zero, `-0.0` included, prints as `0`;
+/// * a magnitude at or above `1e21`, or below `1e-6` and not zero, is refused,
+///   because those are the two points where `Number.prototype.toString` switches
+///   to exponent form and the two languages stop agreeing;
+/// * a token written *as an integer*, with no `.` and no exponent, must fit in
+///   `2^53 - 1`. That distinction is only visible in the bytes: a producer
+///   writing a `u64` counter emits `9007199254740993`, and one writing the float
+///   `1e20` emits `1e20`, and JavaScript holds the second exactly and loses the
+///   low bits of the first.
+fn canonical_number(token: &str, path: &str) -> Result<String, CanonicalError> {
+    let out_of_range = || CanonicalError::OutOfPlainRange {
+        path: path.to_string(),
+        token: token.to_string(),
+    };
+
+    let bytes = token.as_bytes();
+    let mut i = 0;
+    let negative = bytes.first() == Some(&b'-');
+    if negative {
+        i += 1;
+    }
+    let int_start = i;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    let int_part = &token[int_start..i];
+
+    let mut frac_part = "";
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        frac_part = &token[start..i];
+    }
+
+    let has_exponent = i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E');
+    let mut exponent: i64 = 0;
+    if has_exponent {
+        i += 1;
+        let exp_negative = bytes[i] == b'-';
+        if exp_negative || bytes[i] == b'+' {
+            i += 1;
+        }
+        // An exponent this large is out of range whatever its digits are, and
+        // shifting the point by it would build a string of that many characters.
+        let digits = &token[i..];
+        if digits.len() > 4 {
+            return Err(out_of_range());
+        }
+        exponent = digits.parse::<i64>().map_err(|_| out_of_range())?;
+        if exp_negative {
+            exponent = -exponent;
+        }
+        if !(-400..=400).contains(&exponent) {
+            return Err(out_of_range());
+        }
+    }
+    // A token written as a plain integer is the one the 2^53 rule is about.
+    let written_as_integer = frac_part.is_empty() && !has_exponent;
+
+    // Shift the point. `digits` is the significand with the point conceptually
+    // after `point` characters; both moves below are exact.
+    let digits: String = format!("{int_part}{frac_part}");
+    let point = int_part.len() as i64 + exponent;
+    let (mut integer_digits, mut fraction_digits) = if point <= 0 {
+        (
+            "0".to_string(),
+            format!("{}{}", "0".repeat((-point) as usize), digits),
+        )
+    } else if point as usize >= digits.len() {
+        (
+            format!("{digits}{}", "0".repeat(point as usize - digits.len())),
+            String::new(),
+        )
+    } else {
+        (
+            digits[..point as usize].to_string(),
+            digits[point as usize..].to_string(),
+        )
+    };
+
+    let trimmed = integer_digits.trim_start_matches('0').to_string();
+    integer_digits = if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed
+    };
+    fraction_digits = fraction_digits.trim_end_matches('0').to_string();
+
+    if integer_digits == "0" && fraction_digits.is_empty() {
+        // Every zero prints as `0`, sign and all, matching `JSON.stringify(-0)`.
+        return Ok("0".to_string());
+    }
+
+    if integer_digits != "0" && integer_digits.len() >= 22 {
+        // 1e21 is the first value with 22 integer digits.
+        return Err(out_of_range());
+    }
+    if integer_digits == "0" {
+        let leading_zeros = fraction_digits.chars().take_while(|c| *c == '0').count();
+        if leading_zeros >= 6 {
+            // 1e-6 is `0.000001`, five leading zeros; a sixth is below it.
+            return Err(out_of_range());
+        }
+    }
+    if written_as_integer && fraction_digits.is_empty() {
+        // Compared as digits rather than parsed, so the ceiling and the check
+        // share one source of truth without either becoming a number.
+        let max_safe = MAX_SAFE_INTEGER.to_string();
+        let too_big = integer_digits.len() > max_safe.len()
+            || (integer_digits.len() == max_safe.len() && integer_digits > max_safe);
+        if too_big {
+            return Err(CanonicalError::UnsafeInteger {
                 path: path.to_string(),
-                key: (*key).clone(),
+                value: token.to_string(),
             });
         }
     }
-    keys.sort();
-    Ok(keys)
-}
 
-/// A number as `JSON.stringify` would write it, or a refusal where the two
-/// languages would disagree.
-fn canonical_number(n: &Number, path: &str) -> Result<String, CanonicalError> {
-    if let Some(u) = n.as_u64() {
-        return if u > MAX_SAFE_INTEGER as u64 {
-            Err(CanonicalError::UnsafeInteger {
-                path: path.to_string(),
-                value: u.to_string(),
-            })
-        } else {
-            Ok(u.to_string())
-        };
-    }
-    if let Some(i) = n.as_i64() {
-        return if i < -MAX_SAFE_INTEGER {
-            Err(CanonicalError::UnsafeInteger {
-                path: path.to_string(),
-                value: i.to_string(),
-            })
-        } else {
-            Ok(i.to_string())
-        };
-    }
-
-    let v = n.as_f64().ok_or_else(|| CanonicalError::NonFinite {
-        path: path.to_string(),
-    })?;
-    if !v.is_finite() {
-        return Err(CanonicalError::NonFinite {
-            path: path.to_string(),
-        });
-    }
-    // `JSON.stringify(-0)` is `"0"`, and `0.0 == -0.0` in Rust, so this one
-    // comparison covers both zeros before any sign can reach the output.
-    if v == 0.0 {
-        return Ok("0".to_string());
-    }
-    let magnitude = v.abs();
-    if magnitude >= LARGEST_PLAIN_MAGNITUDE || magnitude < SMALLEST_PLAIN_MAGNITUDE {
-        return Err(CanonicalError::OutOfPlainRange {
-            path: path.to_string(),
-            value: v,
-        });
-    }
-    // A whole number prints as an integer whatever Rust type it arrived in.
-    // This is the `1.0` against `1` trap, and it is the single most likely way
-    // for the two languages to produce different digests over identical data.
-    if v.fract() == 0.0 && magnitude <= MAX_SAFE_INTEGER as f64 {
-        return Ok(format!("{}", v as i64));
-    }
-    // Rust's `Display` for `f64` is the shortest decimal that round-trips and
-    // never uses exponent notation, which inside the range checked above is the
-    // same digit string `Number.prototype.toString` produces.
-    let formatted = format!("{v}");
-    debug_assert!(
-        !formatted.contains(['e', 'E']),
-        "Rust's float Display produced exponent notation for {v}, which the range check \
-         above was supposed to make impossible"
-    );
-    Ok(formatted)
+    let sign = if negative { "-" } else { "" };
+    Ok(if fraction_digits.is_empty() {
+        format!("{sign}{integer_digits}")
+    } else {
+        format!("{sign}{integer_digits}.{fraction_digits}")
+    })
 }
 
 /// A string as `JSON.stringify` would write it.
@@ -294,13 +800,52 @@ fn canonical_string(s: &str) -> String {
     out
 }
 
+/// The canonical JSON string for archived text.
+///
+/// This is the one canonicaliser. Everything else in this module goes through
+/// it, so there is no second implementation to drift.
+pub fn canonical_json_from_text(text: &str) -> Result<String, CanonicalError> {
+    RawJson::parse(text)?.canonical()
+}
+
+/// `sha256:<64 lowercase hex>` over the UTF-8 bytes of the canonical form.
+pub fn digest_from_text(text: &str) -> Result<String, CanonicalError> {
+    Ok(format!(
+        "sha256:{}",
+        sha256_hex(canonical_json_from_text(text)?.as_bytes())
+    ))
+}
+
+/// The canonical JSON string for a value built in memory.
+///
+/// Correct for a `Value` the caller **constructed**, and not for one it parsed.
+/// Serialising and re-canonicalising recovers the producer's own number tokens
+/// when the floats came from the producer; when the `Value` came out of
+/// `from_str` the damage was done before this was called, and the right entry
+/// point is [`canonical_json_from_text`] on the bytes.
+pub fn canonical_json(value: &Value) -> Result<String, CanonicalError> {
+    canonical_json_from_text(&serde_json::to_string(value).map_err(|err| {
+        CanonicalError::Malformed {
+            detail: err.to_string(),
+        }
+    })?)
+}
+
+/// `sha256:` over [`canonical_json`]. Same caveat about parsed values.
+pub fn digest(value: &Value) -> Result<String, CanonicalError> {
+    Ok(format!(
+        "sha256:{}",
+        sha256_hex(canonical_json(value)?.as_bytes())
+    ))
+}
+
 /// The four digests a sealed storage document carries.
 ///
-/// Four rather than one so `--verify` can say *what* moved. A single
-/// whole-file hash tells a reader that something changed and leaves them to
-/// diff 480 lines of numbers to find out what; these four turn that into "the
-/// cells moved and the runner did not", which is the difference between a
-/// re-measured sweep and a tampered-with one.
+/// Four rather than one so `--verify` can say *what* moved. A single whole-file
+/// hash tells a reader that something changed and leaves them to diff 480 lines
+/// of numbers to find out what; these four turn that into "the cells moved and
+/// the runner did not", which is the difference between a re-measured sweep and
+/// a tampered-with one.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Digests {
     /// Over `cells`.
@@ -313,8 +858,7 @@ pub struct Digests {
     pub document: String,
 }
 
-/// The blocks, in the order [`Digests`] declares them, paired with the
-/// top-level document key each one covers.
+/// The three block digests, paired with the top-level key each one covers.
 ///
 /// `document` is the odd one out and is handled separately, because it is not a
 /// key but the whole thing minus two.
@@ -324,44 +868,59 @@ const BLOCKS: [(&str, &str); 3] = [
     ("measurements", "measurement"),
 ];
 
-/// Compute all four digests over `doc`.
+/// Compute all four digests from a document's own bytes.
 ///
-/// A block that is absent from the document still gets a digest, over JSON
-/// `null`. That is deliberate: a document that lost its `runners` block
-/// entirely must not produce the same `runners` digest as one that never had
-/// the key, and a missing block is the aggregator's business to refuse, not
-/// this function's business to paper over.
-pub fn compute_digests(doc: &Value) -> Result<Digests, CanonicalError> {
+/// A block that is absent still gets a digest, over JSON `null`. That is
+/// deliberate: a document that lost its `runners` block entirely must not
+/// produce the same `runners` digest as one that never had the key, and a
+/// missing block is the aggregator's business to refuse rather than this
+/// function's business to paper over.
+pub fn compute_digests_raw(doc: &RawJson) -> Result<Digests, CanonicalError> {
     let mut computed = Vec::with_capacity(3);
     for (_, key) in BLOCKS {
-        computed.push(digest(doc.get(key).unwrap_or(&Value::Null))?);
+        let block = doc.get(key).cloned().unwrap_or(RawJson::Null);
+        computed.push(format!(
+            "sha256:{}",
+            sha256_hex(block.canonical()?.as_bytes())
+        ));
     }
+    let evidence = document_evidence(doc);
     Ok(Digests {
         cells: computed[0].clone(),
         runners: computed[1].clone(),
         measurements: computed[2].clone(),
-        document: digest(&document_evidence(doc))?,
+        document: format!("sha256:{}", sha256_hex(evidence.canonical()?.as_bytes())),
     })
+}
+
+/// [`compute_digests_raw`] from text.
+pub fn compute_digests_from_text(text: &str) -> Result<Digests, CanonicalError> {
+    compute_digests_raw(&RawJson::parse(text)?)
+}
+
+/// [`compute_digests_raw`] from a value built in memory. Same caveat as
+/// [`canonical_json`] about values that were parsed.
+pub fn compute_digests(value: &Value) -> Result<Digests, CanonicalError> {
+    compute_digests_from_text(&serde_json::to_string(value).map_err(|err| {
+        CanonicalError::Malformed {
+            detail: err.to_string(),
+        }
+    })?)
 }
 
 /// The document as the `document` digest sees it: everything except `integrity`
 /// and `combinedAt`.
 ///
 /// Sealing has to be idempotent. If the digest covered `integrity` then writing
-/// the digest into the document would change the digest, and `--verify` would
-/// be a check that can never pass. `combinedAt` comes out for causl's reason:
-/// two aggregations of the same evidence differ only by a wall clock, and a
-/// digest that moved because time passed is a refusal nobody can clear.
-pub fn document_evidence(doc: &Value) -> Value {
-    match doc {
-        Value::Object(map) => {
-            let mut out = map.clone();
-            out.remove("integrity");
-            out.remove("combinedAt");
-            Value::Object(out)
-        }
-        other => other.clone(),
-    }
+/// the digest into the document would change the digest, and `--verify` would be
+/// a check that can never pass. `combinedAt` comes out for causl's reason: two
+/// aggregations of the same evidence differ only by a wall clock, and a digest
+/// that moved because time passed is a refusal nobody can clear.
+pub fn document_evidence(doc: &RawJson) -> RawJson {
+    let mut out = doc.clone();
+    out.remove("integrity");
+    out.remove("combinedAt");
+    out
 }
 
 /// What `--verify` found.
@@ -435,19 +994,34 @@ impl VerifyReport {
     }
 }
 
-/// Recompute all four digests and compare each against what the document
-/// claims.
+/// The digests a document claims, read straight out of its own bytes.
+fn stated_digests(doc: &RawJson) -> Option<Digests> {
+    let integrity = doc.get("integrity")?;
+    let field = |name: &str| {
+        integrity
+            .get(name)
+            .and_then(RawJson::as_str)
+            .map(str::to_string)
+    };
+    Some(Digests {
+        cells: field("cells")?,
+        runners: field("runners")?,
+        measurements: field("measurements")?,
+        document: field("document")?,
+    })
+}
+
+/// Recompute all four digests from the document's own bytes and compare each
+/// against what the document claims.
 ///
 /// All four, never stopping at the first mismatch: an edit to one sample moves
 /// `cells` and `document` and leaves `runners` and `measurements` alone, and
 /// that pattern is the finding. Reporting only the first difference would say
-/// "cells moved" and throw away the half of the answer that says the
-/// environment did not.
-pub fn verify(doc: &Value) -> Result<VerifyReport, CanonicalError> {
-    let recomputed = compute_digests(doc)?;
-    let stated: Option<Digests> = doc
-        .get("integrity")
-        .and_then(|i| serde_json::from_value(i.clone()).ok());
+/// "cells moved" and throw away the half of the answer that says the environment
+/// did not.
+pub fn verify_raw(doc: &RawJson) -> Result<VerifyReport, CanonicalError> {
+    let recomputed = compute_digests_raw(doc)?;
+    let stated = stated_digests(doc);
 
     let mut moved = Vec::new();
     let mut unchanged = Vec::new();
@@ -477,4 +1051,13 @@ pub fn verify(doc: &Value) -> Result<VerifyReport, CanonicalError> {
         moved,
         unchanged,
     })
+}
+
+/// Verify an archived document from the bytes it is stored as.
+///
+/// This is the entry point everything that reads a file should use. Parsing the
+/// file into floats first and verifying those is the bug this module's header
+/// describes, and there is deliberately no function here that will do it.
+pub fn verify_text(text: &str) -> Result<VerifyReport, CanonicalError> {
+    verify_raw(&RawJson::parse(text)?)
 }
