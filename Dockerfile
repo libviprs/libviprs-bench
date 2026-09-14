@@ -96,11 +96,11 @@ COPY libviprs/ libviprs/
 COPY libviprs-bench/ libviprs-bench/
 
 WORKDIR /src/libviprs-bench
-RUN cargo fetch
+RUN cargo fetch --locked
 
 # Default features only. The `storage` family must build without `libvips`,
 # and this is where that is enforced rather than asserted.
-RUN cargo build --release --bin storage
+RUN cargo build --locked --release --bin storage
 
 CMD ["cargo", "run", "--release", "--bin", "storage", "--", \
      "--family", "storage", "--profile", "ci"]
@@ -172,10 +172,10 @@ COPY libviprs/ libviprs/
 COPY libviprs-bench/ libviprs-bench/
 
 WORKDIR /src/libviprs-bench
-RUN cargo fetch
+RUN cargo fetch --locked
 # Default features. If this line ever needs a `--features`, the family split has
 # been undone.
-RUN cargo build --release --bin scalability --bin report
+RUN cargo build --locked --release --bin scalability --bin report
 
 CMD ["cargo", "run", "--release", "--bin", "scalability", "--", "--family", "engines"]
 
@@ -294,13 +294,13 @@ COPY libviprs-bench/ libviprs-bench/
 
 # Fetch dependencies
 WORKDIR /src/libviprs
-RUN cargo fetch
+RUN cargo fetch --locked
 
 WORKDIR /src/libviprs-bench
-RUN cargo fetch
+RUN cargo fetch --locked
 
 # Build in release mode with libvips FFI feature for in-process comparison
-RUN cargo build --release --features libvips --bin scalability --bin report
+RUN cargo build --locked --release --features libvips --bin scalability --bin report
 
 # Default: run the scalability benchmark over the comparison family
 CMD ["cargo", "run", "--release", "--features", "libvips", "--bin", "scalability", "--", "--family", "vips"]

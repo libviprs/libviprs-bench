@@ -116,7 +116,10 @@ fn the_full_profile_walks_the_brink_cell_and_the_noise_source() {
     assert!(
         cells.iter().any(|c| c.source == Source::Noise),
         "the full profile walks only {:?}, so compressibility is still not an axis",
-        cells.iter().map(|c| c.source.as_str()).collect::<BTreeSet<_>>()
+        cells
+            .iter()
+            .map(|c| c.source.as_str())
+            .collect::<BTreeSet<_>>()
     );
     assert!(
         cells.iter().any(|c| c.source == Source::Gradient),
@@ -267,7 +270,10 @@ fn a_sweep_publishes_the_declared_models_with_their_parameters() {
     for entry in &doc.modelled {
         assert_eq!(entry.unit, "ms");
         let model = entry.model.as_object().unwrap_or_else(|| {
-            panic!("{} publishes no model block, so its parameters are invisible", entry.name)
+            panic!(
+                "{} publishes no model block, so its parameters are invisible",
+                entry.name
+            )
         });
         assert!(
             !model.is_empty(),
@@ -298,7 +304,10 @@ fn the_ci_profile_stays_the_size_it_says_it_is() {
     // Whatever ci walks has to be a subset of what the registry has.
     let present: BTreeSet<String> = registry().iter().map(|s| s.name()).collect();
     for name in &names {
-        assert!(present.contains(name), "ci declares `{name}` and the registry has no such scenario");
+        assert!(
+            present.contains(name),
+            "ci declares `{name}` and the registry has no such scenario"
+        );
     }
     let _ = Cell::new(1, 1, 1, Source::Gradient, 0);
 }

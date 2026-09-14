@@ -86,7 +86,9 @@ fn measure_once(spec: &str) -> Result<String, String> {
     // child. The open is inside the timed section because the open is what this
     // scenario prices.
     let cell = Cell::new(1, 1, 1, super::super::cells::Source::Gradient, 0);
-    let plan = cell.plan().ok_or_else(|| "a one-tile plan is invalid".to_string())?;
+    let plan = cell
+        .plan()
+        .ok_or_else(|| "a one-tile plan is invalid".to_string())?;
     let readers = FileReaderFactory::new(Backend::PmTiles, &archive, &plan);
     let at = Instant::now();
     let reader = readers.fresh()?;

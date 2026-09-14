@@ -340,11 +340,31 @@ pub struct Digests {
 ///
 /// `document` is the odd one out and is handled separately, because it is not a
 /// key but the whole thing minus two.
+///
+/// The two names differ on purpose and it is worth saying why, because getting
+/// it wrong cost this module one of its four digests. The *digest* names are
+/// causl's, from `integrity.{cells, runners, measurements, document}`, and they
+/// are plural. The *document* field is `runner`, singular, a constant string:
+/// `SUITE-PLAN.md` §5.4 defines it as `runner: "libviprs-storage"` and there is
+/// one runner in this family, not five. The entry used to read
+/// `("runners", "runners")`, so `compute_digests` looked up a key no document
+/// has, fell back to `Value::Null`, and produced
+/// `sha256:74234e98...` -- the hash of the four bytes `null` -- for every
+/// document this producer will ever write. In the module whose whole purpose is
+/// to say which block moved, one of the four could not move.
+/// `every_digested_block_is_a_key_a_real_document_has` is the guard that makes
+/// the class of mistake impossible rather than just fixing this instance.
 const BLOCKS: [(&str, &str); 3] = [
     ("cells", "cells"),
-    ("runners", "runners"),
+    ("runners", "runner"),
     ("measurements", "measurement"),
 ];
+
+/// The document keys the three block digests cover, for anything that needs to
+/// check they exist.
+pub fn digested_keys() -> [&'static str; 3] {
+    [BLOCKS[0].1, BLOCKS[1].1, BLOCKS[2].1]
+}
 
 /// Compute all four digests over `doc`.
 ///
@@ -493,7 +513,10 @@ pub fn verify(doc: &Value) -> Result<VerifyReport, CanonicalError> {
     }
 
     Ok(VerifyReport {
-        malformed_integrity: doc.get("integrity").is_some() && stated.is_none(),
+        // Present AND not null. An unsealed document carries `"integrity": null`
+        // and has simply not been sealed yet; only a non-null block that will not
+        // parse was sealed by something that disagrees about what a seal is.
+        malformed_integrity: doc.get("integrity").is_some_and(|i| !i.is_null()) && stated.is_none(),
         recomputed,
         stated,
         moved,

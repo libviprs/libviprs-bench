@@ -127,10 +127,11 @@ fn print_usage() {
 
 /// Read a document as the bytes it is stored as.
 ///
-/// Bytes rather than a parsed value, and that is the whole of the fix for the
-/// digest hole: `serde_json`'s number reader is not correctly rounded, so a
-/// document parsed and re-canonicalised does not digest to what its producer
-/// wrote. Every mode below works from this string.
+/// Bytes rather than a parsed value, because every mode below needs the text:
+/// `--verify` digests it and `--archive` seals it. Parsing it is sound because
+/// `Cargo.toml` turns on serde_json's `float_roundtrip`; without that the reader
+/// is not correctly rounded and a re-parsed document does not digest to what its
+/// producer wrote. `the_json_reader_is_correctly_rounded` is the canary.
 fn read_document(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path)
         .map_err(|err| format!("{} could not be read: {err}", path.display()))

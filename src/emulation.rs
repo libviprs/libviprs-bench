@@ -300,10 +300,12 @@ fn maps_evidence() -> Evidence {
     match std::fs::read_to_string("/proc/self/maps") {
         Ok(text) => {
             // A maps line is `addr perms offset dev inode [path]`; the path is
-            // optional and may contain spaces, so take everything from the sixth
-            // whitespace-separated field on rather than splitting on every space.
+            // optional and may contain spaces, so take everything after the fifth
+            // field rather than the sixth field alone. `nth(5)` took only the
+            // sixth, so a translator under a path with a space in it read as
+            // native: a confident wrong answer rather than an inconclusive one.
             for line in text.lines() {
-                let path = line.split_whitespace().nth(5).unwrap_or("");
+                let path = maps_path(line);
                 if !path.is_empty() && path_is_translator(path) {
                     return Evidence {
                         source: "proc-self-maps",
@@ -327,6 +329,23 @@ fn maps_evidence() -> Evidence {
             detail: format!("/proc/self/maps is unreadable ({err}), so nothing was observed here"),
         },
     }
+}
+
+/// Everything after the fifth whitespace-separated field of a `/proc/*/maps`
+/// line, which is the mapped path and may itself contain spaces.
+///
+/// Returns `""` for a line with no path, which is the anonymous-mapping case and
+/// most of the file.
+fn maps_path(line: &str) -> &str {
+    let mut rest = line;
+    for _ in 0..5 {
+        rest = rest.trim_start();
+        match rest.find(char::is_whitespace) {
+            Some(i) => rest = &rest[i..],
+            None => return "",
+        }
+    }
+    rest.trim()
 }
 
 /// `/proc/sys/fs/binfmt_misc`, which on the machine this was written for is
@@ -362,22 +381,39 @@ fn binfmt_evidence(binary_arch: &str) -> Evidence {
     }
     names.sort();
 
+    classify_binfmt(&names, binary_arch, |name| {
+        std::fs::read_to_string(dir.join(name))
+            .map(|s| s.lines().any(|l| l.trim() == "enabled"))
+            .unwrap_or(false)
+    })
+}
+
+/// What a `binfmt_misc` listing means, separated from reading it.
+///
+/// Pure so the cases can be driven rather than waited for. The empty listing is
+/// the one that matters and the one the filesystem-reading version could not be
+/// made to produce on demand: a test against the real directory only exercised
+/// whatever the host happened to have, so `an_empty_binfmt_misc_directory_is_not
+/// _evidence_of_anything` was asserting something no code path could contradict.
+///
+/// `enabled` is a callback rather than a second listing because reading a
+/// handler's own file is the only part that needs the filesystem.
+pub fn classify_binfmt(
+    names: &[String],
+    binary_arch: &str,
+    enabled: impl Fn(&str) -> bool,
+) -> Evidence {
     let wanted = format!("qemu-{binary_arch}");
-    for name in &names {
-        if name == "rosetta" || *name == wanted {
-            let enabled = std::fs::read_to_string(dir.join(name))
-                .map(|s| s.lines().any(|l| l.trim() == "enabled"))
-                .unwrap_or(false);
-            if enabled {
-                return Evidence {
-                    source: "binfmt-misc",
-                    verdict: EvidenceVerdict::Emulated,
-                    detail: format!(
-                        "an enabled binfmt_misc handler '{name}' is registered for this \
-                         binary's own architecture ({binary_arch})"
-                    ),
-                };
-            }
+    for name in names {
+        if (name == "rosetta" || *name == wanted) && enabled(name) {
+            return Evidence {
+                source: "binfmt-misc",
+                verdict: EvidenceVerdict::Emulated,
+                detail: format!(
+                    "an enabled binfmt_misc handler '{name}' is registered for this \
+                     binary's own architecture ({binary_arch})"
+                ),
+            };
         }
     }
 
@@ -517,14 +553,61 @@ mod tests {
     // RED against a probe that treats an empty binfmt_misc directory as proof of
     // a native run. Inside Docker Desktop the directory is empty on BOTH
     // platforms, so reading empty as native returns `false` for a Rosetta run.
+    //
+    // Driven through the pure classifier rather than the real directory. Against
+    // the filesystem this could not fail: the verdict came from whatever the host
+    // happened to have, `binfmt_evidence` contained no `Native` construction at
+    // all, and on this machine the directory is empty so the interesting case was
+    // never even reached. Now the listing is an argument.
     #[test]
     fn an_empty_binfmt_misc_directory_is_not_evidence_of_anything() {
-        let e = binfmt_evidence("x86_64");
-        assert_ne!(
-            e.verdict,
-            EvidenceVerdict::Native,
-            "binfmt_misc must never return a native verdict, it produced: {e:?}"
+        let empty = classify_binfmt(&[], "x86_64", |_| true);
+        assert_eq!(empty.verdict, EvidenceVerdict::Inconclusive, "{empty:?}");
+        assert!(empty.detail.contains("lists no handlers"), "{empty:?}");
+    }
+
+    // RED against a classifier that reads any registered handler as emulation.
+    // A native x86_64 box with `qemu-aarch64` registered for cross-building is
+    // not being translated, and saying it is would refuse every such host.
+    #[test]
+    fn a_handler_for_another_architecture_is_not_evidence_either() {
+        let names = vec!["qemu-aarch64".to_string(), "qemu-riscv64".to_string()];
+        let other = classify_binfmt(&names, "x86_64", |_| true);
+        assert_eq!(other.verdict, EvidenceVerdict::Inconclusive, "{other:?}");
+        assert!(
+            other.detail.contains("none of them registered"),
+            "{other:?}"
         );
+
+        // Its own architecture, enabled, is the one that counts.
+        let own = classify_binfmt(&["qemu-x86_64".to_string()], "x86_64", |_| true);
+        assert_eq!(own.verdict, EvidenceVerdict::Emulated, "{own:?}");
+
+        // Registered but disabled is not a handler that would fire.
+        let off = classify_binfmt(&["qemu-x86_64".to_string()], "x86_64", |_| false);
+        assert_eq!(off.verdict, EvidenceVerdict::Inconclusive, "{off:?}");
+
+        // And Rosetta counts whatever the architecture is called.
+        let rosetta = classify_binfmt(&["rosetta".to_string()], "x86_64", |_| true);
+        assert_eq!(rosetta.verdict, EvidenceVerdict::Emulated, "{rosetta:?}");
+    }
+
+    // RED against `nth(5)`, which takes the sixth field alone and so loses a
+    // mapped path that contains a space. Rosetta's and qemu's real paths have
+    // none, which is why this was latent rather than visible, but a probe that
+    // answers "native" because it could not read the path is the confident wrong
+    // answer this module exists to avoid.
+    #[test]
+    fn a_mapped_path_with_a_space_is_still_read() {
+        let line = "800000000000-800000026000 r--p 00000000 00:32 2    /run/my rosetta/rosetta";
+        assert_eq!(maps_path(line), "/run/my rosetta/rosetta");
+        assert!(path_is_translator(maps_path(line)));
+
+        // The ordinary case, and the anonymous mapping that has no path at all.
+        let plain = "7fffff5bf000-7fffff5e4000 rw-p 00000000 00:00 0 ";
+        assert_eq!(maps_path(plain), "");
+        let named = "555555554000-555555556000 r--p 00000000 00:86 806476   /usr/bin/cat";
+        assert_eq!(maps_path(named), "/usr/bin/cat");
     }
 
     // RED against collapsing the third state into `false`. `Unknown` has to

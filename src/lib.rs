@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 pub mod emulation;
 pub mod family;
 pub mod flame;
+/// How to read `git status` run twice, shared with `build.rs` by `include!`.
+pub mod git_trap;
 pub mod harness;
 pub mod pin_check;
 pub mod provenance;
@@ -515,7 +517,15 @@ pub(crate) fn skip_on_engine_fault(
 /// Build the on-disk PNG sink used by every libviprs engine, rooted under a
 /// fresh temp directory. Mirrors the libvips `dzsave` output: real files, same
 /// [`BENCH_TILE_FORMAT`] codec, DeepZoom layout.
-fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
+///
+/// `pub`, not `pub(crate)`, because `src/scalability.rs` is a binary and so a
+/// separate crate: `pub(crate)` cannot reach it. That matters more than it
+/// looks. `tests/encoding_claim.rs` drives this function, but the scalability
+/// sweep built its own sink three times with a hardcoded `TileFormat::Png`
+/// outside [`BENCH_TILE_FORMAT`], so changing one of those literals left the
+/// encoding test green while the sweep behind the published tables wrote
+/// unencoded tiles. One sink, one constant, one thing to change.
+pub fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
     FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(BENCH_TILE_FORMAT)
 }
 

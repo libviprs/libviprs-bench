@@ -378,43 +378,68 @@ fn check_invocation_and_reps(doc: &Value, refusals: &mut Vec<Refusal>) {
         )),
     }
 
-    // Resolved reps against every cell's reps. This is the cheapest possible
-    // check on the most expensive possible mistake: a sweep that says it took
-    // seven repetitions per cell and has a cell that took one.
-    let Some(resolved_reps) =
-        at(doc, "provenance.invocation.resolved.reps").and_then(Value::as_u64)
-    else {
-        refusals.push(refuse(
+    // Resolved reps against every cell's reps. The cheapest possible check on
+    // the most expensive possible mistake: a sweep that says it took seven
+    // repetitions per cell and has a cell that took one.
+    //
+    // Repetitions are declared per scenario KIND, `{generate, read}`, because a
+    // generate pass costs orders of magnitude more than a read and the plan
+    // gives them different counts. This rule used to read `resolved.reps` as a
+    // single integer, which is the shape the old hand-written test fixture had
+    // and a shape the producer has never written; against a real document it
+    // refused every run for "there is nothing to check the cells against".
+    let resolved = at(doc, "provenance.invocation.resolved.reps");
+    let declared = at(doc, "measurement.reps");
+    match (resolved, declared) {
+        (Some(r), Some(d)) if r == d => {}
+        (Some(r), Some(d)) => refusals.push(refuse(
             "reps-disagree",
             format!(
-                "resolved.reps is {}, so there is nothing to check the cells against",
-                describe(at(doc, "provenance.invocation.resolved.reps"))
+                "the invocation resolved to {r} repetitions but the measurement block \
+                 declares {d}; a document that cannot agree with itself about how many \
+                 times it measured is not one to average in"
             ),
-        ));
-        return;
-    };
-    let disagreeing: Vec<String> = cells(doc)
+        )),
+        (r, d) => refusals.push(refuse(
+            "reps-disagree",
+            format!(
+                "resolved.reps is {} and measurement.reps is {}, so there is nothing to \
+                 check the cells against",
+                describe(r),
+                describe(d)
+            ),
+        )),
+    }
+
+    // Every cell against its OWN declared floor, not against a kind taxonomy.
+    //
+    // The first version of this compared each cell to the run's `{generate,
+    // read}` counts, picking the kind from the scenario name. It refused a
+    // correct document: `requests` is a counting scenario rather than a timing
+    // one, and it declares one repetition because the number of requests a
+    // lookup makes is deterministic. A rule that does not know about counting
+    // scenarios calls that a truncated sweep.
+    //
+    // `minReps` is per cell and comes from the scenario itself, so `reps >=
+    // minReps` needs no taxonomy and still catches the failure the rule exists
+    // for: a sweep that declares seven repetitions puts seven into every timing
+    // cell's floor, and a cell that managed one is then visibly short.
+    let short: Vec<String> = cells(doc)
         .iter()
         .enumerate()
         .filter_map(|(i, cell)| {
-            let cell_reps = cell.get("reps").and_then(Value::as_u64);
-            (cell_reps != Some(resolved_reps)).then(|| {
+            let reps = cell.get("reps").and_then(Value::as_u64)?;
+            let floor = cell.get("minReps").and_then(Value::as_u64)?;
+            (reps < floor).then(|| {
                 format!(
-                    "{} has reps {}",
-                    cell_name(i, cell),
-                    describe(cell.get("reps"))
+                    "{} took {reps} repetitions and declares a floor of {floor}",
+                    cell_name(i, cell)
                 )
             })
         })
         .collect();
-    if !disagreeing.is_empty() {
-        refusals.push(refuse(
-            "reps-disagree",
-            format!(
-                "the invocation resolved to {resolved_reps} repetitions per cell but {}",
-                disagreeing.join("; ")
-            ),
-        ));
+    if !short.is_empty() {
+        refusals.push(refuse("reps-disagree", short.join("; ")));
     }
 }
 
@@ -458,7 +483,15 @@ fn check_cells(doc: &Value, refusals: &mut Vec<Refusal>) {
 
 /// If the document carries digests, they have to still hold.
 fn integrity_refusals(raw: &Value) -> Vec<Refusal> {
-    if raw.get("integrity").is_none() {
+    // `is_none_or(is_null)`, not `is_none()`. `Value::get` on a key that is
+    // present and null returns `Some(Value::Null)`, and canonicalisation rule 2
+    // forbids `skip_serializing_if`, so EVERY unsealed document this producer
+    // writes carries `"integrity": null`. With `is_none()` they all fell through
+    // into `verify`, `from_value::<Digests>(Null)` failed, and the operator was
+    // told the document "was sealed by something that does not agree with this
+    // one about what a seal is" -- a sentence that sends someone hunting a rogue
+    // sealer that does not exist.
+    if raw.get("integrity").is_none_or(Value::is_null) {
         // An unsealed document is the ordinary input to `--archive`: sealing is
         // what archiving does. It is only a refusal under `--verify`, which is
         // the aggregator's other mode.
@@ -603,7 +636,7 @@ fn host8(doc: &Value) -> String {
 /// A sealed document: the bytes to file, and the four digests they carry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sealed {
-    /// The exact text to write, numbers verbatim as the producer wrote them.
+    /// The exact text to write.
     pub text: String,
     /// The four digests, over the producer's own bytes.
     pub digests: Digests,
@@ -752,6 +785,12 @@ pub fn archive_text(text: &str, root: &Path) -> Result<ArchiveEntry, ArchiveErro
             .unwrap_or("")
             .to_string();
         if existing_digest == sealed.digests.document {
+            // The index is rebuilt even though the document was already filed.
+            // `update_index` is a no-op when the row is there, and running it
+            // here is what makes a crash between the write and the index
+            // repairable: re-archiving the same document puts the row back
+            // instead of reporting "already archived" and leaving it missing.
+            update_index(root, &run_id, &sealed.digests.document, &value)?;
             return Ok(ArchiveEntry {
                 run_id,
                 path,
@@ -766,7 +805,7 @@ pub fn archive_text(text: &str, root: &Path) -> Result<ArchiveEntry, ArchiveErro
         });
     }
 
-    std::fs::write(&path, &sealed.text)?;
+    write_atomically(&path, &sealed.text)?;
     update_index(root, &run_id, &sealed.digests.document, &value)?;
 
     Ok(ArchiveEntry {
@@ -782,6 +821,32 @@ pub fn archive(doc: &Value, root: &Path) -> Result<ArchiveEntry, ArchiveError> {
     let text =
         serde_json::to_string(doc).map_err(|e| ArchiveError::Io(std::io::Error::other(e)))?;
     archive_text(&text, root)
+}
+
+/// Write a file by writing a temporary one beside it and renaming.
+///
+/// `rename` within a directory is atomic on every filesystem this runs on, so a
+/// reader sees either the old file or the whole new one. A plain `write` can be
+/// interrupted, and the failure mode is nasty in a way the error message hides:
+/// the truncated file stays there, `parse_document` fails on it forever, and the
+/// operator is told "the document is not JSON" about a document that was fine
+/// when they handed it over.
+pub fn write_atomically(path: &Path, text: &str) -> Result<(), ArchiveError> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    std::fs::write(&temp, text)?;
+    match std::fs::rename(&temp, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            // Leaving a stray temp file beside the archive would be its own
+            // small mess, and it is this function's to clean up.
+            let _ = std::fs::remove_file(&temp);
+            Err(ArchiveError::Io(err))
+        }
+    }
 }
 
 /// Add one row to the archive index, or leave it alone if the row is there.
@@ -820,6 +885,6 @@ fn update_index(
     });
     let body = serde_json::to_string_pretty(&rows)
         .map_err(|e| ArchiveError::Io(std::io::Error::other(e)))?;
-    std::fs::write(&index_path, format!("{body}\n"))?;
+    write_atomically(&index_path, &format!("{body}\n"))?;
     Ok(())
 }

@@ -63,7 +63,7 @@ pub const DOCUMENT_FIELDS: [&str; 14] = [
 ];
 
 /// Every key a cell carries, in order.
-pub const CELL_FIELDS: [&str; 32] = [
+pub const CELL_FIELDS: [&str; 34] = [
     "backend",
     "scale",
     "source",
@@ -96,6 +96,8 @@ pub const CELL_FIELDS: [&str; 32] = [
     "lowConfidenceReasons",
     "machineLoad",
     "invariants",
+    "storageAttested",
+    "dirty",
 ];
 
 // ---------------------------------------------------------------------------
@@ -374,6 +376,27 @@ pub struct DocumentCell {
     #[serde(rename = "machineLoad")]
     pub machine_load: MachineLoad,
     pub invariants: InvariantBlock,
+    /// Whether the backend this cell names was OBSERVED to have produced the
+    /// archive it was measured against, and to agree with the other backend
+    /// about what a tile contains.
+    ///
+    /// Filled by [`crate::storage::attest`] from a walk of the real artefact,
+    /// never from anything the cell says about itself. `None` means nothing
+    /// looked, which the aggregator refuses on an `ok` cell exactly as it
+    /// refuses `false`: an unobserved cell is a label, not a measurement
+    /// (libviprs-bench #66).
+    ///
+    /// No `skip_serializing_if`, here or anywhere else in this document. An
+    /// absent key and an explicit `null` are different documents with different
+    /// digests, and a field Rust drops where JavaScript writes `null` is the
+    /// divergence K2.2's cross-language test would find long after both sides
+    /// had shipped archives. `storage::integrity`'s header has the rule.
+    #[serde(rename = "storageAttested")]
+    pub storage_attested: Option<bool>,
+    /// Stamped `true` when the run was archived from a dirty tree under
+    /// `--allow-dirty`, so the caveat travels with every number rather than
+    /// sitting in a header nobody reads when they quote one cell.
+    pub dirty: Option<bool>,
 }
 
 /// What a cell needs to become a row.
@@ -472,6 +495,12 @@ impl DocumentCell {
             machine_load: report.machine_load,
             invariants: report.invariants,
             samples: report.samples,
+            // Nothing is attested at construction. `run_sweep` stamps this from
+            // `attest_artefacts`, which walks the real archive; leaving it
+            // `None` here is what makes an unobserved cell refuse rather than
+            // quietly pass.
+            storage_attested: None,
+            dirty: None,
         }
     }
 }

@@ -24,130 +24,142 @@ use libviprs_bench::storage::artefact_digest;
 use libviprs_bench::storage::attest::{
     EquivalenceSample, ObservedArchive, Regime, RootEntry, attest,
 };
+use libviprs_bench::storage::cells::{Backend, Cell, Profile, Source};
+use libviprs_bench::storage::document::{
+    CellReport, Document, DocumentCell, InvariantBlock, MachineLoad,
+};
 use libviprs_bench::storage::integrity::{self, CanonicalError};
+use libviprs_bench::storage::scenarios::{Direction, Isolation, MetricSpec, Outcome, Unit, Warmup};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-/// A document that is admissible, so that every refusal test can break exactly
-/// one thing and know that is what it broke.
+/// A document that is admissible, built from the type the producer writes.
 ///
-/// Built by hand rather than captured, because a fixture taken from a real run
-/// on this machine would be refused for being emulated and every test below
-/// would pass for the wrong reason.
+/// It used to be hand-written JSON, and that is how the `runners` digest went
+/// unnoticed for a whole lane. The fixture carried a `runners` array because
+/// `BLOCKS` looked for one; the product emits `runner`, singular, and never had
+/// the key at all. So `compute_digests` hashed `Value::Null` on every real
+/// document while the tests hashed a real block, and
+/// `the_four_digests_say_which_block_moved` passed for a reason it did not mean.
+/// The fixture also had `"reps": 7` where `Document` emits
+/// `{"generate": 7, "read": 20}`, so the whole admit suite was green against a
+/// shape that does not exist.
+///
+/// Now the shape comes from `Document::to_json()` and only the values are the
+/// test's. A field that moves in `document.rs` moves here, and a key the
+/// aggregator looks for that the producer does not write is a failure rather
+/// than a coincidence.
 fn clean_document() -> Value {
+    let mut doc = Document::new(Profile::Ci, "2026-09-13T21:45:00.000Z".to_string());
+    doc.finished_at = Some("2026-09-13T22:05:11.000Z".to_string());
+    doc.push(fixture_cell("pmtiles", 21851));
+    doc.push(fixture_cell("directory", 21851));
+    doc.rebuild_invariant_table();
+    doc.provenance = Some(fixture_provenance(&doc));
+    let text = doc.to_json();
+    serde_json::from_str(&text).expect("the document the producer writes is JSON")
+}
+
+/// One admissible cell, with the two fields the aggregator reads set the way an
+/// observed cell has them.
+fn fixture_cell(backend: &str, scale: u64) -> DocumentCell {
+    let mut cell = sample_cell(backend, scale);
+    // Attested because the fixture stands for a cell that WAS observed. Nothing
+    // in the product sets this from a label; `run_sweep` sets it from
+    // `attest_artefacts`, and the tests that matter drive that end to end.
+    cell.storage_attested = Some(true);
+    cell.dirty = Some(false);
+    cell
+}
+
+/// The provenance block, shaped as `Provenance::to_storage_block` shapes it, so
+/// the refusal tests below poke at the same keys the producer writes.
+fn fixture_provenance(doc: &Document) -> Value {
     json!({
-        "schemaVersion": 1,
-        "family": "libviprs-storage",
-        "runner": "libviprs-storage",
-        "startedAt": "2026-09-13T21:45:00.000Z",
-        "finishedAt": "2026-09-13T22:05:11.000Z",
-        "measurement": {
-            "unit": "fresh-process-per-cell",
-            "isolation": "subprocess-per-cell",
-            "reps": 7,
-            "minReps": 5,
-            "seed": 1_589_281_650_671i64,
-            "clock": "std::time::Instant",
-            "tieBandPct": 3,
-            "covLowConfidence": 0.15,
-            "freshProcessPerCell": true
-        },
-        "runners": [
-            {"name": "libviprs-storage", "version": "0.3.0"}
-        ],
-        "provenance": {
-            "library": {
-                "name": "libviprs",
-                "version": "0.4.0",
-                "commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6",
-                "dirty": false,
-                "gitNote": "clean read"
-            },
-            "commit": "c2c3255aa11bb22cc33dd44ee55ff6600112233",
+        "library": {
+            "name": "libviprs",
+            "version": "0.4.0",
+            "commit": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6",
             "dirty": false,
             "gitNote": "clean read",
-            "allowDirty": false,
-            "emulated": false,
-            "emulationEvidence": [
-                {
-                    "source": "proc-self-maps",
-                    "verdict": "native",
-                    "detail": "read 23 mappings, none of them a translator"
-                },
-                {
-                    "source": "daemon-arch",
-                    "verdict": "native",
-                    "detail": "the runner says the daemon runs on aarch64, matching this binary"
-                }
-            ],
-            "filesystem": {
-                "scratchDir": "/scratch/storage",
-                "fsType": "ext4",
-                "mountSource": "/dev/vda1",
-                "bindMount": false,
-                "declaredTmpfs": false
-            },
-            "node": {
-                "rustc": "rustc 1.98.1 (48a229cea 2026-09-01)",
-                "cargo": "cargo 1.98.1",
-                "buildProfile": "release",
-                "buildFlags": "lto=thin,codegen-units=1",
-                "rustflags": "-C target-cpu=native",
-                "debugAssertions": false
-            },
-            "os": "linux",
-            "arch": "aarch64",
-            "cpuModel": "Neoverse-N1",
-            "ncpu": 8,
-            "inContainer": true,
-            "cgroupCpuQuota": null,
-            "cgroupMemoryLimit": null,
-            "lockfileHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-            "dependencies": {
-                "libviprs": {"version": "0.4.0", "source": null, "checksum": null}
-            },
-            "invocation": {
-                "argv": ["storage", "--profile", "full"],
-                "command": "storage",
-                "cwd": "/src/libviprs-bench",
-                "env": {"RUSTFLAGS": "-C target-cpu=native"},
-                "resolved": {
-                    "reps": 7,
-                    "scenarios": ["generate", "read_random"],
-                    "scales": [93, 21851]
-                }
-            }
+            "mainCommit": "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6",
+            "mainRelation": "at-main",
+            "commitsBehindMain": 0
         },
-        "cells": [
-            cell("pmtiles", "read_random", 21851, 7),
-            cell("directory", "read_random", 21851, 7)
-        ]
+        "commit": "c2c3255aa11bb22cc33dd44ee55ff6600112233",
+        "dirty": false,
+        "gitNote": "clean read",
+        "allowDirty": false,
+        "emulated": false,
+        "emulationEvidence": [
+            {"source": "proc-self-maps", "verdict": "native",
+             "detail": "read 23 mappings, none of them a translator"}
+        ],
+        "filesystem": {
+            "scratchDir": "/scratch/storage", "fsType": "ext4",
+            "mountSource": "/dev/vda1", "bindMount": false, "declaredTmpfs": false
+        },
+        "node": {
+            "rustc": "rustc 1.98.1", "cargo": "cargo 1.98.1",
+            "buildProfile": "release", "buildFlags": "lto=thin",
+            "rustflags": "", "debugAssertions": false
+        },
+        "os": "linux", "arch": "aarch64", "cpuModel": "Neoverse-N1", "ncpu": 8,
+        "inContainer": true, "cgroupCpuQuota": null, "cgroupMemoryLimit": null,
+        "loadAverage": null, "thermalThrottleCount": null,
+        "lockfileHash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "dependencies": {"libviprs": {"version": "0.4.0", "source": null, "checksum": null}},
+        "invocation": {
+            "argv": ["storage", "--profile", "ci"],
+            "command": "storage",
+            "cwd": "/src/libviprs-bench",
+            "env": {"RUSTFLAGS": null},
+            "resolved": {
+                "profile": "ci",
+                "reps": doc.measurement.reps,
+                "scenarios": ["generate", "read_random"],
+                "scales": [93, 21851]
+            }
+        }
     })
 }
 
-fn cell(backend: &str, scenario: &str, scale: u64, reps: u64) -> Value {
-    json!({
-        "backend": backend,
-        "scenario": scenario,
-        "scale": scale,
-        "reps": reps,
-        "outcome": "ok",
-        "storageAttested": true,
-        "dirty": false,
-        "regime": "leaf",
-        "unit": "us",
-        "samples": [1210.0, 1198.5, 1205.25, 1211.0, 1199.75, 1202.5, 1207.0],
-        "median": 1205.25,
-        // The coefficient of variation of `[10, 11, 12]`, which is `1.0 / 11.0`.
-        // It is in the fixture rather than in one test because it is a value this
-        // suite really produces and because `serde_json`'s number *reader* does not
-        // round it correctly: the printer writes `0.09090909090909091`, which is
-        // right, and the reader hands back the float one ULP above it. Every test
-        // that goes near a file therefore carries the witness.
-        "cov": WITNESS_COV
+/// One cell of the fixture, built through the same `from_report` path the
+/// producer uses, so its keys are the product's keys.
+///
+/// The witness value rides in the samples rather than in a hand-set `cov`: the
+/// coefficient of variation of `[10, 11, 12]` is `1.0 / 11.0`, so asking the
+/// real statistics for it is both more honest and harder to get wrong than
+/// writing the float in.
+fn sample_cell(backend: &str, scale: u64) -> DocumentCell {
+    let samples = vec![10.0, 11.0, 12.0];
+    let reps = samples.len() as u32;
+    DocumentCell::from_report(CellReport {
+        backend: match backend {
+            "pmtiles" => Backend::PmTiles,
+            _ => Backend::Directory,
+        },
+        cell: Cell::new(2048, 2048, 256, Source::Gradient, scale as u32),
+        scenario: "read_random",
+        metric: MetricSpec {
+            name: "p50",
+            unit: Unit::Microseconds,
+            direction: Direction::LowerIsBetter,
+        },
+        isolation: Isolation::ProcessPerScenario,
+        warmup: Some(Warmup::ONE_DISCARDED_PASS),
+        discarded_warmup: vec![41.0],
+        reps_declared: reps,
+        min_reps: reps,
+        samples,
+        outcome: Outcome::Ok,
+        reason: None,
+        invariants: InvariantBlock::default(),
+        machine_load: MachineLoad::unknown(),
+        timer: None,
     })
 }
 
@@ -517,7 +529,7 @@ fn storage_attestation_is_observed_not_asserted() {
 
     // The same archive with the regime it is actually in attests.
     assert!(
-        attest(Regime::Leaf, &spilled, &sample).is_attested(),
+        attest(Regime::Leaves, &spilled, &sample).is_attested(),
         "the same archive attests against the regime it is really in"
     );
 
@@ -543,7 +555,7 @@ fn storage_attestation_is_observed_not_asserted() {
         ..sample
     };
     assert!(
-        !attest(Regime::Leaf, &spilled, &one_mismatch).is_attested(),
+        !attest(Regime::Leaves, &spilled, &one_mismatch).is_attested(),
         "two backends that disagree about a tile's bytes are not two measurements of one \
          workload"
     );
@@ -553,7 +565,7 @@ fn storage_attestation_is_observed_not_asserted() {
         ..sample
     };
     assert!(
-        !attest(Regime::Leaf, &spilled, &too_few).is_attested(),
+        !attest(Regime::Leaves, &spilled, &too_few).is_attested(),
         "eight coordinates and sixty-four must not both mean storageAttested: true"
     );
 }
@@ -753,7 +765,7 @@ fn verify_recomputes_all_four_digests_and_names_the_block_that_moved() {
     // which is both what a person tampering with an archive would do and the
     // only way to change one sample without every other number in the file
     // going through `serde_json`'s reader on the way past.
-    let edited = sealed.text.replacen("1211.0", "1211.5", 1);
+    let edited = sealed.text.replacen("12.0", "12.5", 1);
     assert_ne!(edited, sealed.text, "the edit has to have landed");
     let report = integrity::verify_text(&edited).expect("still canonicalises");
 
@@ -887,9 +899,11 @@ fn run_id_is_derived_from_the_document_not_the_clock() {
 /// file as two different floats and derive two different digests. K2.2's
 /// cross-language test would go red with neither implementation at fault.
 ///
-/// The fix is that a digest is taken from the producer's own bytes and never
-/// from a re-serialised parse, so nothing on the digest path builds a float at
-/// all.
+/// The fix is serde_json's `float_roundtrip`, which makes the reader correctly
+/// rounded so that parsing and re-printing is exact.
+/// `the_json_reader_is_correctly_rounded` is the canary for the feature being
+/// on, and this test is what notices if the round trip stops being exact for any
+/// other reason.
 #[test]
 fn a_document_written_and_read_back_verifies_against_its_own_bytes() {
     let root = scratch("byte-roundtrip");
@@ -1076,6 +1090,52 @@ fn artefact_digest_is_pinned_to_the_values_the_two_architectures_agreed_on() {
     assert_eq!(
         artefact_digest(&root.join("b.bin")).as_deref(),
         Some(libviprs_bench::sha256::sha256_hex(b"abc").as_str())
+    );
+}
+
+/// RED against an archive write that is not atomic, and against one that leaves
+/// its temporary behind when the rename fails.
+///
+/// A plain `write` can be interrupted, and the failure mode hides itself: the
+/// truncated file stays at the archive path, `parse_document` fails on it
+/// forever, and the operator is told "the document is not JSON" about a document
+/// that was whole when they handed it over. Writing a complete temporary and
+/// renaming it means a reader sees the old file or the new one and never half of
+/// either.
+///
+/// Interruption cannot be staged from a test, so what is pinned is the property
+/// that survives one: a failed rename leaves nothing behind. A non-empty
+/// directory at the destination is a rename target the kernel refuses, which is
+/// the cheapest real failure to arrange.
+#[test]
+fn an_interrupted_write_leaves_no_half_document() {
+    let root = scratch("atomic-write");
+    let blocked = root.join("blocked.json");
+    std::fs::create_dir_all(blocked.join("occupied")).expect("writable");
+
+    let failed = archive::write_atomically(&blocked, "{\"whole\": true}");
+    assert!(
+        failed.is_err(),
+        "renaming onto a non-empty directory has to fail, or this test proves nothing"
+    );
+
+    let strays: Vec<String> = std::fs::read_dir(&root)
+        .expect("readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.contains(".tmp-"))
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "a failed write left its temporary beside the archive: {strays:?}"
+    );
+
+    // And the ordinary path still writes exactly what it was given.
+    let good = root.join("good.json");
+    archive::write_atomically(&good, "{\"whole\": true}").expect("an ordinary write");
+    assert_eq!(
+        std::fs::read_to_string(&good).expect("readable"),
+        "{\"whole\": true}"
     );
 }
 
