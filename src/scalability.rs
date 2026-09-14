@@ -3,10 +3,10 @@
 //! Generates a SYNTHETIC gradient raster (see `gradient_raster`) at
 //! progressively larger sizes — the actual `43551_California_South.pdf`
 //! fixture is not committed, so the workload is a stand-in sized to that
-//! page's 1.42:1 aspect, NOT a rasterized blueprint. Runs all four engines
-//! (libvips, monolithic, streaming, MapReduce) at each size and at matched
-//! thread budgets (1 and num_cpus), measuring how wall time, peak RSS, and
-//! efficiency scale with image area.
+//! page's 1.42:1 aspect, NOT a rasterized blueprint. Runs the family's engines
+//! (monolithic, streaming, MapReduce, plus libvips for the `vips` family) at
+//! each size and at matched thread budgets (1 and num_cpus), measuring how wall
+//! time, peak RSS, and efficiency scale with image area.
 //!
 //! Run: cargo run --release --bin scalability [-- --family <name>]
 //!

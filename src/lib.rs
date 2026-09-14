@@ -1554,7 +1554,8 @@ pub fn per_level_png_tiles(tiles_dir: &std::path::Path) -> Vec<u64> {
     levels.into_iter().map(|(_, c)| c).collect()
 }
 
-/// Run all four engines across a matrix of image sizes and concurrency levels.
+/// Run the family's engines across a matrix of image sizes and concurrency
+/// levels, in-process.
 ///
 /// `streaming_budget_floor_bytes` is the streaming / mapreduce budget *floor*;
 /// each cell sizes it up per canvas via [`streaming_budget_for`] (issue #38).
