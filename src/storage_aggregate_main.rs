@@ -63,8 +63,10 @@ fn run(args: &[String]) -> Result<u8, String> {
         match args[i].as_str() {
             "--check" | "--archive" | "--verify" => {
                 if mode.is_some() {
-                    return Err("give exactly one of --check, --archive, --verify, --provenance"
-                        .to_string());
+                    return Err(
+                        "give exactly one of --check, --archive, --verify, --provenance"
+                            .to_string(),
+                    );
                 }
                 mode = Some(match args[i].as_str() {
                     "--check" => "check",
@@ -72,10 +74,10 @@ fn run(args: &[String]) -> Result<u8, String> {
                     _ => "verify",
                 });
                 i += 1;
-                document = Some(PathBuf::from(
-                    args.get(i)
-                        .ok_or_else(|| format!("{} needs a document path", args[i - 1]))?,
-                ));
+                document =
+                    Some(PathBuf::from(args.get(i).ok_or_else(|| {
+                        format!("{} needs a document path", args[i - 1])
+                    })?));
             }
             "--provenance" => {
                 if mode.is_some() {
@@ -126,8 +128,7 @@ fn print_usage() {
 fn read_document(path: &Path) -> Result<Value, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|err| format!("{} could not be read: {err}", path.display()))?;
-    serde_json::from_str(&text)
-        .map_err(|err| format!("{} is not JSON: {err}", path.display()))
+    serde_json::from_str(&text).map_err(|err| format!("{} is not JSON: {err}", path.display()))
 }
 
 /// Say whether a document would be archived, and if not, every reason.
@@ -138,11 +139,7 @@ fn check(path: &Path) -> Result<u8, String> {
         println!("{}: admissible", path.display());
         return Ok(OK);
     }
-    eprintln!(
-        "{}: refused for {} reasons",
-        path.display(),
-        refusals.len()
-    );
+    eprintln!("{}: refused for {} reasons", path.display(), refusals.len());
     for refusal in &refusals {
         eprintln!("  {refusal}");
     }

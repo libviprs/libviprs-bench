@@ -192,7 +192,9 @@ fn check_source_trees(doc: &Value, refusals: &mut Vec<Refusal>) {
         }
     }
 
-    let dirty = at(doc, "provenance.dirty").and_then(Value::as_bool).unwrap_or(false)
+    let dirty = at(doc, "provenance.dirty")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
         || at(doc, "provenance.library.dirty")
             .and_then(Value::as_bool)
             .unwrap_or(false);
@@ -360,7 +362,8 @@ fn check_invocation_and_reps(doc: &Value, refusals: &mut Vec<Refusal>) {
     // Resolved reps against every cell's reps. This is the cheapest possible
     // check on the most expensive possible mistake: a sweep that says it took
     // seven repetitions per cell and has a cell that took one.
-    let Some(resolved_reps) = at(doc, "provenance.invocation.resolved.reps").and_then(Value::as_u64)
+    let Some(resolved_reps) =
+        at(doc, "provenance.invocation.resolved.reps").and_then(Value::as_u64)
     else {
         refusals.push(refuse(
             "reps-disagree",
@@ -525,8 +528,7 @@ impl std::error::Error for RunIdError {}
 /// the document recorded, which is a fact about the run rather than about when
 /// somebody got round to filing it.
 pub fn run_id(doc: &Value) -> Result<String, RunIdError> {
-    let started_at =
-        non_empty_str(doc, "startedAt").ok_or(RunIdError::Missing("startedAt"))?;
+    let started_at = non_empty_str(doc, "startedAt").ok_or(RunIdError::Missing("startedAt"))?;
     let commit = non_empty_str(doc, "provenance.library.commit")
         .ok_or(RunIdError::Missing("provenance.library.commit"))?;
     Ok(format!(
@@ -596,8 +598,10 @@ pub fn seal(doc: &Value) -> Result<(Value, Digests), CanonicalError> {
         "combinedAt".to_string(),
         json!(chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)),
     );
-    map.insert("integrity".to_string(), serde_json::to_value(&digests)
-        .expect("Digests is four strings and always serialises"));
+    map.insert(
+        "integrity".to_string(),
+        serde_json::to_value(&digests).expect("Digests is four strings and always serialises"),
+    );
     Ok((Value::Object(map), digests))
 }
 
@@ -641,7 +645,11 @@ impl std::fmt::Display for ArchiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ArchiveError::Refused(refusals) => {
-                writeln!(f, "the document was refused for {} reasons:", refusals.len())?;
+                writeln!(
+                    f,
+                    "the document was refused for {} reasons:",
+                    refusals.len()
+                )?;
                 for r in refusals {
                     writeln!(f, "  {r}")?;
                 }

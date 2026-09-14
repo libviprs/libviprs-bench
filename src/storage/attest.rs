@@ -90,11 +90,7 @@ impl ObservedArchive {
         if self.root_entries.is_empty() {
             return None;
         }
-        if self
-            .root_entries
-            .iter()
-            .any(|e| *e == RootEntry::LeafPointer)
-        {
+        if self.root_entries.contains(&RootEntry::LeafPointer) {
             Some(Regime::Leaf)
         } else {
             Some(Regime::Root)

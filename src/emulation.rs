@@ -146,7 +146,11 @@ impl EmulationReport {
         out.push_str("{\n");
         let _ = writeln!(out, "  \"emulated\": {},", self.emulated.as_json());
         let _ = writeln!(out, "  \"binaryArch\": {},", json_string(self.binary_arch));
-        let _ = writeln!(out, "  \"unameArch\": {},", json_opt(self.uname_arch.as_deref()));
+        let _ = writeln!(
+            out,
+            "  \"unameArch\": {},",
+            json_opt(self.uname_arch.as_deref())
+        );
         let _ = writeln!(
             out,
             "  \"daemonArch\": {},",
@@ -154,7 +158,11 @@ impl EmulationReport {
         );
         out.push_str("  \"evidence\": [\n");
         for (i, e) in self.evidence.iter().enumerate() {
-            let comma = if i + 1 == self.evidence.len() { "" } else { "," };
+            let comma = if i + 1 == self.evidence.len() {
+                ""
+            } else {
+                ","
+            };
             let _ = writeln!(
                 out,
                 "    {{\"source\": {}, \"verdict\": {}, \"detail\": {}}}{}",
@@ -243,20 +251,30 @@ pub fn probe() -> EmulationReport {
         .filter(|v| !v.is_empty())
         .map(|v| normalise_arch(&v));
 
-    let mut evidence = Vec::new();
-    evidence.push(maps_evidence());
-    evidence.push(binfmt_evidence(binary_arch));
-    evidence.push(daemon_arch_evidence(binary_arch, daemon_arch.as_deref()));
-    evidence.push(uname_evidence(binary_arch, uname_arch.as_deref()));
+    // In the order the report prints them: the primary evidence first, then the
+    // one that is blind in a container, then the two that need something from
+    // outside the process.
+    let evidence = vec![
+        maps_evidence(),
+        binfmt_evidence(binary_arch),
+        daemon_arch_evidence(binary_arch, daemon_arch.as_deref()),
+        uname_evidence(binary_arch, uname_arch.as_deref()),
+    ];
 
     // Any positive sighting wins: a translator that was actually seen in the
     // address space is not outvoted by three sources that could not see it.
     // Otherwise a source that was in a position to look and saw nothing settles
     // it. If nothing was in a position to look, the answer is `Unknown` and the
     // aggregator refuses the run rather than averaging it in.
-    let emulated = if evidence.iter().any(|e| e.verdict == EvidenceVerdict::Emulated) {
+    let emulated = if evidence
+        .iter()
+        .any(|e| e.verdict == EvidenceVerdict::Emulated)
+    {
         Emulated::Yes
-    } else if evidence.iter().any(|e| e.verdict == EvidenceVerdict::Native) {
+    } else if evidence
+        .iter()
+        .any(|e| e.verdict == EvidenceVerdict::Native)
+    {
         Emulated::No
     } else {
         Emulated::Unknown
@@ -456,7 +474,10 @@ fn uname_evidence(binary_arch: &str, uname_arch: Option<&str>) -> Evidence {
 /// nothing else. The cost is one fork per run of a probe that runs once per
 /// sweep, and a failure is honestly reported as `None` rather than guessed.
 fn uname_machine() -> Option<String> {
-    let out = std::process::Command::new("uname").arg("-m").output().ok()?;
+    let out = std::process::Command::new("uname")
+        .arg("-m")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -528,7 +549,8 @@ mod tests {
         // The shell control reads this field with sed, so its exact spelling is
         // load-bearing rather than cosmetic.
         assert!(
-            json.lines().any(|l| l.trim_start().starts_with("\"emulated\": ")),
+            json.lines()
+                .any(|l| l.trim_start().starts_with("\"emulated\": ")),
             "the control's sed expression will not find the verdict in {json}"
         );
     }
