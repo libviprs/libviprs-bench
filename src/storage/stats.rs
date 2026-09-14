@@ -179,6 +179,38 @@ pub struct Summary {
 ///
 /// `seed` seeds the bootstrap, so the interval is reproducible from the
 /// published samples.
+
+/// The magnitude below which `integrity::canonical_number` refuses a non-zero
+/// value, because it is where `Number.prototype.toString` switches to exponent
+/// form while Rust still prints digits, so the two languages would digest
+/// different bytes for one number.
+const CANONICAL_FLOOR: f64 = 1e-6;
+
+/// Collapse a dimensionless ratio below [`CANONICAL_FLOOR`] to exactly zero.
+///
+/// A cell whose samples agree perfectly still produces a non-zero `cov`. The
+/// variance is computed the stable way, but `mean` is the sum over the count and
+/// that lands an ulp from the value every sample holds, so each `(v - mean)` is
+/// about `1e-17` rather than zero. The first full capture hit it on exactly one
+/// cell of 343, the brink cell's `read_tileid_order`, whose twenty samples are
+/// all `0.458`, and that one number refused the whole document (#72).
+///
+/// This says the rule rather than rounding to reach it: a ratio under the floor
+/// means the samples agree to seven decimal places, which is no dispersion by
+/// any reading, and zero canonicalises in both languages. Everything at or above
+/// the floor keeps every digit it had, which matters because the round-trip
+/// witness in `tests/storage_provenance_k13.rs` is a `cov` and its point is that
+/// the printer's exact digits survive a write and a read.
+///
+/// Only ratios come through here. The measurements are microsecond figures and
+/// touching those would discard what the document exists to carry.
+fn floor_derived(value: f64) -> f64 {
+    if value.is_finite() && value.abs() < CANONICAL_FLOOR {
+        return 0.0;
+    }
+    value
+}
+
 pub fn summarise(samples: &[f64], seed: u64) -> Option<Summary> {
     if samples.is_empty() {
         return None;
@@ -193,13 +225,15 @@ pub fn summarise(samples: &[f64], seed: u64) -> Option<Summary> {
         0.0
     };
     let cov = if mean.abs() > f64::EPSILON {
-        Some(var.sqrt() / mean.abs())
+        Some(floor_derived(var.sqrt() / mean.abs()))
     } else {
         None
     };
     let ci95 = bootstrap_median_ci(&s, seed);
     let ci_half_width_pct = if median.abs() > f64::EPSILON {
-        Some(((ci95.1 - ci95.0) / 2.0) / median.abs() * 100.0)
+        Some(floor_derived(
+            ((ci95.1 - ci95.0) / 2.0) / median.abs() * 100.0,
+        ))
     } else {
         None
     };
@@ -288,4 +322,94 @@ pub fn timer_saturated(sample_ns: f64, probe: TimerProbe) -> bool {
         return false;
     }
     sample_ns / probe.tick_ns < MIN_TICKS_PER_SAMPLE
+}
+
+#[cfg(test)]
+mod derived_rounding_tests {
+    use super::*;
+
+    /// Samples that agree perfectly have no dispersion, so `cov` is zero.
+    ///
+    /// It comes out as floating point residue instead, because `mean` is the
+    /// sum divided by the count and that lands an ulp away from the value every
+    /// sample holds. The residue is then small enough to trip the
+    /// canonicaliser's `1e-6` refusal and take the whole document with it, which
+    /// is what happened to the first full capture (#72).
+    ///
+    /// RED against `summarise` returning `var.sqrt() / mean.abs()` unrounded:
+    /// twenty copies of 0.458 give `Some(1.243520512283748e-16)`.
+    #[test]
+    fn identical_samples_have_exactly_no_dispersion() {
+        let samples = vec![0.458_f64; 20];
+        let summary = summarise(&samples, 7).expect("twenty samples summarise");
+        assert_eq!(
+            summary.cov,
+            Some(0.0),
+            "a cov over identical samples is zero, not floating point residue"
+        );
+    }
+
+    /// A ratio at or above the floor keeps every digit the printer would give
+    /// it, because the byte round-trip witness in
+    /// `tests/storage_provenance_k13.rs` is a `cov` and the whole point of that
+    /// test is that the printer's exact digits survive a write and a read.
+    ///
+    /// I wrote this after breaking it. My first fix rounded every derived ratio
+    /// to six decimals, which fixed the capture and silently turned the witness
+    /// `0.09090909090909091` into `0.090909`, taking out both round-trip tests.
+    /// RED against that version.
+    #[test]
+    fn a_ratio_above_the_floor_keeps_all_of_its_digits() {
+        // The cov of [10, 11, 12], which is the witness those tests carry and
+        // the value that demonstrates serde_json's reader bug.
+        let summary = summarise(&[10.0, 11.0, 12.0], 7).expect("three samples summarise");
+        let cov = summary.cov.expect("a non-zero mean gives a cov");
+        assert_eq!(
+            serde_json::to_string(&cov).expect("a float serialises"),
+            "0.09090909090909091",
+            "the witness has to survive summarise with the digits the printer chose"
+        );
+    }
+
+    /// Every dimensionless derived statistic is either zero or large enough for
+    /// the canonicaliser to accept, so no run can be refused for a number it
+    /// computed about its own agreement.
+    ///
+    /// RED against the unrounded form, where `cov` lands at 1.2e-16 and this
+    /// walk finds it.
+    #[test]
+    fn no_derived_ratio_lands_in_the_range_the_canonicaliser_refuses() {
+        // The canonicaliser refuses a non-zero magnitude below this, because it
+        // is where JavaScript switches to exponent form and Rust does not.
+        const REFUSED_BELOW: f64 = 1e-6;
+
+        // A positive control first: the walk has to be able to see a value in
+        // the refused range, or a green result below means nothing.
+        let planted = 1.243_520_512_283_748e-16_f64;
+        assert!(
+            planted != 0.0 && planted.abs() < REFUSED_BELOW,
+            "the control value is in the range this test is looking for"
+        );
+
+        for samples in [
+            vec![0.458_f64; 20],
+            vec![1.0_f64; 7],
+            vec![0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1],
+            vec![12.5, 12.5000001, 12.5, 12.5, 12.5, 12.5, 12.5],
+        ] {
+            let summary = summarise(&samples, 7).expect("samples summarise");
+            for (name, value) in [
+                ("cov", summary.cov),
+                ("ciHalfWidthPct", summary.ci_half_width_pct),
+            ] {
+                if let Some(v) = value {
+                    assert!(
+                        v == 0.0 || v.abs() >= REFUSED_BELOW,
+                        "{name} is {v}, which the canonicaliser refuses and which would take \
+                         the whole document with it"
+                    );
+                }
+            }
+        }
+    }
 }
