@@ -904,6 +904,55 @@ impl ToolchainInfo {
     }
 }
 
+/// Where a tree sits relative to its own `origin/main`.
+///
+/// Two conditions rather than one, because they read very differently to whoever
+/// finds an archived run later. `Diverged` means the commit is not in
+/// `origin/main`'s history at all, so the run measured work that is not in the
+/// mainline. `Behind` means the commit *is* in that history and main has moved
+/// on, which is what an intentional baseline looks like and equally what a
+/// checkout somebody forgot to update looks like.
+///
+/// Neither is refused. Benchmarking a core that is not on `main` is a legitimate
+/// thing to want, and provenance's job is to make a run's conditions legible
+/// rather than to narrow what may be measured. What was wrong before this
+/// existed is only that it passed silently.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MainRelation {
+    /// The commit is `origin/main`.
+    AtMain,
+    /// The commit is in `origin/main`'s history and main has moved on.
+    Behind,
+    /// The commit is not in `origin/main`'s history.
+    Diverged,
+    /// There is no local `origin/main` to compare against, or git could not be
+    /// asked. Nothing is claimed.
+    #[default]
+    Unknown,
+}
+
+impl MainRelation {
+    /// The word this relation goes by in a document or a log line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MainRelation::AtMain => "at-main",
+            MainRelation::Behind => "behind",
+            MainRelation::Diverged => "diverged",
+            MainRelation::Unknown => "unknown",
+        }
+    }
+
+    fn parse(value: Option<&str>) -> MainRelation {
+        match value {
+            Some("at-main") => MainRelation::AtMain,
+            Some("behind") => MainRelation::Behind,
+            Some("diverged") => MainRelation::Diverged,
+            _ => MainRelation::Unknown,
+        }
+    }
+}
+
 /// One source tree's identity.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TreeState {
@@ -915,6 +964,17 @@ pub struct TreeState {
     /// Why the two above are not better than they are. `"clean read"` when
     /// nothing went wrong.
     pub note: String,
+    /// What `origin/main` was in this tree at build time, read from the local
+    /// ref and never fetched.
+    #[serde(default)]
+    pub main_commit: Option<String>,
+    /// Where [`commit`](Self::commit) sits relative to that.
+    #[serde(default)]
+    pub main_relation: MainRelation,
+    /// How many commits `origin/main` is ahead, when the relation is
+    /// [`MainRelation::Behind`].
+    #[serde(default)]
+    pub commits_behind_main: Option<u32>,
 }
 
 /// Both trees, because a benchmark of one library run by another harness is
@@ -935,18 +995,31 @@ impl SourceTrees {
                 option_env!("BENCH_HARNESS_COMMIT"),
                 option_env!("BENCH_HARNESS_DIRTY"),
                 option_env!("BENCH_HARNESS_GIT_NOTE"),
+                option_env!("BENCH_HARNESS_MAIN_COMMIT"),
+                option_env!("BENCH_HARNESS_MAIN_RELATION"),
+                option_env!("BENCH_HARNESS_BEHIND"),
             ),
             library: stamped_tree(
                 option_env!("BENCH_LIBRARY_COMMIT"),
                 option_env!("BENCH_LIBRARY_DIRTY"),
                 option_env!("BENCH_LIBRARY_GIT_NOTE"),
+                option_env!("BENCH_LIBRARY_MAIN_COMMIT"),
+                option_env!("BENCH_LIBRARY_MAIN_RELATION"),
+                option_env!("BENCH_LIBRARY_BEHIND"),
             ),
         }
     }
 }
 
 /// One tree's stamps, with empty read as absent rather than as a value.
-fn stamped_tree(commit: Option<&str>, dirty: Option<&str>, note: Option<&str>) -> TreeState {
+fn stamped_tree(
+    commit: Option<&str>,
+    dirty: Option<&str>,
+    note: Option<&str>,
+    main_commit: Option<&str>,
+    main_relation: Option<&str>,
+    behind: Option<&str>,
+) -> TreeState {
     TreeState {
         commit: commit.filter(|c| !c.is_empty()).map(str::to_string),
         dirty: match dirty {
@@ -958,6 +1031,11 @@ fn stamped_tree(commit: Option<&str>, dirty: Option<&str>, note: Option<&str>) -
             .filter(|n| !n.is_empty())
             .unwrap_or("this binary was built before the provenance stamps existed")
             .to_string(),
+        main_commit: main_commit.filter(|c| !c.is_empty()).map(str::to_string),
+        main_relation: MainRelation::parse(main_relation.filter(|r| !r.is_empty())),
+        commits_behind_main: behind
+            .filter(|b| !b.is_empty())
+            .and_then(|b| b.parse().ok()),
     }
 }
 
@@ -1006,6 +1084,9 @@ impl Provenance {
                 "commit": self.trees.library.commit,
                 "dirty": self.trees.library.dirty,
                 "gitNote": self.trees.library.note,
+                "mainCommit": self.trees.library.main_commit,
+                "mainRelation": self.trees.library.main_relation.as_str(),
+                "commitsBehindMain": self.trees.library.commits_behind_main,
             },
             "commit": self.trees.harness.commit,
             "dirty": self.trees.harness.dirty,
@@ -1092,6 +1173,41 @@ impl Provenance {
                      stamps every cell."
                 ));
             }
+        }
+        // Not a refusal, and deliberately so. Measuring a core that is not on
+        // `main` is a legitimate thing to want: an intentional baseline looks
+        // exactly like this. What was wrong before was only that it passed
+        // silently, so the answer is the same one a null commit got, a warning
+        // that makes the condition visible rather than a rule that blocks work.
+        match self.trees.library.main_relation {
+            MainRelation::AtMain => {}
+            MainRelation::Unknown => warnings.push(
+                "NOTE: the measured libviprs has no local origin/main to compare against, so \
+                 this run does not record whether the core it measured is on the mainline. \
+                 The commit itself is recorded either way."
+                    .to_string(),
+            ),
+            relation => warnings.push(format!(
+                "WARNING: the measured libviprs is {} its own origin/main. HEAD is {}, \
+                 origin/main is {}{}. This is not refused and the run will archive, but the \
+                 numbers describe a core that is not the mainline one and nothing downstream \
+                 notices on its own.",
+                relation.as_str(),
+                self.trees
+                    .library
+                    .commit
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                self.trees
+                    .library
+                    .main_commit
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                match self.trees.library.commits_behind_main {
+                    Some(n) if n > 0 => format!(", which is {n} commits ahead of it"),
+                    _ => String::new(),
+                }
+            )),
         }
         if self.toolchain.debug_assertions {
             warnings.push(

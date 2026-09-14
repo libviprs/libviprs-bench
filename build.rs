@@ -118,6 +118,43 @@ fn stamp_storage_provenance(core_dir: &Path) {
             }
         );
         println!("cargo:rustc-env=BENCH_{label}_GIT_NOTE={}", stamp.note);
+        println!(
+            "cargo:rustc-env=BENCH_{label}_MAIN_COMMIT={}",
+            stamp.main_commit.clone().unwrap_or_default()
+        );
+        println!(
+            "cargo:rustc-env=BENCH_{label}_MAIN_RELATION={}",
+            stamp.main_relation
+        );
+        println!(
+            "cargo:rustc-env=BENCH_{label}_BEHIND={}",
+            stamp.behind.map(|n| n.to_string()).unwrap_or_default()
+        );
+        // Only the measured library gets a build-time warning for this. The
+        // harness is on a lane branch every day of the week and a warning that
+        // fires on every build is one nobody reads; its relation is still
+        // recorded, because it is data either way.
+        if label == "LIBRARY" && stamp.main_relation != "at-main" {
+            println!(
+                "cargo:warning=provenance: the measured libviprs is {} its own origin/main. \
+                 HEAD is {}, origin/main is {}{}. This is not refused, and measuring a core \
+                 that is not on main is a legitimate thing to want, but the archived run will \
+                 record that commit and nothing downstream will notice on its own.",
+                stamp.main_relation,
+                stamp
+                    .commit
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                stamp
+                    .main_commit
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                match stamp.behind {
+                    Some(n) if n > 0 => format!(", which is {n} commits ahead of HEAD"),
+                    _ => String::new(),
+                }
+            );
+        }
         if stamp.commit.is_none() || stamp.dirty.is_none() {
             // A `cargo:warning=` is the loud half of the contract. The document
             // will refuse to archive either way, but a refusal an hour after a
@@ -144,6 +181,52 @@ struct TreeStamp {
     dirty: Option<bool>,
     note: String,
     rerun: Vec<PathBuf>,
+    /// What `origin/main` is in this tree, when the ref is there locally.
+    main_commit: Option<String>,
+    /// `at-main`, `behind`, `diverged`, or `unknown`.
+    main_relation: &'static str,
+    /// How many commits `origin/main` is ahead, when the answer is `behind`.
+    behind: Option<u32>,
+}
+
+/// Where this tree sits relative to its own `origin/main`.
+///
+/// Entirely local: `origin/main` is `refs/remotes/origin/main`, a ref already in
+/// the tree, so nothing here fetches. The consequence is that the answer is as
+/// fresh as the last fetch, which is worth saying out loud because a tree that
+/// has not fetched for a week will look closer to main than it is. That is still
+/// better than a build script reaching out to the network, and it is a warning
+/// rather than a gate, so an answer that is a little stale costs nothing.
+///
+/// Two conditions, not one, and the distinction matters. **Diverged** means the
+/// commit is not in `origin/main`'s history at all, so the run measured work
+/// that is not in the mainline. **Behind** means the commit *is* in that
+/// history and main has moved on, which is what an intentional baseline looks
+/// like and also what a checkout somebody forgot to update looks like. They read
+/// very differently to whoever finds the archived run later, so they get
+/// different sentences.
+fn main_relation(dir: &Path) -> (Option<String>, &'static str, Option<u32>) {
+    let Ok(main) = git(dir, &["rev-parse", "--verify", "origin/main"]) else {
+        return (None, "unknown", None);
+    };
+    let Ok(head) = git(dir, &["rev-parse", "HEAD"]) else {
+        return (Some(main), "unknown", None);
+    };
+    if head == main {
+        return (Some(main), "at-main", Some(0));
+    }
+    // `merge-base --is-ancestor` exits 0 for yes and 1 for no, so a non-zero
+    // exit is the answer rather than a failure and `git` returning Err is how
+    // "no" arrives here.
+    let is_ancestor = git(dir, &["merge-base", "--is-ancestor", "HEAD", "origin/main"]).is_ok();
+    let behind = git(dir, &["rev-list", "--count", "HEAD..origin/main"])
+        .ok()
+        .and_then(|n| n.parse::<u32>().ok());
+    (
+        Some(main),
+        if is_ancestor { "behind" } else { "diverged" },
+        behind,
+    )
 }
 
 /// The cargo driving this build, for the toolchain half of the fingerprint.
@@ -252,12 +335,16 @@ fn git_tree_state(dir: &Path) -> TreeStamp {
     } else {
         notes.join("; ")
     };
+    let (main_commit, main_relation, behind) = main_relation(&abs);
     TreeStamp {
         dir: abs,
         commit,
         dirty,
         note,
         rerun,
+        main_commit,
+        main_relation,
+        behind,
     }
 }
 

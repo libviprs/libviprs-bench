@@ -47,12 +47,18 @@
         "harness": {
           "commit": "0f1e2d3",
           "dirty": false,
-          "note": "clean read"
+          "note": "clean read",
+          "main_commit": "0000000000000000000000000000000000000000",
+          "main_relation": "at-main",
+          "commits_behind_main": 0
         },
         "library": {
           "commit": "9a8b7c6",
           "dirty": false,
-          "note": "clean read"
+          "note": "clean read",
+          "main_commit": "0000000000000000000000000000000000000000",
+          "main_relation": "at-main",
+          "commits_behind_main": 0
         }
       },
       "lockfile_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
@@ -270,12 +276,18 @@
         "harness": {
           "commit": "0f1e2d3",
           "dirty": false,
-          "note": "clean read"
+          "note": "clean read",
+          "main_commit": "0000000000000000000000000000000000000000",
+          "main_relation": "at-main",
+          "commits_behind_main": 0
         },
         "library": {
           "commit": "9a8b7c6",
           "dirty": false,
-          "note": "clean read"
+          "note": "clean read",
+          "main_commit": "0000000000000000000000000000000000000000",
+          "main_relation": "at-main",
+          "commits_behind_main": 0
         }
       },
       "lockfile_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
