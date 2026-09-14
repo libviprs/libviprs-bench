@@ -279,7 +279,7 @@ fn allocated_bytes(_meta: &std::fs::Metadata) -> u64 {
 pub fn artefact_digest(path: &Path) -> Option<String> {
     let meta = std::fs::symlink_metadata(path).ok()?;
     if !meta.is_dir() {
-        return Some(hash_file(path)?);
+        return hash_file(path);
     }
     let mut lines: Vec<String> = Vec::new();
     let mut stack = vec![path.to_path_buf()];
