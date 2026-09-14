@@ -545,7 +545,12 @@ fn cpu_model() -> String {
                 return model;
             }
             let mut parts: Vec<String> = Vec::new();
-            for field in ["CPU implementer", "CPU architecture", "CPU part", "CPU variant"] {
+            for field in [
+                "CPU implementer",
+                "CPU architecture",
+                "CPU part",
+                "CPU variant",
+            ] {
                 if let Some(value) = text
                     .lines()
                     .find(|l| l.starts_with(field))
@@ -1151,7 +1156,7 @@ fn statfs_type(dir: &Path) -> Option<i64> {
     // value is checked before a single field is read.
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
     let rc = unsafe { libc::statfs(path.as_ptr(), &mut buf) };
-    (rc == 0).then(|| buf.f_type as i64)
+    (rc == 0).then_some(buf.f_type as i64)
 }
 
 /// Name the filesystem under `dir`.

@@ -4,7 +4,7 @@
 //!
 //! `cargo run --bin probe-emulation` is the convenient one. The one that
 //! matters is `tools/probe-emulation.sh`, which compiles *this file* with bare
-//! `rustc` inside a `rust:1.89-slim-bookworm` container under
+//! `rustc` inside a `rust:1.98-slim-bookworm` container under
 //! `--platform linux/amd64` and again under `--platform linux/arm64`, and
 //! asserts opposite answers on one machine. That control is the whole evidence
 //! for the probe, because a probe hard-wired to `false` passes every `#[test]`

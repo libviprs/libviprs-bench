@@ -214,8 +214,9 @@ fn git_tree_state(dir: &Path) -> TreeStamp {
     } else if dot_git.is_dir() {
         rerun.push(dot_git.join("HEAD"));
     } else {
-        notes.push("there is no .git here at all, so this is a source tree with no repository"
-            .to_string());
+        notes.push(
+            "there is no .git here at all, so this is a source tree with no repository".to_string(),
+        );
     }
 
     let commit = match git(&abs, &["rev-parse", "HEAD"]) {
@@ -227,10 +228,7 @@ fn git_tree_state(dir: &Path) -> TreeStamp {
     };
 
     // Trap 3: ask twice and report the difference rather than only the answer.
-    let dirty = match (
-        git_status_dirty(&abs, false),
-        git_status_dirty(&abs, true),
-    ) {
+    let dirty = match (git_status_dirty(&abs, false), git_status_dirty(&abs, true)) {
         (Ok(with_modes), Ok(without_modes)) => {
             if with_modes && !without_modes {
                 notes.push(
@@ -399,7 +397,9 @@ fn lock_dependencies_json(lock: &str) -> String {
             }
             continue;
         }
-        let Some(pkg) = current.as_mut() else { continue };
+        let Some(pkg) = current.as_mut() else {
+            continue;
+        };
         if let Some(v) = field(line, "name") {
             pkg.name = v.to_string();
         } else if let Some(v) = field(line, "version") {
@@ -431,8 +431,14 @@ fn lock_dependencies_json(lock: &str) -> String {
             let body = format!(
                 "{{\"version\":{},\"source\":{},\"checksum\":{}}}",
                 json_str(&pkg.version),
-                pkg.source.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
-                pkg.checksum.as_deref().map(json_str).unwrap_or_else(|| "null".to_string()),
+                pkg.source
+                    .as_deref()
+                    .map(json_str)
+                    .unwrap_or_else(|| "null".to_string()),
+                pkg.checksum
+                    .as_deref()
+                    .map(json_str)
+                    .unwrap_or_else(|| "null".to_string()),
             );
             (key, body)
         })

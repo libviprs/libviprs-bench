@@ -31,7 +31,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUST_IMAGE="${PROBE_RUST_IMAGE:-rust:1.89-slim-bookworm}"
+RUST_IMAGE="${PROBE_RUST_IMAGE:-rust:1.98-slim-bookworm}"
 
 die() { echo "probe-emulation: $*" >&2; exit 1; }
 

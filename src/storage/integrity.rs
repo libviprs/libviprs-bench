@@ -151,7 +151,10 @@ pub fn canonical_json(value: &Value) -> Result<String, CanonicalError> {
 
 /// `sha256:<64 lowercase hex>` over the UTF-8 bytes of [`canonical_json`].
 pub fn digest(value: &Value) -> Result<String, CanonicalError> {
-    Ok(format!("sha256:{}", sha256_hex(canonical_json(value)?.as_bytes())))
+    Ok(format!(
+        "sha256:{}",
+        sha256_hex(canonical_json(value)?.as_bytes())
+    ))
 }
 
 fn write_canonical(value: &Value, path: &str, out: &mut String) -> Result<(), CanonicalError> {
@@ -374,6 +377,15 @@ pub struct VerifyReport {
     pub moved: Vec<&'static str>,
     /// The blocks that match.
     pub unchanged: Vec<&'static str>,
+    /// The document has an `integrity` key that is not four digests.
+    ///
+    /// Kept apart from `stated: None` because the two need different sentences.
+    /// A document with no integrity block has not been sealed yet, which is the
+    /// ordinary input to `--archive`. A document carrying an integrity block
+    /// that will not parse has been sealed by something, and telling its author
+    /// there is no block to verify would send them looking for the wrong
+    /// problem.
+    pub malformed_integrity: bool,
 }
 
 impl VerifyReport {
@@ -386,11 +398,18 @@ impl VerifyReport {
     /// One line per finding, for stderr.
     pub fn lines(&self) -> Vec<String> {
         let Some(stated) = &self.stated else {
-            return vec![
+            return vec![if self.malformed_integrity {
+                format!(
+                    "REFUSED: the document carries an integrity block that is not four \
+                     digests, so it was sealed by something that does not agree with this \
+                     one about what a seal is. The content digests to {}.",
+                    self.recomputed.document
+                )
+            } else {
                 "REFUSED: the document carries no integrity block, so there is nothing to \
                  verify it against."
-                    .to_string(),
-            ];
+                    .to_string()
+            }];
         };
         if self.moved.is_empty() {
             return vec![format!(
@@ -452,6 +471,7 @@ pub fn verify(doc: &Value) -> Result<VerifyReport, CanonicalError> {
     }
 
     Ok(VerifyReport {
+        malformed_integrity: doc.get("integrity").is_some() && stated.is_none(),
         recomputed,
         stated,
         moved,

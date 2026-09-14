@@ -358,7 +358,10 @@ fn a_dirty_tree_is_refused_without_the_flag_and_stamped_with_it() {
     // Allowed and stamped on every cell: admissible, and every number carries
     // the caveat with it.
     let mut allowed_stamped = allowed_unstamped.clone();
-    for cell in allowed_stamped["cells"].as_array_mut().expect("cells is an array") {
+    for cell in allowed_stamped["cells"]
+        .as_array_mut()
+        .expect("cells is an array")
+    {
         set(cell, "dirty", json!(true));
     }
     assert_eq!(
@@ -418,11 +421,7 @@ fn a_debug_build_is_refused() {
 #[test]
 fn resolved_reps_must_equal_every_cells_reps() {
     let mut mismatched = clean_document();
-    set(
-        &mut mismatched["cells"][1],
-        "reps",
-        json!(1),
-    );
+    set(&mut mismatched["cells"][1], "reps", json!(1));
     let refusals = archive::admit(&mismatched);
     assert!(
         codes(&mismatched).contains(&"reps-disagree"),
@@ -591,8 +590,7 @@ fn an_integral_float_digests_as_javascript_prints_it() {
     // The other half: a value with a fraction keeps it, and keeps exactly the
     // digits JavaScript would print.
     assert_eq!(
-        integrity::canonical_json(&json!({"p": 0.15, "q": 1205.25, "r": -0.0}))
-            .expect("in range"),
+        integrity::canonical_json(&json!({"p": 0.15, "q": 1205.25, "r": -0.0})).expect("in range"),
         r#"{"p":0.15,"q":1205.25,"r":0}"#,
         "negative zero prints as 0, matching JSON.stringify(-0)"
     );
@@ -641,7 +639,10 @@ fn a_number_javascript_would_print_in_exponent_form_is_refused() {
     // 2^53 keeps its low bits in Rust and loses them in JavaScript.
     let err = integrity::canonical_json(&json!({"bytes": 9_007_199_254_740_993u64 }))
         .expect_err("beyond 2^53 the two languages hold different numbers");
-    assert!(matches!(err, CanonicalError::UnsafeInteger { .. }), "{err:?}");
+    assert!(
+        matches!(err, CanonicalError::UnsafeInteger { .. }),
+        "{err:?}"
+    );
 }
 
 /// RED against sorting keys without restricting them to ASCII.
@@ -852,7 +853,11 @@ fn the_scratch_filesystem_is_recorded_and_tmpfs_is_refused_by_default() {
     );
 
     let mut on_tmpfs = clean_document();
-    set(&mut on_tmpfs, "provenance.filesystem.fsType", json!("tmpfs"));
+    set(
+        &mut on_tmpfs,
+        "provenance.filesystem.fsType",
+        json!("tmpfs"),
+    );
     assert!(
         codes(&on_tmpfs).contains(&"tmpfs"),
         "{:?}",
