@@ -10,7 +10,13 @@
 //! can *group by* fingerprint and refuse — or at least loudly flag —
 //! cross-environment deltas.
 
+use std::collections::BTreeMap;
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+use crate::emulation::{self, Emulated, EmulationReport};
 
 /// The exact upstream libvips release the benchmark container is pinned to
 /// build from source and measure against.
@@ -104,6 +110,42 @@ pub struct Provenance {
     /// `#[serde(default)]`).
     #[serde(default)]
     pub thermal_throttle_count: Option<u64>,
+    /// Whether this process's instruction stream is being translated, plus the
+    /// evidence the probe used. `None` for history written before the axis
+    /// existed, which is the state `docs/pmtiles-benchmarks.md` is in and the
+    /// reason the archive refuses anything that is not an explicit `false`.
+    #[serde(default)]
+    pub emulation: Option<EmulationRecord>,
+    /// What the scratch directory is on. `None` when no scratch directory was
+    /// named, which for a storage sweep is itself a refusal.
+    #[serde(default)]
+    pub filesystem: Option<FilesystemInfo>,
+    /// The cgroup CPU and memory ceilings the run was actually under.
+    #[serde(default)]
+    pub cgroup: CgroupLimits,
+    /// The toolchain axes the legacy fields above do not carry: cargo's own
+    /// version, the flags cargo really handed rustc, and whether debug
+    /// assertions are compiled in.
+    #[serde(default)]
+    pub toolchain: ToolchainInfo,
+    /// Commit and dirty flag for both trees, with a note saying why a field is
+    /// missing when it is.
+    #[serde(default)]
+    pub trees: SourceTrees,
+    /// `sha256:` over `Cargo.lock`, stamped at build time.
+    #[serde(default)]
+    pub lockfile_hash: Option<String>,
+    /// The resolved dependency graph, `{name: {version, source, checksum}}`.
+    ///
+    /// Empty from [`Provenance::capture`] and filled only by
+    /// [`Provenance::capture_for_storage`]. That split is deliberate: this is a
+    /// few hundred entries and `report/benchmark_history.json` appends one
+    /// provenance per snapshot forever, so filling it on the everyday path
+    /// would grow the history file by an order of magnitude to record the same
+    /// graph over and over. A storage document is written once per sweep and
+    /// archived by digest, which is where the graph earns its size.
+    #[serde(default)]
+    pub dependencies: BTreeMap<String, LockedDependency>,
 }
 
 /// Host load average — the 1/5/15-minute run-queue length averages — sampled at
@@ -165,6 +207,13 @@ impl Default for Provenance {
             },
             load_average: None,
             thermal_throttle_count: None,
+            emulation: None,
+            filesystem: None,
+            cgroup: CgroupLimits::default(),
+            toolchain: ToolchainInfo::default(),
+            trees: SourceTrees::default(),
+            lockfile_hash: None,
+            dependencies: BTreeMap::new(),
         }
     }
 }
@@ -222,6 +271,29 @@ impl Provenance {
             },
             load_average: load_average(),
             thermal_throttle_count: thermal_throttle_count(),
+            emulation: Some(EmulationRecord::probe()),
+            // No scratch directory is named on this path, and a filesystem
+            // recorded for a directory nobody asked about would be worse than
+            // none: it would look like an answer.
+            filesystem: None,
+            cgroup: CgroupLimits::read(),
+            toolchain: ToolchainInfo::stamped(),
+            trees: SourceTrees::stamped(),
+            lockfile_hash: option_env!("BENCH_LOCKFILE_HASH")
+                .filter(|h| !h.is_empty())
+                .map(str::to_string),
+            dependencies: BTreeMap::new(),
+        }
+    }
+
+    /// Capture everything, including the axes a storage sweep needs and the
+    /// everyday path leaves out: the filesystem under `scratch_dir` and the
+    /// resolved dependency graph.
+    pub fn capture_for_storage(scratch_dir: &Path) -> Provenance {
+        Provenance {
+            filesystem: Some(FilesystemInfo::of(scratch_dir)),
+            dependencies: locked_dependencies(),
+            ..Provenance::capture()
         }
     }
 
@@ -236,7 +308,7 @@ impl Provenance {
     /// rather than splitting the environment into two buckets.
     pub fn fingerprint(&self) -> String {
         format!(
-            "vips{}/rustc{}/{}/{}-{}x{}cpu/{}",
+            "vips{}/rustc{}/{}/{}-{}x{}cpu/{}/emul:{}/fs:{}",
             self.libvips_version,
             self.rustc_version,
             self.build_profile,
@@ -247,6 +319,14 @@ impl Provenance {
                 "container"
             } else {
                 "host"
+            },
+            match &self.emulation {
+                Some(e) => e.emulated.as_str(),
+                None => "unrecorded",
+            },
+            match &self.filesystem {
+                Some(fs) => fs.fs_type.as_str(),
+                None => "unrecorded",
             },
         )
     }
@@ -559,4 +639,608 @@ fn detect_container() -> bool {
         }
     }
     false
+}
+
+// ---------------------------------------------------------------------------
+// The storage suite's provenance axes (libviprs-bench #66).
+//
+// `docs/pmtiles-benchmarks.md` publishes 480 lines of numbers and records no
+// platform at all. Everything below is the set of things that document would
+// have needed to say for a reader to be able to check it, and every one of them
+// is observed rather than declared.
+// ---------------------------------------------------------------------------
+
+/// Whether the run was instruction-translated, as the document spells it.
+///
+/// Three states, serialised as `true`, `false` and the string `"unknown"`,
+/// which is what `SUITE-PLAN.md` §5.4 asks for and what causl's importer reads.
+/// The third state has to survive the round trip intact: folding it into
+/// `false` is exactly how a run nobody observed comes to look like a run
+/// somebody checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmulationVerdict {
+    /// Translation was observed.
+    Emulated,
+    /// No translation, observed by a source in a position to see it.
+    Native,
+    /// Nothing was in a position to observe either way.
+    Unknown,
+}
+
+impl EmulationVerdict {
+    /// The word this verdict goes by in a fingerprint or a log line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EmulationVerdict::Emulated => "true",
+            EmulationVerdict::Native => "false",
+            EmulationVerdict::Unknown => "unknown",
+        }
+    }
+}
+
+impl From<Emulated> for EmulationVerdict {
+    fn from(value: Emulated) -> Self {
+        match value {
+            Emulated::Yes => EmulationVerdict::Emulated,
+            Emulated::No => EmulationVerdict::Native,
+            Emulated::Unknown => EmulationVerdict::Unknown,
+        }
+    }
+}
+
+impl Serialize for EmulationVerdict {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            EmulationVerdict::Emulated => serializer.serialize_bool(true),
+            EmulationVerdict::Native => serializer.serialize_bool(false),
+            EmulationVerdict::Unknown => serializer.serialize_str("unknown"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for EmulationVerdict {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        match Value::deserialize(deserializer)? {
+            Value::Bool(true) => Ok(EmulationVerdict::Emulated),
+            Value::Bool(false) => Ok(EmulationVerdict::Native),
+            Value::String(s) if s == "unknown" => Ok(EmulationVerdict::Unknown),
+            other => Err(D::Error::custom(format!(
+                "emulated must be true, false or \"unknown\", not {other}"
+            ))),
+        }
+    }
+}
+
+/// One source's observation, carried into the document so it can say which
+/// evidence it used and not only what it concluded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmulationEvidence {
+    /// `proc-self-maps`, `binfmt-misc`, `daemon-arch` or `uname`.
+    pub source: String,
+    /// `emulated`, `native` or `inconclusive`.
+    pub verdict: String,
+    /// What that source actually saw, including why it saw nothing.
+    pub detail: String,
+}
+
+/// The emulation probe's answer and its working.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmulationRecord {
+    /// The combined verdict.
+    pub emulated: EmulationVerdict,
+    /// Every source consulted, including the ones that saw nothing.
+    pub evidence: Vec<EmulationEvidence>,
+    /// The architecture the binary was compiled for.
+    pub binary_arch: String,
+    /// What the kernel reports, when `uname` could be run.
+    pub uname_arch: Option<String>,
+    /// What the runner said the Docker daemon runs on.
+    pub daemon_arch: Option<String>,
+}
+
+impl EmulationRecord {
+    /// Run the probe and record it.
+    pub fn probe() -> EmulationRecord {
+        EmulationRecord::from(emulation::probe())
+    }
+}
+
+impl From<EmulationReport> for EmulationRecord {
+    fn from(report: EmulationReport) -> Self {
+        EmulationRecord {
+            emulated: report.emulated.into(),
+            evidence: report
+                .evidence
+                .iter()
+                .map(|e| EmulationEvidence {
+                    source: e.source.to_string(),
+                    verdict: match e.verdict {
+                        emulation::EvidenceVerdict::Emulated => "emulated",
+                        emulation::EvidenceVerdict::Native => "native",
+                        emulation::EvidenceVerdict::Inconclusive => "inconclusive",
+                    }
+                    .to_string(),
+                    detail: e.detail.clone(),
+                })
+                .collect(),
+            binary_arch: report.binary_arch.to_string(),
+            uname_arch: report.uname_arch,
+            daemon_arch: report.daemon_arch,
+        }
+    }
+}
+
+/// What the scratch directory is actually on.
+///
+/// A PMTiles sweep writes one file and a directory sweep writes tens of
+/// thousands, so the filesystem underneath is not a detail: overlayfs, a
+/// virtiofs bind mount from a Mac, tmpfs and a real ext4 give four different
+/// ratios between the two backends, and only one of them is the ratio anyone
+/// will see in production. The published numbers record none of this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilesystemInfo {
+    /// The directory that was asked about, canonicalised.
+    pub scratch_dir: String,
+    /// `ext4`, `overlay`, `tmpfs`, `apfs`, `virtiofs`, or `unknown-0x<magic>`
+    /// for a filesystem this does not have a name for. The hex form is
+    /// deliberate: a magic number nobody has mapped yet is still a fact, and it
+    /// is a fact somebody can look up.
+    pub fs_type: String,
+    /// The device or source the mount came from, when `/proc` names one.
+    pub mount_source: Option<String>,
+    /// Whether the mount is a bind of a subtree rather than a whole
+    /// filesystem. `None` where it cannot be told.
+    pub bind_mount: Option<bool>,
+    /// Whether the run's profile declared that it means to measure on tmpfs.
+    /// Left `false` here and set by the driver; the archive refuses tmpfs
+    /// without it.
+    pub declared_tmpfs: bool,
+}
+
+impl FilesystemInfo {
+    /// Observe the filesystem under `dir`.
+    pub fn of(dir: &Path) -> FilesystemInfo {
+        let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+        let (mount_source, bind_mount) = mount_entry(&canonical);
+        FilesystemInfo {
+            fs_type: fs_type_name(&canonical),
+            scratch_dir: canonical.display().to_string(),
+            mount_source,
+            bind_mount,
+            declared_tmpfs: false,
+        }
+    }
+}
+
+/// The ceilings the run was under, which decide how much of the box it could
+/// actually use.
+///
+/// A four-core quota on a sixteen-core host makes a concurrent read scenario
+/// measure the quota rather than the engine, and `nproc` inside the container
+/// happily reports sixteen either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CgroupLimits {
+    /// CPUs available, from quota over period. `None` for unlimited or
+    /// unreadable.
+    pub cpu_quota: Option<f64>,
+    /// Memory ceiling in bytes. `None` for unlimited or unreadable.
+    pub memory_limit_bytes: Option<u64>,
+}
+
+impl CgroupLimits {
+    /// Read the limits, cgroup v2 first and v1 as the fallback.
+    pub fn read() -> CgroupLimits {
+        CgroupLimits {
+            cpu_quota: cgroup_cpu_quota(),
+            memory_limit_bytes: cgroup_memory_limit(),
+        }
+    }
+}
+
+/// The toolchain axes the legacy fields do not carry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolchainInfo {
+    /// `cargo --version` at build time.
+    pub cargo_version: String,
+    /// The flags cargo really handed rustc, from `CARGO_ENCODED_RUSTFLAGS`,
+    /// which unlike bare `RUSTFLAGS` also carries what `.cargo/config.toml`
+    /// contributed. A run that picks up `-C target-cpu=native` from a config
+    /// file and reports an empty flag set is a run whose numbers cannot be
+    /// reproduced from what it wrote down.
+    pub rustflags: String,
+    /// `cfg!(debug_assertions)` at runtime. The archive refuses `true`.
+    pub debug_assertions: bool,
+}
+
+impl ToolchainInfo {
+    /// Read what `build.rs` stamped, plus the one thing only the running binary
+    /// knows.
+    pub fn stamped() -> ToolchainInfo {
+        ToolchainInfo {
+            cargo_version: option_env!("BENCH_CARGO_VERSION")
+                .unwrap_or("unknown")
+                .to_string(),
+            rustflags: option_env!("BENCH_RUSTFLAGS_ENCODED")
+                .unwrap_or("")
+                .to_string(),
+            debug_assertions: cfg!(debug_assertions),
+        }
+    }
+}
+
+/// One source tree's identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TreeState {
+    /// The full commit, or `None` when git could not answer.
+    pub commit: Option<String>,
+    /// Whether tracked files differ from that commit, ignoring mode-only
+    /// differences. `None` when git could not answer.
+    pub dirty: Option<bool>,
+    /// Why the two above are not better than they are. `"clean read"` when
+    /// nothing went wrong.
+    pub note: String,
+}
+
+/// Both trees, because a benchmark of one library run by another harness is
+/// pinned by two commits and quoting one of them is quoting half the answer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceTrees {
+    /// `libviprs-bench`, the harness doing the measuring.
+    pub harness: TreeState,
+    /// `libviprs`, the library being measured.
+    pub library: TreeState,
+}
+
+impl SourceTrees {
+    /// Read what `build.rs` stamped.
+    pub fn stamped() -> SourceTrees {
+        SourceTrees {
+            harness: stamped_tree(
+                option_env!("BENCH_HARNESS_COMMIT"),
+                option_env!("BENCH_HARNESS_DIRTY"),
+                option_env!("BENCH_HARNESS_GIT_NOTE"),
+            ),
+            library: stamped_tree(
+                option_env!("BENCH_LIBRARY_COMMIT"),
+                option_env!("BENCH_LIBRARY_DIRTY"),
+                option_env!("BENCH_LIBRARY_GIT_NOTE"),
+            ),
+        }
+    }
+}
+
+/// One tree's stamps, with empty read as absent rather than as a value.
+fn stamped_tree(commit: Option<&str>, dirty: Option<&str>, note: Option<&str>) -> TreeState {
+    TreeState {
+        commit: commit.filter(|c| !c.is_empty()).map(str::to_string),
+        dirty: match dirty {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => None,
+        },
+        note: note
+            .filter(|n| !n.is_empty())
+            .unwrap_or("this binary was built before the provenance stamps existed")
+            .to_string(),
+    }
+}
+
+/// One resolved crate, in Cargo's own vocabulary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LockedDependency {
+    /// The resolved version.
+    pub version: String,
+    /// Where it came from. `None` for a path or workspace member.
+    pub source: Option<String>,
+    /// The registry checksum, Cargo's answer to npm's `integrity`. `None` for a
+    /// path dependency, which is the honest answer rather than an empty string.
+    pub checksum: Option<String>,
+}
+
+/// The resolved dependency graph `build.rs` wrote out of `Cargo.lock`.
+///
+/// Baked into the binary with `include_str!` so it is available with no
+/// filesystem at runtime: a binary copied into a scratch container without its
+/// source tree still knows exactly what it was built from, which is the whole
+/// point of recording it.
+pub fn locked_dependencies() -> BTreeMap<String, LockedDependency> {
+    const GRAPH: &str = include_str!(concat!(env!("OUT_DIR"), "/lock-dependencies.json"));
+    serde_json::from_str(GRAPH).unwrap_or_default()
+}
+
+impl Provenance {
+    /// The `provenance` block of a storage document, in the shape
+    /// `SUITE-PLAN.md` §5.4 names and `storage::archive::admit` reads.
+    ///
+    /// `invocation` comes from the driver rather than from here, because the
+    /// argv, the working directory and the defaults that were resolved are
+    /// facts about the run and not about the environment. `allow_dirty` is the
+    /// operator's decision, recorded next to the dirt it allows.
+    ///
+    /// Every field is written, including the ones that are `null`. No
+    /// `skip_serializing_if` anywhere: an absent key and an explicit null are
+    /// different documents with different digests, and the cross-language
+    /// digest test K2.2 will pin cannot survive a field that Rust drops and
+    /// JavaScript writes.
+    pub fn to_storage_block(&self, invocation: &Value, allow_dirty: bool) -> Value {
+        json!({
+            "library": {
+                "name": "libviprs",
+                "version": option_env!("LIBVIPRS_CORE_VERSION").unwrap_or("unknown"),
+                "commit": self.trees.library.commit,
+                "dirty": self.trees.library.dirty,
+                "gitNote": self.trees.library.note,
+            },
+            "commit": self.trees.harness.commit,
+            "dirty": self.trees.harness.dirty,
+            "gitNote": self.trees.harness.note,
+            "allowDirty": allow_dirty,
+            "emulated": self.emulation.as_ref().map(|e| e.emulated),
+            "emulationEvidence": self.emulation.as_ref().map(|e| &e.evidence),
+            // Spelled out rather than serialised straight from the struct. The
+            // document's keys are camelCase and `Provenance`'s on-disk shape in
+            // `benchmark_history.json` is snake_case, and reconciling that with
+            // a `rename_all` on one struct would leave one block in a file
+            // spelled differently from its siblings. The contract this block
+            // implements is §5.4's, so §5.4's spellings live here, in the one
+            // function that exists to produce them.
+            "filesystem": self.filesystem.as_ref().map(|fs| json!({
+                "scratchDir": fs.scratch_dir,
+                "fsType": fs.fs_type,
+                "mountSource": fs.mount_source,
+                "bindMount": fs.bind_mount,
+                "declaredTmpfs": fs.declared_tmpfs,
+            })),
+            "node": {
+                "rustc": self.rustc_version,
+                "cargo": self.toolchain.cargo_version,
+                "buildProfile": self.build_profile,
+                "buildFlags": self.build_flags,
+                "rustflags": self.toolchain.rustflags,
+                "debugAssertions": self.toolchain.debug_assertions,
+            },
+            "os": self.host.os,
+            "arch": self.host.arch,
+            "cpuModel": self.host.cpu_model,
+            "ncpu": self.host.ncpu,
+            "inContainer": self.host.in_container,
+            "cgroupCpuQuota": self.cgroup.cpu_quota,
+            "cgroupMemoryLimit": self.cgroup.memory_limit_bytes,
+            "loadAverage": self.load_average.map(|la| json!({
+                "oneMin": la.one_min,
+                "fiveMin": la.five_min,
+                "fifteenMin": la.fifteen_min,
+            })),
+            "thermalThrottleCount": self.thermal_throttle_count,
+            "lockfileHash": self.lockfile_hash,
+            "dependencies": self.dependencies,
+            "invocation": invocation,
+        })
+    }
+
+    /// The storage-specific warnings, for stderr before a sweep starts rather
+    /// than as a refusal forty minutes after it finishes.
+    ///
+    /// Every one of these is also a refusal in `storage::archive::admit`. Saying
+    /// it twice is the point: the refusal is what keeps the archive honest, and
+    /// the warning is what stops somebody burning an afternoon to earn it.
+    pub fn storage_provenance_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        match self.emulation.as_ref().map(|e| e.emulated) {
+            Some(EmulationVerdict::Native) => {}
+            Some(EmulationVerdict::Emulated) => warnings.push(
+                "WARNING: this process is being instruction-translated, so its timings \
+                 describe the translator as much as the code. Nothing will archive."
+                    .to_string(),
+            ),
+            _ => warnings.push(
+                "WARNING: the emulation probe could not observe either way, and an unobserved \
+                 run is refused the same as a translated one. Nothing will archive."
+                    .to_string(),
+            ),
+        }
+        for (label, tree) in [
+            ("harness", &self.trees.harness),
+            ("library", &self.trees.library),
+        ] {
+            if tree.commit.is_none() || tree.dirty.is_none() {
+                warnings.push(format!(
+                    "WARNING: the {label} tree has no commit or no dirty flag, so nothing will \
+                     archive. The reason recorded at build time was: {}",
+                    tree.note
+                ));
+            } else if tree.dirty == Some(true) {
+                warnings.push(format!(
+                    "WARNING: the {label} tree is dirty, so these numbers describe a source \
+                     state that exists on one machine. Archiving needs --allow-dirty, which \
+                     stamps every cell."
+                ));
+            }
+        }
+        if self.toolchain.debug_assertions {
+            warnings.push(
+                "WARNING: debug assertions are compiled in, so every bounds and overflow check \
+                 in the engine is inside the measurement."
+                    .to_string(),
+            );
+        }
+        if let Some(fs) = &self.filesystem {
+            if fs.fs_type == "tmpfs" && !fs.declared_tmpfs {
+                warnings.push(format!(
+                    "WARNING: the scratch directory {} is on tmpfs, which is RAM with a \
+                     filesystem interface. Nothing will archive unless the profile declares it.",
+                    fs.scratch_dir
+                ));
+            }
+        }
+        warnings
+    }
+}
+
+/// Name the filesystem under `dir`.
+#[cfg(target_os = "linux")]
+fn fs_type_name(dir: &Path) -> String {
+    // Every value here is a kernel `*_SUPER_MAGIC`. An unmapped one still gets
+    // recorded, in hex, because a magic number nobody has named yet is a fact
+    // somebody can look up and `"unknown"` is not.
+    const MAGICS: &[(i64, &str)] = &[
+        (0x0000_EF53, "ext4"),
+        (0x5846_5342, "xfs"),
+        (0x9123_683E, "btrfs"),
+        (0x0102_1994, "tmpfs"),
+        (0x794c_7630, "overlay"),
+        (0x0000_6969, "nfs"),
+        (0x0102_1997, "9p"),
+        (0x6573_7546, "fuse"),
+        (0x2fc1_2fc1, "zfs"),
+        (0x7371_7368, "squashfs"),
+        (0x5346_544e, "ntfs"),
+        (0x0000_4d44, "vfat"),
+        (0x2011_BAB0, "exfat"),
+        (0xCA45_1A4E, "bcachefs"),
+    ];
+    match statfs_type(dir) {
+        Some(magic) => MAGICS
+            .iter()
+            .find(|(m, _)| *m == magic)
+            .map(|(_, name)| (*name).to_string())
+            .unwrap_or_else(|| format!("unknown-{magic:#x}")),
+        None => "unknown".to_string(),
+    }
+}
+
+/// The raw `statfs` magic for `dir`.
+#[cfg(target_os = "linux")]
+fn statfs_type(dir: &Path) -> Option<i64> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: `path` is a NUL-terminated C string that outlives the call, and
+    // `buf` is a correctly sized, writable `statfs` the kernel fills. The return
+    // value is checked before a single field is read.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statfs(path.as_ptr(), &mut buf) };
+    (rc == 0).then(|| buf.f_type as i64)
+}
+
+/// Name the filesystem under `dir`.
+#[cfg(target_os = "macos")]
+fn fs_type_name(dir: &Path) -> String {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(path) = CString::new(dir.as_os_str().as_bytes()) else {
+        return "unknown".to_string();
+    };
+    // SAFETY: as the Linux arm above. macOS hands back the filesystem's name
+    // directly rather than a magic number, so there is no table to keep.
+    let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
+    let rc = unsafe { libc::statfs(path.as_ptr(), &mut buf) };
+    if rc != 0 {
+        return "unknown".to_string();
+    }
+    let name = unsafe { CStr::from_ptr(buf.f_fstypename.as_ptr()) };
+    name.to_string_lossy().to_string()
+}
+
+/// Name the filesystem under `dir`.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn fs_type_name(_dir: &Path) -> String {
+    "unknown".to_string()
+}
+
+/// The mount `dir` sits on: what it came from, and whether it is a bind of a
+/// subtree.
+///
+/// `/proc/self/mountinfo` rather than `/proc/mounts`, because only mountinfo
+/// carries the mount *root* field, and that field is the only way to tell a
+/// bind mount of `/Users/rom/workspace` from a mount of a whole filesystem. A
+/// bind mount is the ordinary case on this Mac and it is worth recording: the
+/// bytes cross a virtiofs boundary on their way to the disk.
+#[cfg(target_os = "linux")]
+fn mount_entry(dir: &Path) -> (Option<String>, Option<bool>) {
+    let Ok(text) = std::fs::read_to_string("/proc/self/mountinfo") else {
+        return (None, None);
+    };
+    let target = dir.to_string_lossy();
+    let mut best: Option<(usize, String, bool)> = None;
+    for line in text.lines() {
+        // `id parent major:minor root mountpoint options... - fstype source superopts`
+        let fields: Vec<&str> = line.split(' ').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+        let root = fields[3];
+        let mount_point = fields[4];
+        if !(target == mount_point
+            || (target.starts_with(mount_point)
+                && (mount_point == "/" || target.as_bytes().get(mount_point.len()) == Some(&b'/'))))
+        {
+            continue;
+        }
+        let Some(separator) = fields.iter().position(|f| *f == "-") else {
+            continue;
+        };
+        let source = fields.get(separator + 2).copied().unwrap_or("").to_string();
+        let candidate = (mount_point.len(), source, root != "/");
+        if best.as_ref().map(|b| b.0).unwrap_or(0) <= candidate.0 {
+            best = Some(candidate);
+        }
+    }
+    match best {
+        Some((_, source, bind)) => (Some(source), Some(bind)),
+        None => (None, None),
+    }
+}
+
+/// The mount `dir` sits on.
+#[cfg(not(target_os = "linux"))]
+fn mount_entry(_dir: &Path) -> (Option<String>, Option<bool>) {
+    (None, None)
+}
+
+/// CPUs the cgroup allows, v2 first then v1.
+fn cgroup_cpu_quota() -> Option<f64> {
+    // v2: `cpu.max` is "<quota> <period>", or "max <period>" for unlimited.
+    if let Ok(text) = std::fs::read_to_string("/sys/fs/cgroup/cpu.max") {
+        let mut parts = text.split_whitespace();
+        let quota = parts.next()?;
+        let period = parts.next()?.parse::<f64>().ok()?;
+        if quota == "max" {
+            return None;
+        }
+        return Some(quota.parse::<f64>().ok()? / period);
+    }
+    // v1: a negative quota means unlimited.
+    let quota = std::fs::read_to_string("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
+        .ok()?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    let period = std::fs::read_to_string("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
+        .ok()?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    (quota > 0.0 && period > 0.0).then(|| quota / period)
+}
+
+/// Memory ceiling in bytes, v2 first then v1.
+fn cgroup_memory_limit() -> Option<u64> {
+    if let Ok(text) = std::fs::read_to_string("/sys/fs/cgroup/memory.max") {
+        let text = text.trim();
+        if text == "max" {
+            return None;
+        }
+        return text.parse::<u64>().ok();
+    }
+    let raw = std::fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    // v1 spells "unlimited" as a number near the top of the address space
+    // rather than as a word, and reporting that as a limit would be a lie with
+    // nineteen digits of confidence.
+    (raw < (1u64 << 62)).then_some(raw)
 }
