@@ -36,6 +36,11 @@ pub fn all() -> Vec<Box<dyn Scenario>> {
     vec![
         Box::new(Generate),
         Box::new(ReadPass::plan_order()),
+        // The archive's own byte order. `ReadPass::tileid_order()` has existed
+        // since this file was written and was never in this list, so the one
+        // scenario that reads a PMTiles archive the way its bytes are laid out
+        // never ran.
+        Box::new(ReadPass::tileid_order()),
         Box::new(ReadPass::random()),
     ]
 }

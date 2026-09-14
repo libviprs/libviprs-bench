@@ -45,6 +45,24 @@ pub mod replicate;
 pub mod requests;
 pub mod tileid_order;
 
+/// The scenarios this lane adds, in sweep order.
+///
+/// `registry()` in the parent module concatenates this with
+/// [`reference::all`]. Keeping them separate is deliberate: the reference set
+/// is the least that proves the skeleton measures anything and it has to stay
+/// runnable on its own, and this set is the one whose absence from the registry
+/// is what `tests/storage_registry.rs` exists to catch.
+pub fn all() -> Vec<Box<dyn Scenario>> {
+    let mut out: Vec<Box<dyn Scenario>> = vec![
+        Box::new(open::Open),
+        Box::new(open::FirstLookup),
+        Box::new(decode_root::DecodeRootScenario),
+    ];
+    out.extend(concurrent_curve::all());
+    out.push(Box::new(requests::Requests));
+    out
+}
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 

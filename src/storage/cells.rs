@@ -216,23 +216,57 @@ impl Profile {
 
     /// The cells this profile walks, in facet order.
     ///
-    /// K1.4 adds the 16263 brink cell and the `noise` source rows; what is
-    /// here is the set the old harness already measured, re-expressed on the
-    /// tile-count facet.
+    /// The full profile opens and closes on its replicate control, carries the
+    /// brink cell at **16369** entries (measured by opening the archive, not
+    /// derived: an earlier draft of this comment said 16263, which was
+    /// arithmetic over a planner), and walks the `noise` source on the two
+    /// 64-pixel cells so compressibility is an axis.
     pub fn cells(self) -> Vec<Cell> {
         match self {
+            // The ci profile proves the harness runs. One cell, one source,
+            // and no replicate control: it is never published, so it has no
+            // noise floor to publish either.
             Profile::Ci => vec![Cell::new(2048, 2048, 256, Source::Gradient, 93)],
-            Profile::Full => vec![
-                Cell::new(2048, 2048, 256, Source::Gradient, 93),
-                Cell::new(8192, 8192, 256, Source::Gradient, 1373),
-                Cell::new(8192, 8192, 64, Source::Gradient, 21851),
-            ],
+            Profile::Full => {
+                let control = Cell::new(2048, 2048, 256, Source::Gradient, 93);
+                vec![
+                    // Measured first and last, which is what makes it the
+                    // drift control rather than a cell measured twice in a
+                    // row. Two measurements back to back would see none of the
+                    // thermal, neighbour and page-cache drift the spread is
+                    // there to catch, and would publish a flatteringly small
+                    // one.
+                    control,
+                    Cell::new(8192, 8192, 256, Source::Gradient, 1373),
+                    // The brink cell: the peak of the open-cost ramp, four
+                    // pixels of tile under the writer's own cutoff. Without it
+                    // the sweep brackets the worst case instead of measuring
+                    // it, which is the whole of libviprs#1021.
+                    brink_cell(Source::Gradient),
+                    Cell::new(8192, 8192, 64, Source::Gradient, 21851),
+                    // Compressibility, the axis the old sweep never had. Both
+                    // 64-pixel cells, because that is where the tile payload is
+                    // small enough for the codec to be most of the difference.
+                    Cell::new(8192, 8192, 64, Source::Noise, 21851),
+                    brink_cell(Source::Noise),
+                    control,
+                ]
+            }
             Profile::Xl => {
                 let mut cells = Profile::Full.cells();
+                // Insert before the closing control, so the sweep still ends on
+                // the cell it opened with.
+                let last = cells.pop();
                 cells.push(Cell::new(16384, 16384, 256, Source::Gradient, 5469));
+                cells.extend(last);
                 cells
             }
         }
+    }
+
+    /// The scenarios this profile walks, by name.
+    pub fn scenario_names(self) -> Vec<String> {
+        scenario_names_for(self)
     }
 
     /// How many lookups one pass performs.
@@ -439,6 +473,9 @@ pub fn brink_search() -> (Cell, u64) {
             }
         }
     }
+    // Not an I/O condition: the search walks 241 tile sizes over five widths
+    // and every one of them plans, so an empty result would mean the loop above
+    // was edited into doing nothing.
     best.expect("some cell in the search space plans a pyramid")
 }
 
@@ -448,23 +485,24 @@ pub fn brink_search() -> (Cell, u64) {
 /// The one function here that answers the brink question, and it answers it by
 /// opening the archive. Every other route to that number is arithmetic over a
 /// planner.
-pub fn root_shape(archive: &std::path::Path) -> (u64, u64) {
+pub fn root_shape(archive: &std::path::Path) -> Result<(u64, u64), String> {
     use libviprs::pyramid_reader::PmTilesPyramidReader;
 
-    let reader = PmTilesPyramidReader::try_open(archive).expect("the archive opens for reading");
+    let reader = PmTilesPyramidReader::try_open(archive)
+        .map_err(|e| format!("the archive does not open for reading: {e}"))?;
     let root = reader.reader().root_entries();
     let leaves = root.iter().filter(|entry| entry.is_leaf()).count();
-    (root.len() as u64, leaves as u64)
+    Ok((root.len() as u64, leaves as u64))
 }
 
 /// Which regime an archive is actually in, from its root shape.
-pub fn observed_regime(archive: &std::path::Path) -> Regime {
-    let (_, leaves) = root_shape(archive);
-    if leaves == 0 {
+pub fn observed_regime(archive: &std::path::Path) -> Result<Regime, String> {
+    let (_, leaves) = root_shape(archive)?;
+    Ok(if leaves == 0 {
         Regime::Root
     } else {
         Regime::Leaves
-    }
+    })
 }
 
 /// Every source a sweep may walk, publishable or not.
@@ -474,3 +512,48 @@ pub const SOURCES: [Source; 4] = [
     Source::Flat,
     Source::PeriodicGradient,
 ];
+
+/// The cell a sweep measures first and last, as its own noise floor.
+///
+/// `None` on `ci`, which proves the harness runs and is never published, so it
+/// has no noise floor to publish. The spread between the two measurements is
+/// the only in-run dispersion figure a host with no calibrated baseline has,
+/// and it is a floor rather than a calibration.
+pub fn replicate_cell(profile: Profile) -> Option<Cell> {
+    match profile {
+        Profile::Ci => None,
+        Profile::Full | Profile::Xl => profile.cells().first().copied(),
+    }
+}
+
+/// The scenarios a profile walks, by name, in registry order.
+///
+/// `ci` walks the cheap end and says so here rather than skipping quietly at
+/// run time. What it leaves out is the thread ladder, which is four scenarios
+/// over two backends and measures contention that one cell on a shared runner
+/// cannot see anyway, and `replicate`, which needs a schedule `ci` does not
+/// have. Everything else runs, because the point of `ci` is that the harness
+/// produces every row shape the full profile does.
+pub fn scenario_names_for(profile: Profile) -> Vec<String> {
+    let all = [
+        "generate",
+        "open",
+        "first_lookup",
+        "decode_root",
+        "read_plan_order",
+        "read_tileid_order",
+        "read_random",
+        "read_concurrent@1",
+        "read_concurrent@2",
+        "read_concurrent@4",
+        "read_concurrent@8",
+        "requests",
+    ];
+    all.iter()
+        .filter(|name| match profile {
+            Profile::Ci => !name.starts_with("read_concurrent@"),
+            Profile::Full | Profile::Xl => true,
+        })
+        .map(|name| name.to_string())
+        .collect()
+}

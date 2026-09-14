@@ -70,22 +70,33 @@ pub fn parse_child_spec(spec: &str) -> Option<(PathBuf, TileCoord)> {
 /// The whole of what a child does: open the archive, look one tile up, and say
 /// what that cost and who did it.
 pub fn child_main(spec: &str) -> String {
-    let (archive, coord) = parse_child_spec(spec).expect("the parent handed a well-formed spec");
+    match measure_once(spec) {
+        Ok(line) => line,
+        // A child that cannot measure says so on the line the parent reads,
+        // rather than dying and leaving the parent to report "the child's
+        // output does not parse", which names the wrong problem.
+        Err(why) => format!("{CHILD_LINE_PREFIX}-ERROR {why}"),
+    }
+}
+
+fn measure_once(spec: &str) -> Result<String, String> {
+    let (archive, coord) =
+        parse_child_spec(spec).ok_or_else(|| format!("the spec {spec:?} does not parse"))?;
     // Through the family's factory like every other reader here, even in a
     // child. The open is inside the timed section because the open is what this
     // scenario prices.
     let cell = Cell::new(1, 1, 1, super::super::cells::Source::Gradient, 0);
-    let plan = cell.plan().expect("a one-tile plan");
+    let plan = cell.plan().ok_or_else(|| "a one-tile plan is invalid".to_string())?;
     let readers = FileReaderFactory::new(Backend::PmTiles, &archive, &plan);
     let at = Instant::now();
-    let reader = readers.fresh().expect("the archive opens for reading");
-    let tile = reader.tile(coord).expect("a lookup succeeds");
+    let reader = readers.fresh()?;
+    let tile = reader.tile(coord)?;
     let micros = at.elapsed().as_secs_f64() * 1e6;
-    format!(
+    Ok(format!(
         "{CHILD_LINE_PREFIX} {} {micros} {}",
         std::process::id(),
         u8::from(tile.is_some())
-    )
+    ))
 }
 
 /// Read a child's line back out of its stdout.
