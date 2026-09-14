@@ -523,3 +523,82 @@ pub fn random_order(coords: &[TileCoord], seed: u64) -> Vec<TileCoord> {
     }
     out
 }
+
+/// The cells a sweep may publish rows for.
+///
+/// Everything except the `flat` dedupe guard. It is filtered here, once, rather
+/// than by every consumer remembering to, because the failure mode is a row
+/// labelled with a cell whose regime it does not have and nothing downstream
+/// can see that.
+pub fn publishable(cells: &[Cell]) -> Vec<Cell> {
+    cells
+        .iter()
+        .copied()
+        .filter(|cell| cell.source.publishes_rows())
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// The gradient's period, which is not a detail
+// ---------------------------------------------------------------------------
+
+/// How often the gradient repeats, in pixels, on both axes.
+///
+/// `gradient` is `(x % 256, y % 256, (x + y) % 256)`, so it is periodic with a
+/// period of 256 on both axes and that number is load bearing rather than
+/// cosmetic.
+pub const GRADIENT_PERIOD_PX: u32 = 256;
+
+/// Whether a tile size makes every tile of a gradient level byte-identical.
+///
+/// It does whenever the tile is a whole number of periods wide. Then tile
+/// `(i, j)` covers `x` in `[t*i, t*i + t)`, `x % 256` runs 0 to 255 for every
+/// `i`, and the same for `y`, so every tile at that level is the same bytes. A
+/// level's tile ids are a contiguous range, the writer's run-length encoding
+/// merges a contiguous run of identical payloads into one entry, and the whole
+/// level collapses to **one** entry.
+///
+/// Measured, on this crate's own archives:
+///
+/// | cell | planned tiles | gradient root | noise root | flat root |
+/// |---|---|---|---|---|
+/// | 1024x1024@256 | 29 | 11 | 29 | 11 |
+/// | 2048x2048@256 | 93 | 12 | 93 | 12 |
+/// | 1024x1024@128 | 92 | 74 | 92 | 11 |
+/// | 1024x1024@64 | 347 | 329 | 347 | 11 |
+/// | 1024x1024@46 | 728 | 728 | 728 | 80 |
+/// | 2048x2048@64 | 1371 | 1290 | 1371 | 12 |
+///
+/// One entry per level at 256, all distinct at 46, and a few percent merged at
+/// 64 where the identical tiles exist but their ids are not adjacent in Hilbert
+/// order. That is why the brink cell's 46 pixel tile gives it a root the size of
+/// its plan, and it is why a gradient cell at a 256 pixel tile is not the cell
+/// its tile count says it is.
+pub fn gradient_collapses_at(tile_size: u32) -> bool {
+    tile_size % GRADIENT_PERIOD_PX == 0
+}
+
+/// Whether a cell's declared shape survives the source it is filled from.
+///
+/// The open-cost ramp is a function of **root entries**, and a cell's tile count
+/// is only the same number while no run of neighbouring tiles shares a payload.
+/// A gradient at a 256 pixel tile shares every payload in the level, so such a
+/// cell sits at a dozen entries however many tiles it plans, and a table that
+/// names it by its tile count is naming a point that is not on the ramp.
+///
+/// `Err` carries the reason, so a sweep can refuse the pairing and say why
+/// rather than publishing a cell under a label it does not have.
+pub fn source_suits_the_cell(cell: &Cell) -> Result<(), String> {
+    if cell.source == Source::Gradient && gradient_collapses_at(cell.tile_size) {
+        return Err(format!(
+            "{} fills a {} pixel tile from the gradient, whose period is {GRADIENT_PERIOD_PX} \
+             pixels on both axes, so every tile of a level is the same bytes and the writer's \
+             run-length encoding collapses the level to one entry; the cell plans {} tiles and its \
+             root will hold about one entry per level",
+            cell.spec(),
+            cell.tile_size,
+            cell.planned_tiles()
+        ));
+    }
+    Ok(())
+}
