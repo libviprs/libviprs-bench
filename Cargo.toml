@@ -79,6 +79,16 @@ harness = false
 name = "check-libvips-pin"
 path = "src/check_libvips_pin.rs"
 
+# The emulation probe, as a binary of its own. `tools/probe-emulation.sh` does
+# NOT build it through cargo — it compiles `src/probe_emulation_main.rs` with
+# bare `rustc` under two Docker platforms, because building it through cargo
+# would drag the whole `libviprs` path dependency through an emulated compiler.
+# This entry is here so `cargo run --bin probe-emulation` works for a human and
+# so the binary is covered by the crate's own check and clippy cells.
+[[bin]]
+name = "probe-emulation"
+path = "src/probe_emulation_main.rs"
+
 [[bin]]
 name = "flamegraph"
 path = "src/flamegraph.rs"
