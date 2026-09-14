@@ -18,13 +18,11 @@
 //! and rendering them beside the archive's observed counts without saying so
 //! would be the single most misleading thing this family could publish.
 
-use std::path::Path;
-
 use libviprs::planner::TileCoord;
-use libviprs::pmtiles::Reader;
 
-use super::Origin;
-use super::counting::CountingSource;
+use super::super::document::Origin;
+use super::TileReader;
+use super::counting::CountingFactory;
 
 /// The operations a request count is broken down by.
 pub const OPERATIONS: [&str; 5] = [
@@ -51,34 +49,34 @@ pub struct OperationCount {
 /// carry no count at all rather than a zero: a root-only archive does not
 /// perform a free leaf lookup, it performs none.
 pub fn pmtiles(
-    archive: &Path,
+    readers: &CountingFactory,
     root_coord: TileCoord,
     leaf_coord: Option<TileCoord>,
     walk: &[TileCoord],
 ) -> Vec<OperationCount> {
-    let source = CountingSource::try_open(archive).expect("the archive opens");
-    let reader = Reader::try_new(source).expect("the archive's index is readable");
+    let reader = readers
+        .fresh_counting()
+        .expect("the archive's index is readable");
 
     let mut out = Vec::with_capacity(OPERATIONS.len());
+    let open = reader.open_requests();
     out.push(OperationCount {
         operation: "open",
-        requests: reader.source().count(),
-        bytes: reader.source().bytes(),
+        requests: open.len() as u64,
+        bytes: open.iter().map(|r| r.len as u64).sum(),
         origin: Origin::Observed,
     });
 
     let measure = |operation: &'static str, coords: &[TileCoord]| {
-        reader.source().forget();
-        for coord in coords {
-            let z = u8::try_from(coord.level).expect("a level PMTiles can address");
-            reader
-                .get_tile(z, coord.col, coord.row)
-                .expect("a lookup succeeds");
-        }
+        let (_, requests) = reader.counted(|r| {
+            for coord in coords {
+                r.tile(*coord).expect("a lookup succeeds");
+            }
+        });
         OperationCount {
             operation,
-            requests: reader.source().count(),
-            bytes: reader.source().bytes(),
+            requests: requests.len() as u64,
+            bytes: requests.iter().map(|r| r.len as u64).sum(),
             origin: Origin::Observed,
         }
     };

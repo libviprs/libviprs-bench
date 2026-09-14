@@ -20,7 +20,18 @@
 
 use libviprs::planner::{PyramidPlan, TileCoord};
 
-use super::tile_id;
+use libviprs::pmtiles::zxy_to_tileid;
+
+/// The PMTiles tile id a coordinate addresses, which is the archive's byte
+/// order.
+///
+/// `None` for a coordinate PMTiles cannot address, which is the same answer
+/// `PmTilesPyramidReader` gives: not an error, just a tile this pyramid does
+/// not have.
+pub fn tile_id(coord: TileCoord) -> Option<u64> {
+    let z = u8::try_from(coord.level).ok()?;
+    zxy_to_tileid(z, coord.col, coord.row).ok()
+}
 
 /// The same `n` coordinates [`plan_order::coordinates`](super::plan_order::coordinates)
 /// walks, in ascending tile id.

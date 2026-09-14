@@ -3,14 +3,14 @@
 //! Generates a SYNTHETIC gradient raster (see `gradient_raster`) at
 //! progressively larger sizes — the actual `43551_California_South.pdf`
 //! fixture is not committed, so the workload is a stand-in sized to that
-//! page's 1.42:1 aspect, NOT a rasterized blueprint. Runs all four engines
-//! (libvips, monolithic, streaming, MapReduce) at each size and at matched
-//! thread budgets (1 and num_cpus), measuring how wall time, peak RSS, and
-//! efficiency scale with image area.
+//! page's 1.42:1 aspect, NOT a rasterized blueprint. Runs the family's engines
+//! (monolithic, streaming, MapReduce, plus libvips for the `vips` family) at
+//! each size and at matched thread budgets (1 and num_cpus), measuring how wall
+//! time, peak RSS, and efficiency scale with image area.
 //!
-//! Run: cargo run --release --bin scalability
+//! Run: cargo run --release --bin scalability [-- --family <name>]
 //!
-//! Output: report/scalability_results.json. This binary emits JSON only; the
+//! Output: report/<family>/scalability_results.json. This binary emits JSON only; the
 //! `scalability_*.svg` line charts render from that JSON via
 //! `tools/charts/render.mjs` (run-bench.sh invokes it after this writes the
 //! JSON) — the plotters dependency is gone (issue #42).
@@ -31,6 +31,7 @@ use libviprs::{
     EngineBuilder, EngineConfig, EngineKind, FsSink, Layout, PyramidPlanner, Raster,
     RasterStripSource, TileFormat,
 };
+use libviprs_bench::family::{ALL_FAMILIES, DEFAULT_FAMILY, Family};
 use libviprs_bench::provenance::Provenance;
 use libviprs_bench::{
     bench_libvips, format_thousands, gradient_raster, streaming_budget_for, vips_available,
@@ -396,6 +397,12 @@ fn run_pdf_streaming(
 
 /// Parsed CLI options for the scalability binary.
 struct CliOpts {
+    /// Which benchmark family this sweep measures. Decides the engine set, and
+    /// with it whether libvips is measured at all (issue #64).
+    family: Family,
+    /// Where the sweep writes `scalability_results.json`. Defaults to
+    /// `report/<family>/`.
+    report_dir: std::path::PathBuf,
     /// Megapixel cap for the real-content PDF series (`--pdf-max-mp`, default
     /// [`DEFAULT_PDF_MAX_MP`]). Only meaningful on a `pdfium` build; the four
     /// gradient series always run the full sweep.
@@ -406,6 +413,8 @@ struct CliOpts {
 fn parse_cli() -> CliOpts {
     #[cfg(feature = "pdfium")]
     let mut pdf_max_mp = DEFAULT_PDF_MAX_MP;
+    let mut family_name = DEFAULT_FAMILY.as_str().to_string();
+    let mut report_dir: Option<std::path::PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -427,9 +436,33 @@ fn parse_cli() -> CliOpts {
                 #[cfg(not(feature = "pdfium"))]
                 let _ = val;
             }
+            "--family" => {
+                family_name = args.next().unwrap_or_else(|| {
+                    eprintln!("--family wants a family name");
+                    std::process::exit(2);
+                });
+            }
+            "--report-dir" => {
+                report_dir = Some(std::path::PathBuf::from(args.next().unwrap_or_else(|| {
+                    eprintln!("--report-dir wants a directory");
+                    std::process::exit(2);
+                })));
+            }
             "-h" | "--help" => {
-                println!("Usage: scalability [--pdf-max-mp <n>]");
+                println!("Usage: scalability [--family <name>] [--report-dir <dir>] [--pdf-max-mp <n>]");
                 println!();
+                println!("Families:");
+                for family in ALL_FAMILIES {
+                    let default = if family == DEFAULT_FAMILY {
+                        "  (default)"
+                    } else {
+                        ""
+                    };
+                    println!("  {:<9} {}{default}", family.as_str(), family.summary());
+                }
+                println!();
+                println!("  --family <name>   Which family to sweep (default: {DEFAULT_FAMILY})");
+                println!("  --report-dir <d>  Write the sweep here instead of report/<family>/");
                 println!("  --pdf-max-mp <n>  Cap the real-content PDF series at n megapixels");
                 println!(
                     "                   (pdfium builds only; the gradient series are uncapped)."
@@ -443,7 +476,18 @@ fn parse_cli() -> CliOpts {
             }
         }
     }
+    // Refuse `vips` on a build with no libvips in it, loudly and non-zero,
+    // rather than sweeping three engines under a comparison's name (issue #64).
+    let family = Family::resolve(&family_name).unwrap_or_else(|refusal| {
+        eprintln!("{refusal}");
+        std::process::exit(refusal.exit_code());
+    });
+    let report_dir = report_dir
+        .unwrap_or_else(|| family.report_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("report")));
+
     CliOpts {
+        family,
+        report_dir,
         #[cfg(feature = "pdfium")]
         pdf_max_mp,
     }
@@ -454,10 +498,12 @@ fn main() {
     #[cfg(not(feature = "pdfium"))]
     let _ = &opts;
 
-    let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("report");
+    let family = opts.family;
+    let report_dir = opts.report_dir.clone();
     fs::create_dir_all(&report_dir).unwrap();
 
-    let has_vips = vips_available();
+    // The family, not the environment, decides whether libvips is measured.
+    let has_vips = family.measures_libvips() && vips_available();
 
     // Scalability series: generate gradient rasters at progressively larger
     // sizes. Uses 1.42:1 aspect ratio matching 43551_California_South.pdf
@@ -481,7 +527,8 @@ fn main() {
         (20000, 14000), // 280 MP — mono peak ≈ 1.05 GB
     ];
 
-    println!("=== Engine Scalability Benchmark ===");
+    println!("=== Engine Scalability Benchmark ({family}) ===");
+    println!("Family: {family} — {}", family.summary());
     println!(
         "Workload: SYNTHETIC gradient raster; aspect 1.42:1 matches the \
          California South page (4608x3240 pts)."
@@ -518,10 +565,14 @@ fn main() {
     println!(
         "Tile size: {TILE_SIZE}, streaming budget floor: {STREAMING_BUDGET_FLOOR} bytes (auto-scaled per width)",
     );
-    if has_vips {
-        println!("libvips CLI: included");
+    if family.measures_libvips() {
+        if has_vips {
+            println!("libvips CLI: included");
+        } else {
+            println!("libvips CLI: not found, skipping");
+        }
     } else {
-        println!("libvips CLI: not found, skipping");
+        println!("libvips: not part of the {family} family");
     }
     // Measurement-condition guards (contended host / thermal / mismatched
     // oracle #33): a run measured under load, while thermally throttled, or
@@ -568,9 +619,9 @@ fn main() {
             // the matched thread budget (`concurrency_set` / VIPS_CONCURRENCY).
             // `vips_done` is only reassigned under the `libvips` feature.
             #[cfg_attr(not(feature = "libvips"), allow(unused_mut))]
-            let mut vips_done = false;
+            let mut vips_done = !family.measures_libvips();
             #[cfg(feature = "libvips")]
-            {
+            if family.measures_libvips() {
                 if let Some(r) =
                     libviprs_bench::bench_libvips_inprocess(&src, TILE_SIZE, conc, "vips")
                 {

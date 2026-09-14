@@ -20,18 +20,39 @@ use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
 use libviprs::planner::TileCoord;
-use libviprs::pyramid_reader::PyramidReader;
 
-use super::Outcome;
+use super::{Outcome, Skip, TileReader};
 
 /// The thread counts every sweep reports, whether or not the host can run them.
 pub const THREAD_LADDER: [usize; 4] = [1, 2, 4, 8];
 
 /// One rung of the ladder and what this host did with it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `skip` is `None` on a rung this host measures. K1.2's [`Outcome`] taxonomy
+/// is what the document keys on and [`Skip`] is what carries the reason, so a
+/// declined rung is `Outcome::Skipped` with a reason rather than a row that is
+/// simply absent.
+#[derive(Debug, Clone)]
 pub struct Arm {
     pub threads: usize,
-    pub outcome: Outcome,
+    pub skip: Option<Skip>,
+}
+
+impl Arm {
+    pub fn is_ok(&self) -> bool {
+        self.skip.is_none()
+    }
+
+    pub fn outcome(&self) -> Outcome {
+        match &self.skip {
+            None => Outcome::Ok,
+            Some(skip) => skip.outcome,
+        }
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        self.skip.as_ref().map(|skip| skip.reason.as_str())
+    }
 }
 
 /// Every rung, in order, with the ones above `ncpu` marked skipped.
@@ -43,14 +64,12 @@ pub fn ladder(ncpu: usize) -> Vec<Arm> {
         .iter()
         .map(|&threads| Arm {
             threads,
-            outcome: if threads <= ncpu {
-                Outcome::Ok
-            } else {
-                Outcome::skipped(format!(
+            skip: (threads > ncpu).then(|| {
+                Skip::skipped(format!(
                     "this host has {ncpu} cores, so {threads} threads would measure \
                      oversubscription rather than concurrency"
                 ))
-            },
+            }),
         })
         .collect()
 }
@@ -119,7 +138,7 @@ impl ArmRun {
 /// and a join are real work, and a control that pays them is measuring the pool
 /// as well as the lookups, which is exactly the thing the curve is supposed to
 /// isolate.
-pub fn run_arm(reader: &dyn PyramidReader, coords: &[TileCoord], threads: usize) -> ArmRun {
+pub fn run_arm(reader: &dyn TileReader, coords: &[TileCoord], threads: usize) -> ArmRun {
     let hits = AtomicU64::new(0);
 
     if threads == 1 {
@@ -169,7 +188,7 @@ pub fn run_arm(reader: &dyn PyramidReader, coords: &[TileCoord], threads: usize)
     }
 }
 
-fn walk(reader: &dyn PyramidReader, coords: &[TileCoord]) -> (Vec<Duration>, ThreadId, u64) {
+fn walk(reader: &dyn TileReader, coords: &[TileCoord]) -> (Vec<Duration>, ThreadId, u64) {
     let mut latencies = Vec::with_capacity(coords.len());
     let mut hits = 0;
     for coord in coords {

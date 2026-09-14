@@ -18,7 +18,9 @@ use std::process::Command;
 use std::time::Instant;
 
 use libviprs::planner::TileCoord;
-use libviprs::pyramid_reader::{PmTilesPyramidReader, PyramidReader};
+use super::super::FileReaderFactory;
+use super::super::cells::{Backend, Cell};
+use super::ReaderFactory;
 
 /// The environment variable a child reads to learn what to measure.
 pub const CHILD_VAR: &str = "LIBVIPRS_STORAGE_FIRST_LOOKUP";
@@ -69,8 +71,14 @@ pub fn parse_child_spec(spec: &str) -> Option<(PathBuf, TileCoord)> {
 /// what that cost and who did it.
 pub fn child_main(spec: &str) -> String {
     let (archive, coord) = parse_child_spec(spec).expect("the parent handed a well-formed spec");
+    // Through the family's factory like every other reader here, even in a
+    // child. The open is inside the timed section because the open is what this
+    // scenario prices.
+    let cell = Cell::new(1, 1, 1, super::super::cells::Source::Gradient, 0);
+    let plan = cell.plan().expect("a one-tile plan");
+    let readers = FileReaderFactory::new(Backend::PmTiles, &archive, &plan);
     let at = Instant::now();
-    let reader = PmTilesPyramidReader::try_open(&archive).expect("the archive opens for reading");
+    let reader = readers.fresh().expect("the archive opens for reading");
     let tile = reader.tile(coord).expect("a lookup succeeds");
     let micros = at.elapsed().as_secs_f64() * 1e6;
     format!(
