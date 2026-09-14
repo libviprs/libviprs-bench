@@ -165,10 +165,7 @@ impl Scenario for DecodeRootScenario {
         let warmup = self.warmup().map(|w| w.passes).unwrap_or(0);
         let discarded = if warmup > 0 {
             let pass = observe(archive, warmup as usize).map_err(Skip::failed)?;
-            pass.samples
-                .iter()
-                .map(|d| d.as_secs_f64() * 1e6)
-                .collect()
+            pass.samples.iter().map(|d| d.as_secs_f64() * 1e6).collect()
         } else {
             Vec::new()
         };

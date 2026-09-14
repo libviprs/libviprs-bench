@@ -23,6 +23,8 @@ use std::process::Command;
 // the file is pulled in here rather than duplicated. `src/sha256.rs` carries no
 // inner doc comments precisely so that this `include!` compiles.
 include!("src/sha256.rs");
+// The trap-3 classifier, for the same reason and by the same route.
+include!("src/git_trap.rs");
 
 /// Path to the measured core crate, relative to this crate's manifest.
 /// It is a Cargo path dependency (`libviprs = { path = "../libviprs" }`),
@@ -311,20 +313,23 @@ fn git_tree_state(dir: &Path) -> TreeStamp {
     };
 
     // Trap 3: ask twice and report the difference rather than only the answer.
+    //
+    // The argument is `compare_modes`, so `false` is the mode-IGNORING answer and
+    // `true` is the mode-COMPARING one. They were bound the other way round,
+    // which inverted the published flag and made the note unreachable: it fired
+    // on `ignoring && !comparing`, and comparing is a superset of ignoring, so
+    // that is never true. The case it silences is the 0777 share this comment is
+    // about, where a tree nobody edited reads dirty and the sentence explaining
+    // why never prints.
     let dirty = match (git_status_dirty(&abs, false), git_status_dirty(&abs, true)) {
-        (Ok(with_modes), Ok(without_modes)) => {
-            if with_modes && !without_modes {
-                notes.push(
-                    "the tree reads as dirty only while git compares file modes, which is \
-                     what a share that forces 0777 does to every file; the dirty flag below \
-                     ignores mode-only differences"
-                        .to_string(),
-                );
+        (Ok(ignoring_modes), Ok(comparing_modes)) => {
+            if let Some(note) = mode_only_dirt(ignoring_modes, comparing_modes) {
+                notes.push(note.to_string());
             }
-            Some(without_modes)
+            Some(ignoring_modes)
         }
-        (_, Ok(without_modes)) => Some(without_modes),
-        (_, Err(err)) => {
+        (Ok(ignoring_modes), Err(_)) => Some(ignoring_modes),
+        (Err(err), _) => {
             notes.push(err);
             None
         }

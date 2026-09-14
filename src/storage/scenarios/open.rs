@@ -207,8 +207,13 @@ pub fn split_pass(
 
     for coord in coords {
         let at = Instant::now();
-        let source = FileRangeReader::try_open(archive).map_err(|e| format!("the archive does not open: {e}"))?;
-        std::hint::black_box(source.size().map_err(|e| format!("the archive has no size: {e}"))?);
+        let source = FileRangeReader::try_open(archive)
+            .map_err(|e| format!("the archive does not open: {e}"))?;
+        std::hint::black_box(
+            source
+                .size()
+                .map_err(|e| format!("the archive has no size: {e}"))?,
+        );
         let open = at.elapsed();
 
         let at = Instant::now();

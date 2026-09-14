@@ -198,7 +198,8 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
 
     let brink = cells::brink_cell(Source::Gradient);
     let brink_archive = write_archive(dir.path(), &brink);
-    let (brink_entries, brink_leaves) = cells::root_shape(&brink_archive).expect("the archive opens");
+    let (brink_entries, brink_leaves) =
+        cells::root_shape(&brink_archive).expect("the archive opens");
     println!(
         "brink {} planned {} tiles, root holds {brink_entries} entries, {brink_leaves} of them \
          leaf pointers, {} under the {LARGEST_FLAT_ROOT} the writer still keeps flat",
@@ -229,7 +230,10 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
         "the gradient's tiles are all distinct, so every planned tile should cost one root entry; \
          a run collapsed and the root is smaller than the cell's tile count"
     );
-    assert_eq!(cells::observed_regime(&brink_archive).expect("the archive opens"), Regime::Root);
+    assert_eq!(
+        cells::observed_regime(&brink_archive).expect("the archive opens"),
+        Regime::Root
+    );
 
     let leaf = cells::leaf_cell(Source::Gradient);
     let leaf_archive = write_archive(dir.path(), &leaf);
@@ -250,7 +254,10 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
         "the leaf cell plans {} tiles, which the writer would still keep in a flat root",
         planned(&leaf)
     );
-    assert_eq!(cells::observed_regime(&leaf_archive).expect("the archive opens"), Regime::Leaves);
+    assert_eq!(
+        cells::observed_regime(&leaf_archive).expect("the archive opens"),
+        Regime::Leaves
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1202,7 +1209,8 @@ fn the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses() {
     let dir = tempdir();
     let at_256 = tiny(Source::Gradient);
     let levels = at_256.plan().expect("the cell plans").levels.len() as u64;
-    let (entries, _) = cells::root_shape(&write_archive(dir.path(), &at_256)).expect("the archive opens");
+    let (entries, _) =
+        cells::root_shape(&write_archive(dir.path(), &at_256)).expect("the archive opens");
     println!(
         "{} plans {} tiles over {levels} levels and its root holds {entries} entries",
         at_256.spec(),
@@ -1218,7 +1226,8 @@ fn the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses() {
 
     // The control, at the same cell, really does collapse to one entry a level.
     let periodic = tiny(Source::PeriodicGradient);
-    let (collapsed, _) = cells::root_shape(&write_archive(dir.path(), &periodic)).expect("the archive opens");
+    let (collapsed, _) =
+        cells::root_shape(&write_archive(dir.path(), &periodic)).expect("the archive opens");
     println!(
         "{} plans {} tiles over {levels} levels and its root holds {collapsed} entries",
         periodic.spec(),
@@ -1251,7 +1260,8 @@ fn the_measured_root_entries_of_every_source() {
         let mut counts = Vec::new();
         for source in SOURCES {
             let cell = cell_at(width, height, tile_px, source);
-            let (entries, leaves) = cells::root_shape(&write_archive(dir.path(), &cell)).expect("the archive opens");
+            let (entries, leaves) =
+                cells::root_shape(&write_archive(dir.path(), &cell)).expect("the archive opens");
             assert_eq!(leaves, 0, "{} grew leaves at this scale", cell.spec());
             counts.push((source, entries));
         }

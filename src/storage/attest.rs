@@ -32,25 +32,22 @@
 use serde::{Deserialize, Serialize};
 
 /// How a PMTiles archive indexes its tiles, which decides what a lookup costs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Regime {
-    /// The whole index fits in the root directory: one directory read per
-    /// lookup, no leaf directories.
-    Root,
-    /// The index spilled into leaf directories: the root holds pointers to
-    /// them, a lookup costs two reads, and the leaf cache is what the epic's
-    /// PMTiles work was actually about.
-    Leaf,
-}
+///
+/// K1.2's, re-exported rather than redefined. This module had its own copy with
+/// the same two variants under different names, which is the shape of trouble
+/// the SHA-256 duplication already turned out to be: two types for one concept,
+/// only one of them reachable from the product, and nothing to notice when they
+/// drift apart.
+pub use super::cells::Regime;
 
-impl Regime {
-    /// The word the document uses.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Regime::Root => "root",
-            Regime::Leaf => "leaf",
-        }
+/// The word a document uses for a regime.
+///
+/// `Regime` is K1.2's and carries no serde spelling of its own, so the mapping
+/// from `Leaves` to the document's `"leaf"` lives here, where the document is.
+pub fn regime_word(regime: Regime) -> &'static str {
+    match regime {
+        Regime::Root => "root",
+        Regime::Leaves => "leaf",
     }
 }
 
@@ -91,7 +88,7 @@ impl ObservedArchive {
             return None;
         }
         if self.root_entries.contains(&RootEntry::LeafPointer) {
-            Some(Regime::Leaf)
+            Some(Regime::Leaves)
         } else {
             Some(Regime::Root)
         }
@@ -172,15 +169,15 @@ pub fn attest(
             "the {} archive's root directory has no entries, so no regime was observed and \
              the cell's declared regime '{}' rests on nothing",
             archive.backend,
-            declared.as_str()
+            regime_word(declared)
         )),
         Some(seen) if seen != declared => reasons.push(format!(
             "the cell declares the '{}' regime and the {} archive is in the '{}' one: its \
              root directory holds {} entries of which {} point at leaf directories, and it \
              has {} leaf directories",
-            declared.as_str(),
+            regime_word(declared),
             archive.backend,
-            seen.as_str(),
+            regime_word(seen),
             archive.root_entries.len(),
             archive
                 .root_entries
@@ -198,14 +195,14 @@ pub fn attest(
     if let Some(seen) = observed {
         let consistent = match seen {
             Regime::Root => archive.leaf_directories == 0,
-            Regime::Leaf => archive.leaf_directories > 0,
+            Regime::Leaves => archive.leaf_directories > 0,
         };
         if !consistent {
             reasons.push(format!(
                 "the {} archive's root directory reads as the '{}' regime while it reports {} \
                  leaf directories, so the two observations of one archive disagree",
                 archive.backend,
-                seen.as_str(),
+                regime_word(seen),
                 archive.leaf_directories
             ));
         }

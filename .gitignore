@@ -1,6 +1,10 @@
 # Build artifacts
 /target
-Cargo.lock
+# Cargo.lock IS tracked. `publish = false`, so the usual "libraries do not pin"
+# argument does not apply, and `build.rs` digests this file into
+# `provenance.lockfileHash`. Untracked, that field hashed something cargo was
+# free to re-resolve on any build, in a document whose entire point is that a
+# reader can check what produced it (libviprs-bench #66).
 
 # macOS
 .DS_Store

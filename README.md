@@ -23,7 +23,7 @@ This crate is kept in a separate repository so the library crate stays free of h
 | Family | What it measures | Needs |
 |---|---|---|
 | `engines` | monolithic vs streaming vs mapreduce | nothing: no cargo features, no libvips anywhere. **The default.** |
-| `storage` | PMTiles vs a directory tree | nothing; the cells land in K1.2 and asking for it before then is refused |
+| `storage` | PMTiles vs a directory tree | its own `storage` binary and its own `storage` image stage. No cargo features, no libvips. Takes `--storage-profile` rather than a command |
 | `vips` | the libvips `dzsave` comparison | `--features libvips`, and the pinned libvips the Docker image builds |
 
 libviprs-only is the default build and the default output. The comparison is a
@@ -205,7 +205,8 @@ There are two stages, because the families need different machines:
 
 | Stage | For | What is in it |
 |---|---|---|
-| `--target engines` | `engines`, `storage` | Rust and the two crates. No libvips headers, no `vips` binary, no cargo features. Builds in a fraction of the time. |
+| `--target engines` | `engines` | Rust and the two crates. No libvips headers, no `vips` binary, no cargo features. Builds in a fraction of the time. |
+| `--target storage` | `storage` | The same, plus only what the storage sweep needs. This is the stage `run-bench.sh --family storage` selects; pointing the storage family at `engines` builds a binary that stage does not contain. |
 | default target | `vips` | the above plus libvips compiled from a pinned upstream source tarball, plus PDFium |
 
 The absence in the first one is the point: a family that measures three libviprs engines must not be able to find a fourth.
@@ -230,6 +231,62 @@ docker run --rm --memory=4096m \
 ```
 
 The `report/` directory is mounted into the container so charts persist after it exits.
+
+## The `storage` family
+
+PMTiles against a directory tree, the comparison the PMTiles work was actually
+for. It is libviprs only: no libvips, no cargo features, its own binary and its
+own image stage.
+
+```bash
+./run-bench.sh --family storage                          # the ci profile
+./run-bench.sh --family storage --storage-profile full   # the publishable one
+cargo run --release --bin storage -- --profile ci --out report/storage/storage-results.json
+```
+
+`--storage-profile` takes `ci`, `full` or `xl`, and it replaces the command
+argument the other families take rather than adding to it.
+
+| profile | what it is for |
+|---|---|
+| `ci` | proves the harness runs. One small cell, seconds. **Never published**, and the binary says so on stderr. |
+| `full` | the publishable sweep: every cell, both backends, every scenario. |
+| `xl` | `full` plus the largest cells, for a machine that has the time. |
+
+The output is one JSON document per sweep rather than a chart set, because the
+family's claim is a comparison between two backends on identical work and the
+page draws it from an archived history rather than from the last run.
+
+## The archive, and what refuses a run
+
+A benchmark number is worth keeping only if the document carrying it can say
+what produced it. `storage-aggregate` is the door:
+
+```bash
+cargo run --release --bin storage-aggregate -- --provenance          # before a sweep
+cargo run --release --bin storage-aggregate -- --check   run.json
+cargo run --release --bin storage-aggregate -- --archive run.json
+cargo run --release --bin storage-aggregate -- --verify  archive/storage/<runId>.json
+```
+
+Exit 0 means admissible or verified, 1 means refused, 2 means the invocation was
+wrong. A refusal is a 1 rather than a 2 because it is an answer, not a failure to
+run.
+
+`--provenance` is the one to run first: everything it warns about is also a
+refusal, and learning it after forty minutes of measuring is the expensive way to
+find out.
+
+It refuses, rather than reports with a footnote. A run measured under emulation,
+from a tree with no commit, on a filesystem the document does not name, or with a
+cell nobody observed, does not get averaged in with a caveat: it does not get in.
+The full refusal table, the four digests, the canonicalisation rules the digests
+depend on, and the three ordinary ways a commit comes back null are in
+[`archive/storage/README.md`](archive/storage/README.md).
+
+Two refusals can be cleared and neither by making the problem go away.
+`--allow-dirty` records the dirt and stamps it onto every cell; a profile that
+declares tmpfs records that the run means to measure RAM.
 
 ## Cargo features
 
@@ -267,7 +324,19 @@ report/
 │   ├── comparison_table.txt
 │   └── verdict_table.txt
 ├── vips/                    # same shape, plus the libvips row and the PSNR spot-check
+├── storage/                 # the storage family: one document per sweep, not charts
+│   └── storage-results.json
 └── flamegraph_{monolithic,streaming,mapreduce}.svg
+```
+
+An archived storage run lives outside `report/`, because `report/` is output a
+re-run overwrites and an archive is not:
+
+```
+archive/storage/
+├── index.json                     # one row per archived run, sorted by id
+└── <runId>.json                   # the sealed document
+
 ```
 
 ## Requirements
