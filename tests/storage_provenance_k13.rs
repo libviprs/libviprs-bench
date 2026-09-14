@@ -16,7 +16,9 @@
 
 use std::path::PathBuf;
 
-use libviprs_bench::provenance::{FilesystemInfo, Provenance, SourceTrees, ToolchainInfo};
+use libviprs_bench::provenance::{
+    FilesystemInfo, MainRelation, Provenance, SourceTrees, ToolchainInfo,
+};
 use libviprs_bench::storage::archive::{self, ArchiveError};
 use libviprs_bench::storage::attest::{
     EquivalenceSample, ObservedArchive, Regime, RootEntry, attest,
@@ -1000,6 +1002,91 @@ fn the_archive_refuses_rather_than_reports() {
 // ---------------------------------------------------------------------------
 // The filesystem
 // ---------------------------------------------------------------------------
+
+/// RED against a core that is not on its own `main` passing silently, and
+/// equally against it being refused.
+///
+/// Benchmarking a core that is not on `main` is a legitimate thing to want: an
+/// intentional baseline looks exactly like this. Provenance's job is to make a
+/// run's conditions legible rather than to narrow what may be measured, so this
+/// is a warning and the run still archives. What was wrong before is only that
+/// nothing said anything.
+///
+/// Two conditions and not one, which is worth a test of its own because the
+/// obvious predicate catches only the second. The core checkout on this machine
+/// sits on `m826` at `576910df` while `origin/main` is `809ee801`, and I
+/// measured it rather than assuming: `merge-base --is-ancestor` says HEAD **is**
+/// an ancestor of main, 0 ahead and 458 behind. So a check written as "warn when
+/// the commit is not an ancestor of origin/main" would have stayed silent on the
+/// exact tree it was written for. `Behind` and `Diverged` are separate answers
+/// and both warn.
+#[test]
+fn a_core_that_is_not_at_main_warns_and_is_still_archivable() {
+    const HEAD: &str = "576910dff04567274ed88b4c199a45bb04acc8d2";
+    const MAIN: &str = "809ee8014d002518ce55edaceba698ca7a8b8a79";
+
+    let warnings_for = |relation: MainRelation, behind: Option<u32>| {
+        let mut provenance = Provenance::capture();
+        provenance.trees.library.commit = Some(HEAD.to_string());
+        provenance.trees.library.dirty = Some(false);
+        provenance.trees.library.main_commit = Some(MAIN.to_string());
+        provenance.trees.library.main_relation = relation;
+        provenance.trees.library.commits_behind_main = behind;
+        (
+            provenance.storage_provenance_warnings(),
+            provenance.to_storage_block(&json!({"argv": []}), false),
+        )
+    };
+
+    // Behind: the shape the core is actually in right now.
+    let (behind, block) = warnings_for(MainRelation::Behind, Some(458));
+    let line = behind
+        .iter()
+        .find(|w| w.contains("origin/main"))
+        .unwrap_or_else(|| panic!("a core that is behind main must say so: {behind:?}"));
+    assert!(
+        line.contains(HEAD),
+        "the warning must name the commit: {line}"
+    );
+    assert!(line.contains(MAIN), "and the main it is not on: {line}");
+    assert!(line.contains("458"), "and how far: {line}");
+    assert_eq!(block["library"]["mainRelation"], json!("behind"));
+    assert_eq!(block["library"]["commitsBehindMain"], json!(458));
+
+    // Diverged: carries work that is not in main at all.
+    let (diverged, block) = warnings_for(MainRelation::Diverged, None);
+    assert!(
+        diverged
+            .iter()
+            .any(|w| w.contains("diverged") && w.contains(MAIN)),
+        "{diverged:?}"
+    );
+    assert_eq!(block["library"]["mainRelation"], json!("diverged"));
+
+    // At main: silence. A warning that fires on a clean tree is one nobody reads.
+    let (at_main, _) = warnings_for(MainRelation::AtMain, Some(0));
+    assert!(
+        !at_main.iter().any(|w| w.contains("origin/main")),
+        "a core at main must not be warned about: {at_main:?}"
+    );
+
+    // Unknown: says it could not tell rather than implying the tree is fine.
+    let (unknown, _) = warnings_for(MainRelation::Unknown, None);
+    assert!(
+        unknown.iter().any(|w| w.contains("no local origin/main")),
+        "an unanswerable question is not a clean answer: {unknown:?}"
+    );
+
+    // And none of it is a refusal: a document from a parked core still archives.
+    let mut doc = clean_document();
+    set(&mut doc, "provenance.library.mainRelation", json!("behind"));
+    set(&mut doc, "provenance.library.commitsBehindMain", json!(458));
+    assert_eq!(
+        archive::admit(&doc),
+        vec![],
+        "a parked core is a warning and never a refusal"
+    );
+}
 
 /// RED against a provenance that does not record the scratch filesystem, and
 /// against an aggregator that accepts tmpfs silently.
