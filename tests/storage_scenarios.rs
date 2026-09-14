@@ -198,7 +198,7 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
 
     let brink = cells::brink_cell(Source::Gradient);
     let brink_archive = write_archive(dir.path(), &brink);
-    let (brink_entries, brink_leaves) = cells::root_shape(&brink_archive);
+    let (brink_entries, brink_leaves) = cells::root_shape(&brink_archive).expect("the archive opens");
     println!(
         "brink {} planned {} tiles, root holds {brink_entries} entries, {brink_leaves} of them \
          leaf pointers, {} under the {LARGEST_FLAT_ROOT} the writer still keeps flat",
@@ -229,11 +229,11 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
         "the gradient's tiles are all distinct, so every planned tile should cost one root entry; \
          a run collapsed and the root is smaller than the cell's tile count"
     );
-    assert_eq!(cells::observed_regime(&brink_archive), Regime::Root);
+    assert_eq!(cells::observed_regime(&brink_archive).expect("the archive opens"), Regime::Root);
 
     let leaf = cells::leaf_cell(Source::Gradient);
     let leaf_archive = write_archive(dir.path(), &leaf);
-    let (leaf_entries, leaf_leaves) = cells::root_shape(&leaf_archive);
+    let (leaf_entries, leaf_leaves) = cells::root_shape(&leaf_archive).expect("the archive opens");
     println!(
         "leaf {} planned {} tiles, root holds {leaf_entries} entries, {leaf_leaves} of them leaf \
          pointers",
@@ -250,7 +250,7 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
         "the leaf cell plans {} tiles, which the writer would still keep in a flat root",
         planned(&leaf)
     );
-    assert_eq!(cells::observed_regime(&leaf_archive), Regime::Leaves);
+    assert_eq!(cells::observed_regime(&leaf_archive).expect("the archive opens"), Regime::Leaves);
 }
 
 // ---------------------------------------------------------------------------
@@ -270,11 +270,11 @@ fn a_flat_source_never_produces_a_published_row() {
 
     let flat = distinct_tiny(Source::Flat);
     let flat_archive = write_archive(dir.path(), &flat);
-    let (flat_entries, _) = cells::root_shape(&flat_archive);
+    let (flat_entries, _) = cells::root_shape(&flat_archive).expect("the archive opens");
 
     let gradient = distinct_tiny(Source::Gradient);
     let gradient_archive = write_archive(dir.path(), &gradient);
-    let (gradient_entries, _) = cells::root_shape(&gradient_archive);
+    let (gradient_entries, _) = cells::root_shape(&gradient_archive).expect("the archive opens");
 
     println!(
         "{} planned tiles: flat root {flat_entries} entries, gradient root {gradient_entries}",
@@ -390,7 +390,8 @@ fn open_counts_exactly_the_header_and_root_reads_and_no_tile() {
     let coord = first_coord(&cell);
 
     let counting = CountingFactory::new(&archive);
-    let (observation, lookup_requests) = open::observe_with_lookup(&counting, coord);
+    let (observation, lookup_requests) =
+        open::observe_with_lookup(&counting, coord).expect("the archive opens");
 
     assert_eq!(
         observation.request_count(),
@@ -417,7 +418,7 @@ fn open_counts_exactly_the_header_and_root_reads_and_no_tile() {
 
     // The plain observe() path is the scenario, and it agrees with the one that
     // also looks a tile up.
-    let plain = open::observe(&counting);
+    let plain = open::observe(&counting).expect("the archive opens");
     assert_eq!(plain.request_count(), 2);
     assert_eq!(plain.root_entries, observation.root_entries);
 }
@@ -481,14 +482,15 @@ fn the_cold_split_accounts_for_the_whole_combined_row() {
     // root of thirteen entries, which the reconciliation guard rightly refuses.
     let cell = cell_at(2048, 2048, 64, Source::Gradient);
     let archive = write_archive(dir.path(), &cell);
-    let (entries, _) = cells::root_shape(&archive);
+    let (entries, _) = cells::root_shape(&archive).expect("the archive opens");
     open::reconciliation_is_meaningful(entries).expect("the mid cell's root is big enough");
 
     let coords: Vec<TileCoord> = cells::coordinates(&cell.plan().expect("the cell plans"))
         .into_iter()
         .take(32)
         .collect();
-    let pass = open::split_pass(&archive, &readers_for(&cell, &archive), &coords, entries);
+    let pass = open::split_pass(&archive, &readers_for(&cell, &archive), &coords, entries)
+        .expect("the archive opens");
 
     let split_us = median_micros(&pass.totals());
     let combined_us = median_micros(&pass.combined);
@@ -598,8 +600,8 @@ fn decode_root_reports_the_archives_own_entry_count_not_the_plans_tile_count() {
 
     let flat = distinct_tiny(Source::Flat);
     let flat_archive = write_archive(dir.path(), &flat);
-    let (flat_entries, _) = cells::root_shape(&flat_archive);
-    let decoded = decode_root::observe(&flat_archive, 3);
+    let (flat_entries, _) = cells::root_shape(&flat_archive).expect("the archive opens");
+    let decoded = decode_root::observe(&flat_archive, 3).expect("the archive opens");
 
     assert_eq!(
         decoded.entries, flat_entries,
@@ -618,7 +620,7 @@ fn decode_root_reports_the_archives_own_entry_count_not_the_plans_tile_count() {
 
     let gradient = distinct_tiny(Source::Gradient);
     let gradient_archive = write_archive(dir.path(), &gradient);
-    let gradient_decoded = decode_root::observe(&gradient_archive, 1);
+    let gradient_decoded = decode_root::observe(&gradient_archive, 1).expect("the archive opens");
     assert_eq!(gradient_decoded.entries, planned(&gradient));
 }
 
@@ -806,7 +808,7 @@ fn the_t1_control_agrees_with_read_random_within_the_tie_band() {
     );
 
     let me = std::thread::current().id();
-    let control = concurrent_curve::run_arm(reader.as_ref(), &coords, 1);
+    let control = concurrent_curve::run_arm(reader.as_ref(), &coords, 1).expect("lookups succeed");
     assert_eq!(control.coordinates_walked, coords.len());
     assert_eq!(control.latencies.len(), coords.len());
     assert!(
@@ -818,7 +820,7 @@ fn the_t1_control_agrees_with_read_random_within_the_tie_band() {
 
     // The positive control: a rung that really does spawn is visible here, so
     // `ran_on_only` is an observation rather than a constant.
-    let two = concurrent_curve::run_arm(reader.as_ref(), &coords, 2);
+    let two = concurrent_curve::run_arm(reader.as_ref(), &coords, 2).expect("lookups succeed");
     assert!(
         !two.ran_on_only(me),
         "the two-thread rung reported only this thread, so the thread-id evidence cannot tell a \
@@ -906,7 +908,8 @@ fn the_directory_request_count_is_declared_and_the_archive_count_is_observed() {
 
     let coords = cells::coordinates(&cell.plan().expect("the cell plans"));
     let walk = random_order(&coords, SEED);
-    let archive_counts = requests::pmtiles(&CountingFactory::new(&archive), coords[0], None, &walk);
+    let archive_counts = requests::pmtiles(&CountingFactory::new(&archive), coords[0], None, &walk)
+        .expect("the archive opens");
     let tree_counts = requests::directory(planned(&cell), 4_096, walk.len() as u64, false);
 
     assert!(
@@ -1199,7 +1202,7 @@ fn the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses() {
     let dir = tempdir();
     let at_256 = tiny(Source::Gradient);
     let levels = at_256.plan().expect("the cell plans").levels.len() as u64;
-    let (entries, _) = cells::root_shape(&write_archive(dir.path(), &at_256));
+    let (entries, _) = cells::root_shape(&write_archive(dir.path(), &at_256)).expect("the archive opens");
     println!(
         "{} plans {} tiles over {levels} levels and its root holds {entries} entries",
         at_256.spec(),
@@ -1215,7 +1218,7 @@ fn the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses() {
 
     // The control, at the same cell, really does collapse to one entry a level.
     let periodic = tiny(Source::PeriodicGradient);
-    let (collapsed, _) = cells::root_shape(&write_archive(dir.path(), &periodic));
+    let (collapsed, _) = cells::root_shape(&write_archive(dir.path(), &periodic)).expect("the archive opens");
     println!(
         "{} plans {} tiles over {levels} levels and its root holds {collapsed} entries",
         periodic.spec(),
@@ -1248,7 +1251,7 @@ fn the_measured_root_entries_of_every_source() {
         let mut counts = Vec::new();
         for source in SOURCES {
             let cell = cell_at(width, height, tile_px, source);
-            let (entries, leaves) = cells::root_shape(&write_archive(dir.path(), &cell));
+            let (entries, leaves) = cells::root_shape(&write_archive(dir.path(), &cell)).expect("the archive opens");
             assert_eq!(leaves, 0, "{} grew leaves at this scale", cell.spec());
             counts.push((source, entries));
         }

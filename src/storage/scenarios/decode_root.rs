@@ -19,6 +19,13 @@ use std::time::{Duration, Instant};
 
 use libviprs::pmtiles::directory::deserialize_entries;
 use libviprs::pmtiles::header::HEADER_BYTES;
+
+use super::super::cells::{Backend, Profile};
+use super::super::document::read_reps;
+use super::{
+    Direction, Invariants, Isolation, MetricSpec, RepFacts, Scenario, ScenarioContext, ScenarioRun,
+    Series, Skip, Unit, Warmup,
+};
 use libviprs::pmtiles::reader::MAX_DIRECTORY_BYTES;
 use libviprs::pmtiles::{FileRangeReader, Header, RangeReader};
 
@@ -55,38 +62,156 @@ impl DecodeRoot {
 /// The fetch and the inflate are outside the timed section: they are their own
 /// phases in [`super::open`], and the point of this scenario is the loop that
 /// the split says costs the most.
-pub fn observe(archive: &Path, reps: usize) -> DecodeRoot {
-    let source = FileRangeReader::try_open(archive).expect("the archive opens");
+pub fn observe(archive: &Path, reps: usize) -> Result<DecodeRoot, String> {
+    let source = FileRangeReader::try_open(archive)
+        .map_err(|e| format!("the archive does not open: {e}"))?;
     let header = Header::try_decode(
         &source
             .read_range(0, HEADER_BYTES)
-            .expect("the header can be read"),
+            .map_err(|e| format!("the header cannot be read: {e}"))?,
     )
-    .expect("the header decodes");
+    .map_err(|e| format!("the header does not decode: {e}"))?;
     let raw = source
         .read_range(
             header.root_offset,
-            usize::try_from(header.root_length).expect("a root length fits a usize"),
+            usize::try_from(header.root_length)
+                .map_err(|_| "the root length does not fit a usize".to_string())?,
         )
-        .expect("the root can be read");
+        .map_err(|e| format!("the root cannot be read: {e}"))?;
     let plain = header
         .internal_compression
         .decompress(&raw, MAX_DIRECTORY_BYTES)
-        .expect("the root inflates");
+        .map_err(|e| format!("the root does not inflate: {e}"))?;
 
     let mut samples = Vec::with_capacity(reps);
     let mut entries = 0u64;
     for _ in 0..reps {
         let at = Instant::now();
-        let decoded = std::hint::black_box(deserialize_entries(&plain).expect("the root decodes"));
+        let decoded = std::hint::black_box(
+            deserialize_entries(&plain).map_err(|e| format!("the root does not decode: {e}"))?,
+        );
         samples.push(at.elapsed());
         entries = decoded.len() as u64;
     }
 
-    DecodeRoot {
+    Ok(DecodeRoot {
         entries,
         compressed_bytes: raw.len() as u64,
         plain_bytes: plain.len() as u64,
         samples,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The scenario
+// ---------------------------------------------------------------------------
+
+/// `decode_root`: the varint loop, re-measured rather than quoted.
+///
+/// The tree has no root to decode, so on the directory backend this is
+/// `skipped` with that as the reason rather than a zero. A zero would be the
+/// best possible score on a lower-is-better column, published as a measurement,
+/// which is the exact failure the `null`-never-`0` rule exists to stop.
+pub struct DecodeRootScenario;
+
+pub const DECODE_US: MetricSpec = MetricSpec {
+    name: "p50",
+    unit: Unit::Microseconds,
+    direction: Direction::LowerIsBetter,
+};
+
+pub const NS_PER_ENTRY: MetricSpec = MetricSpec {
+    name: "ns_per_entry",
+    unit: Unit::Ratio,
+    direction: Direction::LowerIsBetter,
+};
+
+impl Scenario for DecodeRootScenario {
+    fn name(&self) -> String {
+        "decode_root".to_string()
+    }
+
+    fn isolation(&self) -> Isolation {
+        Isolation::ProcessPerScenario
+    }
+
+    fn warmup(&self) -> Option<Warmup> {
+        Some(Warmup::ONE_DISCARDED_PASS)
+    }
+
+    fn reps(&self, profile: Profile) -> u32 {
+        read_reps(profile)
+    }
+
+    fn primary(&self) -> MetricSpec {
+        DECODE_US
+    }
+
+    fn series(&self) -> Vec<MetricSpec> {
+        vec![DECODE_US, NS_PER_ENTRY]
+    }
+
+    fn run(&self, ctx: &ScenarioContext<'_>, reps: u32) -> Result<ScenarioRun, Skip> {
+        if ctx.backend != Backend::PmTiles {
+            return Err(Skip::skipped(
+                "a directory tree has no root directory to decode; its index work happens in the \
+                 kernel one path resolution at a time",
+            ));
+        }
+        let Some(archive) = ctx.artefact else {
+            return Err(Skip::failed("no archive to decode"));
+        };
+
+        let warmup = self.warmup().map(|w| w.passes).unwrap_or(0);
+        let discarded = if warmup > 0 {
+            let pass = observe(archive, warmup as usize).map_err(Skip::failed)?;
+            pass.samples
+                .iter()
+                .map(|d| d.as_secs_f64() * 1e6)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let measured = observe(archive, reps.max(1) as usize).map_err(Skip::failed)?;
+        let micros: Vec<f64> = measured
+            .samples
+            .iter()
+            .map(|d| d.as_secs_f64() * 1e6)
+            .collect();
+        let per_entry: Vec<f64> = measured
+            .samples
+            .iter()
+            .filter_map(|d| measured.nanos_per_entry(*d))
+            .collect();
+
+        let mut invariants = Invariants::default();
+        invariants.root_entries = Some(measured.entries);
+        let facts = vec![
+            RepFacts {
+                invariants,
+                scratch: None,
+            };
+            micros.len()
+        ];
+
+        let mut series = vec![Series {
+            metric: DECODE_US,
+            samples: micros,
+        }];
+        if per_entry.len() == series[0].samples.len() {
+            series.push(Series {
+                metric: NS_PER_ENTRY,
+                samples: per_entry,
+            });
+        }
+
+        Ok(ScenarioRun {
+            series,
+            reps: facts,
+            discarded_warmup: discarded,
+            peak_rss_bytes: None,
+            heap_peak_bytes: None,
+        })
     }
 }

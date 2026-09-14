@@ -109,14 +109,24 @@ pub fn default_output_path(report_root: &Path) -> PathBuf {
         .join(DOCUMENT_NAME)
 }
 
-/// Every scenario a sweep walks, in order.
+/// Every scenario a sweep can walk, in order.
 ///
-/// K1.4 extends this with `open`, `first_lookup`, `decode_root`,
-/// `read_tileid_order`, the `read_concurrent@T` curve and `requests`. What is
-/// here is the reference set: one generation scenario and two pass scenarios,
-/// which is the least that proves the skeleton measures anything.
+/// The reference set (`generate`, `read_plan_order`, `read_tileid_order`,
+/// `read_random`) plus K1.4's: `open`, `first_lookup`, `decode_root`, the
+/// `read_concurrent@T` ladder and `requests`.
+///
+/// Which of them a given sweep walks is [`Profile::scenario_names`], not this
+/// list. `ci` leaves out the thread ladder and says so there rather than
+/// skipping quietly at run time.
+///
+/// `tests/storage_registry.rs` asserts this against the family's declared list
+/// and against a real `ci` document, because the failure this had for one whole
+/// wave was that seven scenarios existed, were tested, were merged, and were
+/// never in here.
 pub fn registry() -> Vec<Box<dyn Scenario>> {
-    scenarios::reference::all()
+    let mut out = scenarios::reference::all();
+    out.extend(scenarios::all());
+    out
 }
 
 /// Look one up by the name it publishes.
@@ -727,10 +737,19 @@ pub fn rows_from_wire(
 ) -> Vec<DocumentCell> {
     let (invariants, disagreements) = agreed(&wire.reps);
     let mut block = InvariantBlock::from(&invariants);
-    block.peak_rss_mb = wire
-        .peak_rss_bytes
-        .map(|b| b as f64 / (1024.0 * 1024.0))
-        .filter(|_| matches!(scenario.isolation(), Isolation::ProcessPerRep));
+    // Published for both isolations. It used to be filtered to
+    // `ProcessPerRep`, which silently dropped it from every read row, and the
+    // read rows are where a leaf cache would show. It is a real measurement
+    // either way: `wait4` gives the child's own `ru_maxrss` whichever isolation
+    // spawned it. What it *means* differs, and that is a caption rather than a
+    // reason to discard it. Under `ProcessPerRep` it is the largest single
+    // repetition, taken as a max across the children. Under
+    // `ProcessPerScenario` it is one child's high-water mark across its warm-up
+    // and every repetition, so it is the scenario's peak rather than a
+    // repetition's, which is the right number for a capacity question and the
+    // wrong one for a per-repetition dispersion. It is a scalar on the cell and
+    // never a series, so nothing downstream can mistake it for the latter.
+    block.peak_rss_mb = wire.peak_rss_bytes.map(|b| b as f64 / (1024.0 * 1024.0));
     block.heap_peak_bytes = wire.heap_peak_bytes;
 
     let outcome = if wire.outcome == "ok" && disagreements.is_empty() {
@@ -845,7 +864,14 @@ pub fn run_sweep(profile: Profile) -> Document {
             }
         }
 
-        for (index, scenario) in registry().iter().enumerate() {
+        let walked: Vec<Box<dyn Scenario>> = {
+            let names = profile.scenario_names();
+            registry()
+                .into_iter()
+                .filter(|s| names.contains(&s.name()))
+                .collect()
+        };
+        for (index, scenario) in walked.iter().enumerate() {
             let reps = scenario.reps(profile);
             // Alternate which backend leads, scenario by scenario.
             let order: Vec<Backend> = if index % 2 == 0 {
@@ -912,18 +938,48 @@ pub fn run_sweep(profile: Profile) -> Document {
     }
 
     doc.rebuild_invariant_table();
+    // The two blocks a sweep has to fill itself, because nothing downstream can
+    // reconstruct them: the in-run noise floor, and what a remote store would
+    // charge. Both live in K1.4's modules and both are one call, so K1.3's
+    // provenance and attestation work lands beside them rather than on top.
+    doc.modelled = model::entries_for(&doc);
+    doc.replicate = scenarios::replicate::block_for(&doc, profile);
     doc.finished_at = Some(now_iso());
     doc
 }
 
 /// Fold one more per-repetition child into the run so far.
-fn merge(into: Option<WireRun>, one: WireRun) -> WireRun {
+pub fn merge(into: Option<WireRun>, one: WireRun) -> WireRun {
     let Some(mut acc) = into else { return one };
-    for (i, series) in one.series.into_iter().enumerate() {
-        match acc.series.get_mut(i) {
+    // By metric name, never by position. A scenario is free to emit its series
+    // in a different order or to emit a conditional one: `ReadPass` already
+    // picks `p99` or `max` at run time depending on how many lookups a pass
+    // made, so two children of one scenario can disagree about what their
+    // second series is. Pairing by index would then concatenate one metric's
+    // samples into another metric's array, under the first child's label, with
+    // nothing to see afterwards. A metric that appears in one child and not
+    // another is carried through and named in the reason, because a series
+    // shorter than `reps` is a different defect and the aggregator has to be
+    // able to tell them apart.
+    let mut unmatched: Vec<String> = Vec::new();
+    for series in one.series {
+        match acc.series.iter_mut().find(|s| s.metric == series.metric) {
             Some(existing) => existing.samples.extend(series.samples),
-            None => acc.series.push(series),
+            None => {
+                unmatched.push(series.metric.clone());
+                acc.series.push(series);
+            }
         }
+    }
+    if !unmatched.is_empty() {
+        let note = format!(
+            "repetitions disagreed about which series they publish; {} appeared partway through",
+            unmatched.join(", ")
+        );
+        acc.reason = Some(match acc.reason.take() {
+            Some(existing) => format!("{existing}; {note}"),
+            None => note,
+        });
     }
     acc.reps.extend(one.reps);
     acc.discarded_warmup.extend(one.discarded_warmup);
