@@ -58,7 +58,9 @@ fn main() -> ExitCode {
                         return ExitCode::from(2);
                     }
                     None => {
-                        eprintln!("unknown benchmark family {name:?}. This binary measures storage");
+                        eprintln!(
+                            "unknown benchmark family {name:?}. This binary measures storage"
+                        );
                         return ExitCode::from(2);
                     }
                 }

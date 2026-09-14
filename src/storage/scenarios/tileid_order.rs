@@ -96,7 +96,10 @@ pub fn is_monotone(coords: &[TileCoord]) -> bool {
 /// on this cell and no assertion about ordering can fail here, which is a fact
 /// about the cell and has to be said out loud rather than discovered as a green
 /// test.
-pub fn positions_the_sort_moves(plan_order: &[TileCoord], tileid_order: &[TileCoord]) -> Vec<usize> {
+pub fn positions_the_sort_moves(
+    plan_order: &[TileCoord],
+    tileid_order: &[TileCoord],
+) -> Vec<usize> {
     plan_order
         .iter()
         .zip(tileid_order)

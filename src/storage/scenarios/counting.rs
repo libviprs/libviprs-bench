@@ -154,7 +154,8 @@ impl CountingReader {
 
 impl TileReader for CountingReader {
     fn tile(&self, coord: TileCoord) -> Result<Option<Vec<u8>>, String> {
-        let z = u8::try_from(coord.level).map_err(|_| "a level PMTiles cannot address".to_string())?;
+        let z =
+            u8::try_from(coord.level).map_err(|_| "a level PMTiles cannot address".to_string())?;
         self.reader
             .get_tile(z, coord.col, coord.row)
             .map_err(|error| error.to_string())

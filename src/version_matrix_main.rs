@@ -20,10 +20,10 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use libviprs_bench::family::{DEFAULT_FAMILY, Family};
 use libviprs_bench::provenance::Provenance;
 use libviprs_bench::version_id::version_key;
 use libviprs_bench::version_matrix::{MatrixConfig, VersionOutcome, core_repo_dir, run_matrix};
-use libviprs_bench::family::{DEFAULT_FAMILY, Family};
 use libviprs_bench::{harness, load_history};
 
 const USAGE: &str = "\

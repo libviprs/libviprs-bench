@@ -34,7 +34,8 @@ use crate::harness::Engine;
 /// The three libviprs pyramid engines, in pipeline order. Every libviprs-only
 /// family measures exactly these, and the `vips` family measures these plus the
 /// libvips oracle.
-pub const LIBVIPRS_ENGINES: [Engine; 3] = [Engine::Monolithic, Engine::Streaming, Engine::MapReduce];
+pub const LIBVIPRS_ENGINES: [Engine; 3] =
+    [Engine::Monolithic, Engine::Streaming, Engine::MapReduce];
 
 /// The cargo feature the `vips` family needs. Named in the refusal message so a
 /// reader is told the fix, not just the problem.

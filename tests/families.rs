@@ -10,8 +10,8 @@ use libviprs_bench::family::{
 use libviprs_bench::harness::Engine;
 use libviprs_bench::provenance::Provenance;
 use libviprs_bench::{
-    BenchmarkSnapshot, CURRENT_SCHEMA_VERSION, LEGACY_SNAPSHOT_FAMILY, RunMetrics,
-    create_snapshot, migrate_snapshot, push_snapshot,
+    BenchmarkSnapshot, CURRENT_SCHEMA_VERSION, LEGACY_SNAPSHOT_FAMILY, RunMetrics, create_snapshot,
+    migrate_snapshot, push_snapshot,
 };
 
 // ---------------------------------------------------------------------------
@@ -228,7 +228,10 @@ fn the_default_family_is_libviprs_only_and_needs_no_features() {
     assert_eq!(DEFAULT_FAMILY.required_feature(), None);
     assert!(DEFAULT_FAMILY.is_compiled_in());
     assert!(DEFAULT_FAMILY.is_implemented());
-    assert_eq!(Family::resolve(DEFAULT_FAMILY.as_str()), Ok(Family::Engines));
+    assert_eq!(
+        Family::resolve(DEFAULT_FAMILY.as_str()),
+        Ok(Family::Engines)
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -303,8 +306,7 @@ fn a_history_refuses_a_snapshot_from_another_family() {
     assert!(err.contains("engines") && err.contains("vips"), "{err}");
     assert_eq!(history.len(), 1, "the refused append must change nothing");
 
-    push_snapshot(&mut history, snapshot_of(Family::Engines))
-        .expect("its own family appends fine");
+    push_snapshot(&mut history, snapshot_of(Family::Engines)).expect("its own family appends fine");
     assert_eq!(history.len(), 2);
 }
 
@@ -336,10 +338,7 @@ fn pre_family_history_migrates_to_the_libvips_comparison() {
 #[test]
 fn each_family_writes_into_its_own_report_directory() {
     let root = std::path::Path::new("/tmp/report-root");
-    let dirs: Vec<_> = ALL_FAMILIES
-        .iter()
-        .map(|f| f.report_dir(root))
-        .collect();
+    let dirs: Vec<_> = ALL_FAMILIES.iter().map(|f| f.report_dir(root)).collect();
     for (i, a) in dirs.iter().enumerate() {
         assert!(a.starts_with(root), "{a:?} must live under report/");
         assert_eq!(a.file_name().unwrap(), ALL_FAMILIES[i].as_str());

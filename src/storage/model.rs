@@ -147,3 +147,71 @@ impl Modelled {
             .collect()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Reaching the document
+// ---------------------------------------------------------------------------
+
+use super::document::{Document, ModelledEntry};
+
+/// The modelled rows a finished sweep publishes.
+///
+/// Built from the document's own invariants rather than from a scenario's
+/// return value, so a model can only price something the sweep actually
+/// measured: `remote_cost_ms` needs `requests` and `request_bytes`, which only
+/// the `requests` scenario records, and `sync_cost_ms` needs
+/// `filesystem_entries`, which only `generate` does. A cell missing its input
+/// contributes no row rather than a row priced at zero.
+pub fn entries_for(doc: &Document) -> Vec<ModelledEntry> {
+    let remote = RemoteModel::declared();
+    let sync = SyncModel::declared();
+    let mut out: Vec<ModelledEntry> = Vec::new();
+    let mut seen: Vec<(String, u32, &'static str)> = Vec::new();
+
+    let params = |ps: Vec<Parameter>| {
+        serde_json::Value::Object(
+            ps.into_iter()
+                .map(|p| {
+                    (
+                        p.name.to_string(),
+                        serde_json::json!({ "value": p.value, "unit": p.unit }),
+                    )
+                })
+                .collect(),
+        )
+    };
+
+    for cell in &doc.cells {
+        let inv = &cell.invariants;
+        let key = |name: &'static str| (cell.backend.clone(), cell.scale, name);
+
+        if let (Some(requests), Some(bytes)) = (inv.requests, inv.request_bytes)
+            && !seen.contains(&key("remote_cost_ms"))
+        {
+            seen.push(key("remote_cost_ms"));
+            out.push(ModelledEntry {
+                library: cell.backend.clone(),
+                scale: cell.scale,
+                name: "remote_cost_ms".to_string(),
+                value: remote.cost_ms(requests, bytes),
+                unit: "ms".to_string(),
+                model: params(remote.parameters()),
+            });
+        }
+
+        if let Some(entries) = inv.filesystem_entries
+            && !seen.contains(&key("sync_cost_ms"))
+        {
+            seen.push(key("sync_cost_ms"));
+            out.push(ModelledEntry {
+                library: cell.backend.clone(),
+                scale: cell.scale,
+                name: "sync_cost_ms".to_string(),
+                value: sync.cost_ms(entries),
+                unit: "ms".to_string(),
+                model: params(sync.parameters()),
+            });
+        }
+    }
+    out
+}

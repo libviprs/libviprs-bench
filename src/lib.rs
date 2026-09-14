@@ -15,11 +15,16 @@ use libviprs::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod emulation;
 pub mod family;
 pub mod flame;
+/// How to read `git status` run twice, shared with `build.rs` by `include!`.
+pub mod git_trap;
 pub mod harness;
 pub mod pin_check;
 pub mod provenance;
+/// SHA-256 over `sha2`, shared with `build.rs` by `include!`.
+pub mod sha256;
 /// PMTiles against a directory tree, with repetitions (issue #65).
 pub mod storage;
 pub mod version_id;
@@ -78,7 +83,6 @@ pub const BENCH_TILE_SUFFIX: &str = ".png";
 pub const TILE_ENCODING_CLAIM: &str = "every engine writes its tiles as PNG files to a real \
 on-disk sink under the same DeepZoom layout, so neither side gets an in-RAM-sink or tile-codec \
 advantage";
-
 
 /// The canonical measurement suite, defined once and shared by every axis so
 /// "the identical suite" is a compile-time fact rather than hand-copied
@@ -401,8 +405,28 @@ impl RunMetrics {
 
 /// Generate a synthetic gradient raster for benchmarking.
 ///
-/// Uses a prime-weighted RGB pattern to avoid compression-friendly
-/// uniformity while remaining deterministic.
+/// Deterministic, and **periodic with a period of 256 pixels on both axes**,
+/// which is a known defect rather than a design choice.
+///
+/// The comment here used to claim a "prime-weighted RGB pattern to avoid
+/// compression-friendly uniformity". It is not one: all three channels are
+/// `% 256`, and a `% 256` before a cast to `u8` is a no-op, so the pattern is
+/// `(x, y, x * 7 + y * 13)` truncated to a byte and it repeats every 256
+/// pixels on each axis. At a tile size that is a whole number of periods,
+/// 256 itself included, every tile of a pyramid level is byte-identical.
+///
+/// What that costs depends on what is reading it. The `engines` family tiles
+/// this raster, so each of its levels is one repeated tile; measured on the
+/// `storage` family's archives, a 2048x2048 canvas at a 256 pixel tile plans 93
+/// tiles and its PMTiles root holds 12 entries, one per level, because the
+/// writer's run-length encoding collapses each level to a single entry.
+///
+/// The code is deliberately left alone: changing this source moves every number
+/// the `engines` family has ever published, and that is a decision with a
+/// migration attached rather than a comment fix. The `storage` family does not
+/// use it. It uses `storage::raster`, which ports the engine's own
+/// `(x % 251, y % 241, (x * 7 + y * 13) % 239)` verbatim, three primes, none of
+/// them a factor of any tile size a sweep uses.
 pub fn gradient_raster(w: u32, h: u32) -> Raster {
     let bpp = PixelFormat::Rgb8.bytes_per_pixel();
     let mut data = vec![0u8; w as usize * h as usize * bpp];
@@ -493,7 +517,15 @@ pub(crate) fn skip_on_engine_fault(
 /// Build the on-disk PNG sink used by every libviprs engine, rooted under a
 /// fresh temp directory. Mirrors the libvips `dzsave` output: real files, same
 /// [`BENCH_TILE_FORMAT`] codec, DeepZoom layout.
-fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
+///
+/// `pub`, not `pub(crate)`, because `src/scalability.rs` is a binary and so a
+/// separate crate: `pub(crate)` cannot reach it. That matters more than it
+/// looks. `tests/encoding_claim.rs` drives this function, but the scalability
+/// sweep built its own sink three times with a hardcoded `TileFormat::Png`
+/// outside [`BENCH_TILE_FORMAT`], so changing one of those literals left the
+/// encoding test green while the sweep behind the published tables wrote
+/// unencoded tiles. One sink, one constant, one thing to change.
+pub fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
     FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(BENCH_TILE_FORMAT)
 }
 

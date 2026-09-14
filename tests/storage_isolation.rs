@@ -9,11 +9,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use libviprs::pmtiles::directory::serialize_entries;
-use libviprs::pmtiles::{
-    Compression, Entry, Header, RangeReader, Reader, TileType, zxy_to_tileid,
-};
 use libviprs::planner::TileCoord;
+use libviprs::pmtiles::directory::serialize_entries;
+use libviprs::pmtiles::{Compression, Entry, Header, RangeReader, Reader, TileType, zxy_to_tileid};
 
 use libviprs_bench::storage::cells::{Backend, Cell, Profile, SEED, Source};
 use libviprs_bench::storage::scenarios::reference::{Generate, ReadPass};
@@ -83,9 +81,9 @@ impl Counting {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(Request { offset, len });
-        let end = offset
-            .checked_add(len as u64)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "offset + len overflowed"))?;
+        let end = offset.checked_add(len as u64).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "offset + len overflowed")
+        })?;
         if end > self.size {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -172,7 +170,10 @@ fn coord(x: u32, y: u32) -> TileCoord {
 
 fn fabricate() -> Fabricated {
     let placed = [(1u32, 1u32, 0u64, 512u32), (2, 2, 4_096, 700)];
-    let behind_leaf = [(300u32, 300u32, 8_192u64, 1_024u32), (301, 301, 16_384, 256)];
+    let behind_leaf = [
+        (300u32, 300u32, 8_192u64, 1_024u32),
+        (301, 301, 16_384, 256),
+    ];
 
     let mut all: Vec<(u32, u32, u64, u32, u64)> = placed
         .iter()
@@ -265,8 +266,14 @@ fn fabricate() -> Fabricated {
 
     Fabricated {
         source: Arc::new(source),
-        from_root: [coord(root_tiles[0].0, root_tiles[0].1), coord(root_tiles[1].0, root_tiles[1].1)],
-        from_leaf: [coord(leaf_tiles[0].0, leaf_tiles[0].1), coord(leaf_tiles[1].0, leaf_tiles[1].1)],
+        from_root: [
+            coord(root_tiles[0].0, root_tiles[0].1),
+            coord(root_tiles[1].0, root_tiles[1].1),
+        ],
+        from_leaf: [
+            coord(leaf_tiles[0].0, leaf_tiles[0].1),
+            coord(leaf_tiles[1].0, leaf_tiles[1].1),
+        ],
         leaf_length,
     }
 }
@@ -445,12 +452,17 @@ fn generate_reps_regenerate_and_the_artefact_digest_does_not_move() {
         let paths: Vec<PathBuf> = run
             .reps
             .iter()
-            .map(|r| r.scratch.clone().expect("a repetition records where it built"))
+            .map(|r| {
+                r.scratch
+                    .clone()
+                    .expect("a repetition records where it built")
+            })
             .collect();
         for (i, path) in paths.iter().enumerate() {
             for other in &paths[i + 1..] {
                 assert_ne!(
-                    path, other,
+                    path,
+                    other,
                     "{}: two repetitions built into the same directory, so one of \
                      them did not regenerate",
                     backend.as_str()
@@ -468,13 +480,15 @@ fn generate_reps_regenerate_and_the_artefact_digest_does_not_move() {
         assert!(first.artefact_digest.is_some());
         for rep in &run.reps {
             assert_eq!(
-                rep.invariants.filesystem_entries, first.filesystem_entries,
+                rep.invariants.filesystem_entries,
+                first.filesystem_entries,
                 "{}: the entry count moved between two repetitions of one commit, \
                  which is a defect and never noise",
                 backend.as_str()
             );
             assert_eq!(
-                rep.invariants.artefact_digest, first.artefact_digest,
+                rep.invariants.artefact_digest,
+                first.artefact_digest,
                 "{}: the artefact digest moved between repetitions",
                 backend.as_str()
             );

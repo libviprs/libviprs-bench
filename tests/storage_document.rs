@@ -150,7 +150,16 @@ fn unmeasured_columns_are_null_never_zero() {
     // than publishing a median of zero, which is the fastest possible cell.
     let empty = row(Vec::new(), InvariantBlock::from(&Invariants::default()));
     let json = parse(&serde_json::to_string(&empty).expect("a row serialises"));
-    for field in ["median", "min", "max", "iqr", "cov", "ci95", "p95OfSamples", "tail"] {
+    for field in [
+        "median",
+        "min",
+        "max",
+        "iqr",
+        "cov",
+        "ci95",
+        "p95OfSamples",
+        "tail",
+    ] {
         assert!(
             json[field].is_null(),
             "{field} of a cell with no samples reads {}, not null",
@@ -220,10 +229,18 @@ fn the_document_round_trips_with_field_order() {
         "the re-serialisation is not a fixed point"
     );
 
-    // Through its own type, not only through `Value`. Every field that is not
-    // a float survives exactly; the floats are checked with a tolerance
-    // because `serde_json`'s number parser is not correctly rounded, which
-    // `serde_jsons_number_parser_moves_a_float_by_one_ulp` pins.
+    // Through its own type, not only through `Value`. Every field survives
+    // exactly, floats included.
+    //
+    // The floats used to be checked with a tolerance, because `serde_json`'s
+    // number reader is not correctly rounded by default and `cov` here is
+    // `1.0 / 11.0`, which needs seventeen significant digits and came back one
+    // ULP out. `Cargo.toml` now turns on serde_json's `float_roundtrip`, which
+    // closes that, so this is byte identity as the test that pinned the defect
+    // said it should become once the defect was gone. The canary for the
+    // feature is `the_json_reader_is_correctly_rounded` in
+    // `tests/storage_provenance_k13.rs`: take the feature away and it goes red
+    // in one line, and this assertion goes red with it.
     let back: Document = serde_json::from_str(&text).expect("the document deserialises");
     assert_eq!(back.schema_version, doc.schema_version);
     assert_eq!(back.family, doc.family);
@@ -245,67 +262,12 @@ fn the_document_round_trips_with_field_order() {
     assert_eq!(there.invariants, here.invariants);
     assert_eq!(there.low_confidence_reasons, here.low_confidence_reasons);
     let (a, b) = (there.cov.expect("a cov"), here.cov.expect("a cov"));
-    assert!((a - b).abs() < 1e-15, "cov moved from {b} to {a}");
-}
-
-/// Why `the_document_round_trips_with_field_order` compares key order and a
-/// fixed point rather than bytes, and a warning for the integrity digests.
-///
-/// `serde_json`'s number parser is not correctly rounded. Handed a decimal
-/// that names one `f64` unambiguously, it returns the `f64` next door. `std`
-/// reads the same text correctly, so neither the text nor the float is at
-/// fault, and `serde_json`'s printer is fine too: it is the reading side.
-///
-/// The consequence for K1.3: a digest taken over a re-serialised parse of this
-/// document is not a digest of the bytes the producer wrote. Hash the
-/// producer's own text, or accept that a verifier which parses and re-prints
-/// gets a different answer on any cell whose `cov`, `ciHalfWidthPct` or
-/// `p95OfSamples` needs seventeen significant digits. It also means a consumer
-/// must not compare two runs' floats for exact equality after a round trip.
-///
-/// If `serde_json` ever closes this, the `assert_ne!` below goes red. That is
-/// the signal to tighten the round trip above to byte identity and delete
-/// this.
-#[test]
-fn serde_jsons_number_parser_is_not_correctly_rounded() {
-    // The `cov` of the samples `[10.0, 11.0, 12.0]`, which is what made the
-    // byte-identical round trip fail the first time it was asserted.
-    let printed = "0.09090909090909091";
-    let value = f64::from_bits(0x3fb7_45d1_745d_1746);
-    let next_door = f64::from_bits(0x3fb7_45d1_745d_1747);
-
-    // The controls. The text names `value` and nothing else: it is 1.6e-18
-    // away from it and 1.5e-17 away from its neighbour, and `std` reads it
-    // that way. The printer agrees, so a failure below is the reader's.
     assert_eq!(
-        printed.parse::<f64>().expect("std parses it").to_bits(),
-        value.to_bits(),
-        "std reads the text as the float it names"
+        a.to_bits(),
+        b.to_bits(),
+        "cov moved from {b} to {a}, which with a correctly rounded reader means \
+         something other than the reader changed it"
     );
-    assert_eq!(
-        serde_json::to_string(&value).expect("a float serialises"),
-        printed,
-        "and the printer emits the shortest form that identifies it"
-    );
-
-    let typed: f64 = serde_json::from_str(printed).expect("the typed path parses it");
-    assert_ne!(
-        typed.to_bits(),
-        value.to_bits(),
-        "serde_json now reads this correctly; tighten \
-         the_document_round_trips_with_field_order to byte identity and delete this test"
-    );
-    assert_eq!(
-        typed.to_bits(),
-        next_door.to_bits(),
-        "and it is one unit in the last place, not a parse failure"
-    );
-
-    // The visible consequence: text in, different text out.
-    let through: Value = serde_json::from_str(printed).expect("the untyped path parses it");
-    let reprinted = serde_json::to_string(&through).expect("a Value serialises");
-    assert_ne!(reprinted, printed);
-    assert_eq!(reprinted, "0.09090909090909093");
 }
 
 /// RED against a nearest-rank p99 at n = 64, which is the current shape and is
@@ -400,7 +362,10 @@ fn an_invariant_that_disagrees_between_reps_is_refused_not_averaged() {
     };
 
     let (agreed_ok, none) = agreed(&[with(1, "aa"), with(1, "aa"), with(1, "aa")]);
-    assert!(none.is_empty(), "three agreeing reps disagree about nothing");
+    assert!(
+        none.is_empty(),
+        "three agreeing reps disagree about nothing"
+    );
     assert_eq!(agreed_ok.filesystem_entries, Some(1));
     assert_eq!(agreed_ok.artefact_digest.as_deref(), Some("aa"));
 
@@ -410,7 +375,9 @@ fn an_invariant_that_disagrees_between_reps_is_refused_not_averaged() {
         "a disagreeing invariant is a hole, not an average and not a vote"
     );
     assert!(
-        disagreements.iter().any(|d| d.contains("filesystem_entries")),
+        disagreements
+            .iter()
+            .any(|d| d.contains("filesystem_entries")),
         "the reason has to name the field that moved, got {disagreements:?}"
     );
     assert_eq!(

@@ -28,13 +28,18 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::super::cells::{Backend, Profile};
+use super::super::document::read_reps;
+use super::counting::{CountingFactory, Request};
+use super::{
+    Direction, Invariants, Isolation, MetricSpec, ReaderFactory, RepFacts, Scenario,
+    ScenarioContext, ScenarioRun, Series, Skip, TileReader, Unit, Warmup,
+};
 use libviprs::planner::TileCoord;
 use libviprs::pmtiles::directory::deserialize_entries;
 use libviprs::pmtiles::header::HEADER_BYTES;
 use libviprs::pmtiles::reader::MAX_DIRECTORY_BYTES;
 use libviprs::pmtiles::{FileRangeReader, Header, RangeReader};
-use super::counting::{CountingFactory, Request};
-use super::{ReaderFactory, TileReader};
 
 /// The phases a cold PMTiles open goes through, in the order `Reader::try_new`
 /// runs them, plus the lookup that follows.
@@ -110,17 +115,15 @@ impl OpenObservation {
 /// This is the scenario: the old cold row conflated the open with the lookup,
 /// and a client that opens an archive pays the open whether or not it goes on
 /// to read anything.
-pub fn observe(readers: &CountingFactory) -> OpenObservation {
-    let reader = readers
-        .fresh_counting()
-        .expect("the archive's index is readable");
+pub fn observe(readers: &CountingFactory) -> Result<OpenObservation, String> {
+    let reader = readers.fresh_counting()?;
     let (offset, length) = reader.tile_data_range();
-    OpenObservation {
+    Ok(OpenObservation {
         requests: reader.open_requests().to_vec(),
         root_entries: reader.root_entries(),
         tile_data_offset: offset,
         tile_data_length: length,
-    }
+    })
 }
 
 /// Open, then look one tile up, counting the two separately.
@@ -131,10 +134,8 @@ pub fn observe(readers: &CountingFactory) -> OpenObservation {
 pub fn observe_with_lookup(
     readers: &CountingFactory,
     coord: TileCoord,
-) -> (OpenObservation, Vec<Request>) {
-    let reader = readers
-        .fresh_counting()
-        .expect("the archive's index is readable");
+) -> Result<(OpenObservation, Vec<Request>), String> {
+    let reader = readers.fresh_counting()?;
     let (offset, length) = reader.tile_data_range();
     let observation = OpenObservation {
         requests: reader.open_requests().to_vec(),
@@ -142,8 +143,9 @@ pub fn observe_with_lookup(
         tile_data_offset: offset,
         tile_data_length: length,
     };
-    let (_, lookup) = reader.counted(|r| r.tile(coord).expect("a lookup succeeds"));
-    (observation, lookup)
+    let (looked, lookup) = reader.counted(|r| r.tile(coord));
+    looked?;
+    Ok((observation, lookup))
 }
 
 // ---------------------------------------------------------------------------
@@ -199,54 +201,64 @@ pub fn split_pass(
     readers: &dyn ReaderFactory,
     coords: &[TileCoord],
     root_entries: u64,
-) -> SplitPass {
+) -> Result<SplitPass, String> {
     let mut samples = Vec::with_capacity(coords.len());
     let mut combined = Vec::with_capacity(coords.len());
 
     for coord in coords {
         let at = Instant::now();
-        let source = FileRangeReader::try_open(archive).expect("the archive opens");
-        std::hint::black_box(source.size().expect("the archive has a size"));
+        let source = FileRangeReader::try_open(archive)
+            .map_err(|e| format!("the archive does not open: {e}"))?;
+        std::hint::black_box(
+            source
+                .size()
+                .map_err(|e| format!("the archive has no size: {e}"))?,
+        );
         let open = at.elapsed();
 
         let at = Instant::now();
         let header = Header::try_decode(
             &source
                 .read_range(0, HEADER_BYTES)
-                .expect("the header can be read"),
+                .map_err(|e| format!("the header cannot be read: {e}"))?,
         )
-        .expect("the header decodes");
+        .map_err(|e| format!("the header does not decode: {e}"))?;
         let header_time = at.elapsed();
 
         let at = Instant::now();
         let raw = source
             .read_range(
                 header.root_offset,
-                usize::try_from(header.root_length).expect("a root length fits a usize"),
+                usize::try_from(header.root_length)
+                    .map_err(|_| "the root length does not fit a usize".to_string())?,
             )
-            .expect("the root can be read");
+            .map_err(|e| format!("the root cannot be read: {e}"))?;
         let fetch = at.elapsed();
 
         let at = Instant::now();
         let plain = header
             .internal_compression
             .decompress(&raw, MAX_DIRECTORY_BYTES)
-            .expect("the root inflates");
+            .map_err(|e| format!("the root does not inflate: {e}"))?;
         let inflate = at.elapsed();
 
         let at = Instant::now();
-        let entries = std::hint::black_box(deserialize_entries(&plain).expect("the root decodes"));
+        let entries = std::hint::black_box(
+            deserialize_entries(&plain).map_err(|e| format!("the root does not decode: {e}"))?,
+        );
         let decode = at.elapsed();
-        assert!(!entries.is_empty(), "a root of no entries is not a root");
+        if entries.is_empty() {
+            return Err("a root of no entries is not a root".to_string());
+        }
 
         // Untimed on purpose: the lookup phase has to run against a reader the
         // crate built, because that is the path a caller takes, and it comes
         // from the factory like every other reader in the family. Only the five
         // index phases above are walked by hand, and they have to be: taking
         // `Reader::try_new` apart is the measurement.
-        let reader = readers.fresh().expect("the archive opens for reading");
+        let reader = readers.fresh()?;
         let at = Instant::now();
-        std::hint::black_box(reader.tile(*coord).expect("a lookup succeeds"));
+        std::hint::black_box(reader.tile(*coord)?);
         let lookup = at.elapsed();
 
         samples.push(SplitSample {
@@ -256,16 +268,16 @@ pub fn split_pass(
         // And the same work as one number, which is what the split reconciles
         // against.
         let at = Instant::now();
-        let whole = readers.fresh().expect("the archive opens for reading");
-        std::hint::black_box(whole.tile(*coord).expect("a lookup succeeds"));
+        let whole = readers.fresh()?;
+        std::hint::black_box(whole.tile(*coord)?);
         combined.push(at.elapsed());
     }
 
-    SplitPass {
+    Ok(SplitPass {
         samples,
         combined,
         root_entries,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -298,4 +310,149 @@ pub fn drift_pct(split_us: f64, combined_us: f64) -> f64 {
 /// Whether the summed phases reconcile with the combined row.
 pub fn reconciles(split_us: f64, combined_us: f64) -> bool {
     drift_pct(split_us, combined_us).abs() <= RECONCILIATION_ALLOWANCE_PCT
+}
+
+// ---------------------------------------------------------------------------
+// The scenario
+// ---------------------------------------------------------------------------
+
+/// `open`: construct a reader and stop.
+///
+/// One repetition is one fresh process, so the open it measures is the open a
+/// client pays: cold reader, cold branch predictors, nothing warmed by a
+/// previous lookup. That is why `read_cold` was not this measurement even
+/// though it opened a reader per lookup.
+pub struct Open;
+
+/// Microseconds for the open itself.
+pub const OPEN_US: MetricSpec = MetricSpec {
+    name: "p50",
+    unit: Unit::Microseconds,
+    direction: Direction::LowerIsBetter,
+};
+
+impl Scenario for Open {
+    fn name(&self) -> String {
+        "open".to_string()
+    }
+
+    fn isolation(&self) -> Isolation {
+        Isolation::ProcessPerRep
+    }
+
+    fn warmup(&self) -> Option<Warmup> {
+        // A fresh process per repetition is the warm-up; there is no in-process
+        // state for a discarded pass to warm, and discarding one would throw
+        // away the only cold open the process has.
+        None
+    }
+
+    fn reps(&self, profile: Profile) -> u32 {
+        read_reps(profile)
+    }
+
+    fn primary(&self) -> MetricSpec {
+        OPEN_US
+    }
+
+    fn run(&self, ctx: &ScenarioContext<'_>, reps: u32) -> Result<ScenarioRun, Skip> {
+        let mut samples = Vec::new();
+        let mut facts = Vec::new();
+        for _ in 0..reps.max(1) {
+            let at = Instant::now();
+            let reader = ctx.readers.fresh().map_err(Skip::failed)?;
+            let micros = at.elapsed().as_secs_f64() * 1e6;
+            std::hint::black_box(&reader);
+            samples.push(micros);
+
+            // The request count is an invariant rather than a timing, and it is
+            // observed through a counting factory, which is another
+            // `ReaderFactory` and not a reader this scenario built.
+            let mut invariants = Invariants::default();
+            if ctx.backend == Backend::PmTiles
+                && let Some(archive) = ctx.artefact
+            {
+                let counting = CountingFactory::new(archive);
+                let seen = observe(&counting).map_err(Skip::failed)?;
+                invariants.requests = Some(seen.request_count());
+                invariants.request_bytes = Some(seen.bytes());
+                invariants.root_entries = Some(seen.root_entries);
+                if !seen.tile_section_requests().is_empty() {
+                    return Err(Skip::failed(format!(
+                        "the open fetched {} range(s) from the tile data section, so it is not an \
+                         index-only open",
+                        seen.tile_section_requests().len()
+                    )));
+                }
+            }
+            facts.push(RepFacts {
+                invariants,
+                scratch: None,
+            });
+        }
+
+        Ok(ScenarioRun {
+            series: vec![Series {
+                metric: OPEN_US,
+                samples,
+            }],
+            reps: facts,
+            discarded_warmup: Vec::new(),
+            peak_rss_bytes: None,
+            heap_peak_bytes: None,
+        })
+    }
+}
+
+/// `first_lookup`: construct a reader and ask it for one tile.
+///
+/// The other half of the old `read_cold` row. `open` prices what a client pays
+/// before it can ask anything; this prices what it pays to get its first
+/// answer, and the difference between the two is the lookup.
+pub struct FirstLookup;
+
+impl Scenario for FirstLookup {
+    fn name(&self) -> String {
+        "first_lookup".to_string()
+    }
+
+    fn isolation(&self) -> Isolation {
+        Isolation::ProcessPerRep
+    }
+
+    fn warmup(&self) -> Option<Warmup> {
+        None
+    }
+
+    fn reps(&self, profile: Profile) -> u32 {
+        read_reps(profile)
+    }
+
+    fn primary(&self) -> MetricSpec {
+        OPEN_US
+    }
+
+    fn run(&self, ctx: &ScenarioContext<'_>, reps: u32) -> Result<ScenarioRun, Skip> {
+        let Some(coord) = ctx.coords.root_addressed else {
+            return Err(Skip::skipped("the cell has no root-addressed coordinate"));
+        };
+        let mut samples = Vec::new();
+        for _ in 0..reps.max(1) {
+            let at = Instant::now();
+            let reader = ctx.readers.fresh().map_err(Skip::failed)?;
+            let tile = reader.tile(coord).map_err(Skip::failed)?;
+            samples.push(at.elapsed().as_secs_f64() * 1e6);
+            std::hint::black_box(tile);
+        }
+        Ok(ScenarioRun {
+            series: vec![Series {
+                metric: OPEN_US,
+                samples,
+            }],
+            reps: vec![RepFacts::default(); reps.max(1) as usize],
+            discarded_warmup: Vec::new(),
+            peak_rss_bytes: None,
+            heap_peak_bytes: None,
+        })
+    }
 }

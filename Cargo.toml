@@ -60,24 +60,56 @@ polars = { version = "0.50", optional = true, default-features = false, features
     "rank",
 ] }
 serde = { version = "1", features = ["derive"] }
-# `preserve_order` keeps a parsed object's keys in the order the producer
-# wrote them. Without it `serde_json::Map` is a `BTreeMap`, so a round trip
-# through `Value` alphabetises every object and the `storage` document's
-# declared column order becomes unobservable by anything that reads it back
-# (`tests/storage_document.rs`). Derived structs already serialise in
-# declaration order; this is about the reading side.
-serde_json = { version = "1", features = ["preserve_order"] }
-# SHA-256 for the `storage` family's artefact digests. `libviprs` already
-# carries this exact major (its `checksum` module hashes with it) and its
-# streaming form is `pub(crate)` there, so the stream lives in
-# `storage::mod` and hashes through the same crate rather than a second one.
+# Two features, both load-bearing, and independent of each other.
+#
+# `preserve_order` keeps a parsed object's keys in the order the producer wrote
+# them. Without it `serde_json::Map` is a `BTreeMap`, so a round trip through
+# `Value` alphabetises every object and the `storage` document's declared column
+# order becomes unobservable by anything that reads it back
+# (`tests/storage_document.rs`). Derived structs already serialise in declaration
+# order; this is about the reading side.
+#
+# `float_roundtrip` is not a performance knob. Without it serde_json's number
+# READER is not correctly rounded: it parses `0.09090909090909091`, which is the
+# coefficient of variation of `[10, 11, 12]` and so a value this suite really
+# produces, to the float one ULP above the one `std` and the printer agree on. A
+# digest recomputed from a re-parsed document then does not match the digest its
+# producer derived, and `--verify` refuses a file that nothing is wrong with.
+# Worse across languages: V8's `JSON.parse` IS correctly rounded, so Rust and
+# JavaScript would read one archived file as two different floats and derive two
+# different digests. The feature gates serde_json's in-tree `lexical` module in
+# at the float paths in `de.rs`. It adds no crates, changes no API, and has no
+# interaction with `preserve_order`. `the_json_reader_is_correctly_rounded` in
+# `tests/storage_provenance_k13.rs` is its canary: delete the feature and that
+# test goes red (libviprs-bench #66).
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+
+# SHA-256, for three things that all want the same one: the `storage` family's
+# artefact digests, the storage archive's document digests (`src/sha256.rs`), and
+# the committed PDF fixture's integrity guard (`tests/pdf_fixture.rs`). It was a
+# dev-dependency until the archive needed it, and promoting it costs nothing:
+# `libviprs` already depends on this exact major directly (its `checksum` module
+# hashes with it) and is a normal path dependency here, so this crate's binaries
+# were already compiling it. Its streaming form is `pub(crate)` over there, which
+# is why `src/sha256.rs` wraps `sha2` itself rather than reaching for it.
+#
+# Pinned to 0.11 to match libviprs. The graph is NOT single-version — `lopdf`
+# (via libviprs) still pulls a sha2 0.10.x transitively — so this pin dedups
+# against libviprs's direct dep rather than across the whole tree.
 sha2 = "0.11"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-# NOTE: sha2 moved to [dependencies] with the `storage` family, which needs
-# it to digest an artefact. tests/pdf_fixture.rs still uses it and still
-# compiles, because a normal dependency is in scope for tests too.
+
+# `build.rs` digests `Cargo.lock` for `provenance.lockfileHash`, and a build
+# script cannot use its own crate's library, so the same `sha2` is listed again
+# here. This is the entire cost of not hand-rolling the hash: one extra
+# compilation of sha2 for the host, which never reaches a shipped binary.
+#
+# (`tests/pdf_fixture.rs` used to pull sha2 in as a dev-dependency; it still
+# compiles, because a normal dependency is in scope for tests too.)
+[build-dependencies]
+sha2 = "0.11"
 
 [[bench]]
 name = "engine_comparison"
@@ -91,9 +123,26 @@ harness = false
 name = "check-libvips-pin"
 path = "src/check_libvips_pin.rs"
 
+# The emulation probe, as a binary of its own. `tools/probe-emulation.sh` does
+# NOT build it through cargo — it compiles `src/probe_emulation_main.rs` with
+# bare `rustc` under two Docker platforms, because building it through cargo
+# would drag the whole `libviprs` path dependency through an emulated compiler.
+# This entry is here so `cargo run --bin probe-emulation` works for a human and
+# so the binary is covered by the crate's own check and clippy cells.
+[[bin]]
+name = "probe-emulation"
+path = "src/probe_emulation_main.rs"
+
 [[bin]]
 name = "flamegraph"
 path = "src/flamegraph.rs"
+
+# The door to the storage archive: --check, --archive, --verify, --provenance.
+# It refuses a run it cannot vouch for rather than averaging it in, which is the
+# whole reason it is a binary and not a flag on the sweep (#66).
+[[bin]]
+name = "storage-aggregate"
+path = "src/storage_aggregate_main.rs"
 
 [[bin]]
 name = "report"

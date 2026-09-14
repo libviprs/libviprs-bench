@@ -228,14 +228,13 @@ fn golden_snapshot_matches_the_serializer_shape() {
         fifteen_min: 1.0,
     });
     prov.thermal_throttle_count = Some(0);
-    let snapshot: BenchmarkSnapshot =
-        create_snapshot(
-            libviprs_bench::family::DEFAULT_FAMILY,
-            prov,
-            vec![sample_run_metrics()],
-            256,
-            4_000_000,
-        );
+    let snapshot: BenchmarkSnapshot = create_snapshot(
+        libviprs_bench::family::DEFAULT_FAMILY,
+        prov,
+        vec![sample_run_metrics()],
+        256,
+        4_000_000,
+    );
     let serialized = serde_json::to_value(&snapshot).unwrap();
     let golden = read_golden("golden_history.json");
     let first = golden
