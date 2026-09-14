@@ -955,7 +955,7 @@ fn the_remote_model_uses_the_declared_parameters_and_names_them() {
     );
 
     // And a modelled number never shares an axis with a measured one.
-    assert!(!Modelled::CHARTABLE_BESIDE_MEASURED);
+    const { assert!(!Modelled::CHARTABLE_BESIDE_MEASURED) };
 }
 
 /// The sync model does the same, per filesystem entry.
