@@ -15,6 +15,7 @@ use libviprs::{
 };
 use serde::{Deserialize, Serialize};
 
+pub mod emulation;
 pub mod flame;
 pub mod harness;
 pub mod pin_check;
