@@ -17,17 +17,21 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use libviprs::planner::TileCoord;
-use libviprs::pyramid_reader::PmTilesPyramidReader;
 use libviprs::sink::TileFormat;
 use libviprs::sink_pmtiles::PmTilesSink;
 use libviprs::{EngineBuilder, FsSink};
 
-use libviprs_bench::storage::model::{Modelled, RemoteModel, SyncModel};
-use libviprs_bench::storage::scenarios::{
-    self, Cell, LARGEST_FLAT_ROOT, Origin, Outcome, ROOT_ONLY_MAX_ENTRIES, Regime, SEED, SOURCES,
-    Source, concurrent_curve, decode_root, first_lookup, open, plan_order, replicate, requests,
-    tileid_order,
+use libviprs_bench::storage::cells::{
+    self, Backend, Cell, LARGEST_FLAT_ROOT, ROOT_ONLY_MAX_ENTRIES, Regime, SEED, SOURCES, Source,
 };
+use libviprs_bench::storage::document::Origin;
+use libviprs_bench::storage::model::{Modelled, RemoteModel, SyncModel};
+use libviprs_bench::storage::scenarios::counting::CountingFactory;
+use libviprs_bench::storage::scenarios::{
+    ReaderFactory, concurrent_curve, decode_root, first_lookup, open, plan_order, replicate,
+    requests, tileid_order,
+};
+use libviprs_bench::storage::{FileReaderFactory, raster};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -39,13 +43,28 @@ use libviprs_bench::storage::scenarios::{
 /// 3 MB raster, and a deepest level of 4 by 4 that divides exactly, so no edge
 /// tile is clipped and a flat source really does produce identical payloads.
 fn tiny(source: Source) -> Cell {
-    Cell {
-        width: 1024,
-        height: 1024,
-        tile_size: 256,
-        source,
-        regime: Regime::Root,
-    }
+    cell_at(1024, 1024, 256, source)
+}
+
+fn cell_at(width: u32, height: u32, tile_px: u32, source: Source) -> Cell {
+    let mut cell = Cell::new(width, height, tile_px, source, 0);
+    cell.declared_tiles = cell.planned_tiles().expect("the cell plans") as u32;
+    cell
+}
+
+/// How many tiles a cell plans, as the planner answers it.
+fn planned(cell: &Cell) -> u64 {
+    cell.planned_tiles().expect("the cell plans") as u64
+}
+
+/// A reader factory over a generated archive, which is where every scenario
+/// here gets a reader. Nothing in this file constructs one itself.
+fn readers_for(cell: &Cell, archive: &Path) -> FileReaderFactory {
+    FileReaderFactory::new(
+        Backend::PmTiles,
+        archive,
+        &cell.plan().expect("the cell plans"),
+    )
 }
 
 /// The brink cell's tile size at a canvas small enough for an ordinary test.
@@ -56,19 +75,13 @@ fn tiny(source: Source) -> Cell {
 /// having a source that deduplicates to compare against rather than about
 /// avoiding one that does.
 fn distinct_tiny(source: Source) -> Cell {
-    Cell {
-        width: 1024,
-        height: 1024,
-        tile_size: 46,
-        source,
-        regime: Regime::Root,
-    }
+    cell_at(1024, 1024, 46, source)
 }
 
 fn write_archive(dir: &Path, cell: &Cell) -> PathBuf {
-    let plan = cell.plan();
-    let raster = cell.source.raster(cell.width, cell.height);
-    let archive = dir.join(format!("{}.pmtiles", cell.source.label()));
+    let plan = cell.plan().expect("the cell plans");
+    let raster = raster(cell.source, cell.width, cell.height);
+    let archive = dir.join(format!("{}.pmtiles", cell.source.as_str()));
     let sink = PmTilesSink::builder(&archive)
         .plan(plan.clone())
         .tile_format(TileFormat::Png)
@@ -81,9 +94,9 @@ fn write_archive(dir: &Path, cell: &Cell) -> PathBuf {
 }
 
 fn write_tree(dir: &Path, cell: &Cell) -> PathBuf {
-    let plan = cell.plan();
-    let raster = cell.source.raster(cell.width, cell.height);
-    let root = dir.join(format!("{}-tree", cell.source.label()));
+    let plan = cell.plan().expect("the cell plans");
+    let raster = raster(cell.source, cell.width, cell.height);
+    let root = dir.join(format!("{}-tree", cell.source.as_str()));
     let sink = FsSink::new(&root, plan.clone()).with_format(TileFormat::Png);
     EngineBuilder::new(&raster, plan, sink)
         .run()
@@ -93,7 +106,7 @@ fn write_tree(dir: &Path, cell: &Cell) -> PathBuf {
 
 /// A coordinate the archive really holds: the first one the plan names.
 fn first_coord(cell: &Cell) -> TileCoord {
-    scenarios::plan_coordinates(&cell.plan())[0]
+    cells::coordinates(&cell.plan().expect("the cell plans"))[0]
 }
 
 // ---------------------------------------------------------------------------
@@ -141,14 +154,14 @@ fn the_writers_cutoff_is_the_number_this_crate_copied() {
 /// `the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it`.
 #[test]
 fn the_brink_search_still_picks_the_canvas_the_cell_names() {
-    let (found, tiles) = scenarios::brink_search();
-    let configured = scenarios::brink_cell(Source::Gradient);
+    let (found, tiles) = cells::brink_search();
+    let configured = cells::brink_cell(Source::Gradient);
     assert_eq!(
-        (found.width, found.height, found.tile_size),
+        (found.width, found.height, found.tile_px),
         (
             configured.width,
             configured.height,
-            configured.tile_size
+            configured.tile_px
         ),
         "the search space's best cell is now {} planning {tiles} tiles, and the table still names \
          {}",
@@ -187,14 +200,14 @@ fn the_brink_search_still_picks_the_canvas_the_cell_names() {
 fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
     let dir = tempdir();
 
-    let brink = scenarios::brink_cell(Source::Gradient);
+    let brink = cells::brink_cell(Source::Gradient);
     let brink_archive = write_archive(dir.path(), &brink);
-    let (brink_entries, brink_leaves) = scenarios::root_shape(&brink_archive);
+    let (brink_entries, brink_leaves) = cells::root_shape(&brink_archive);
     println!(
         "brink {} planned {} tiles, root holds {brink_entries} entries, {brink_leaves} of them \
          leaf pointers, {} under the {LARGEST_FLAT_ROOT} the writer still keeps flat",
         brink.spec(),
-        brink.planned_tiles(),
+        planned(&brink),
         LARGEST_FLAT_ROOT - brink_entries
     );
 
@@ -216,20 +229,20 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
     );
     assert_eq!(
         brink_entries,
-        brink.planned_tiles(),
+        planned(&brink),
         "the gradient's tiles are all distinct, so every planned tile should cost one root entry; \
          a run collapsed and the root is smaller than the cell's tile count"
     );
-    assert_eq!(scenarios::observed_regime(&brink_archive), brink.regime);
+    assert_eq!(cells::observed_regime(&brink_archive), Regime::Root);
 
-    let leaf = scenarios::leaf_cell(Source::Gradient);
+    let leaf = cells::leaf_cell(Source::Gradient);
     let leaf_archive = write_archive(dir.path(), &leaf);
-    let (leaf_entries, leaf_leaves) = scenarios::root_shape(&leaf_archive);
+    let (leaf_entries, leaf_leaves) = cells::root_shape(&leaf_archive);
     println!(
         "leaf {} planned {} tiles, root holds {leaf_entries} entries, {leaf_leaves} of them leaf \
          pointers",
         leaf.spec(),
-        leaf.planned_tiles()
+        planned(&leaf)
     );
     assert!(
         leaf_leaves >= 1,
@@ -237,11 +250,11 @@ fn the_brink_cell_sits_under_the_root_cutoff_and_the_leaf_cell_over_it() {
          it"
     );
     assert!(
-        leaf.planned_tiles() > LARGEST_FLAT_ROOT,
+        planned(&leaf) > LARGEST_FLAT_ROOT,
         "the leaf cell plans {} tiles, which the writer would still keep in a flat root",
-        leaf.planned_tiles()
+        planned(&leaf)
     );
-    assert_eq!(scenarios::observed_regime(&leaf_archive), leaf.regime);
+    assert_eq!(cells::observed_regime(&leaf_archive), Regime::Leaves);
 }
 
 // ---------------------------------------------------------------------------
@@ -261,38 +274,38 @@ fn a_flat_source_never_produces_a_published_row() {
 
     let flat = distinct_tiny(Source::Flat);
     let flat_archive = write_archive(dir.path(), &flat);
-    let (flat_entries, _) = scenarios::root_shape(&flat_archive);
+    let (flat_entries, _) = cells::root_shape(&flat_archive);
 
     let gradient = distinct_tiny(Source::Gradient);
     let gradient_archive = write_archive(dir.path(), &gradient);
-    let (gradient_entries, _) = scenarios::root_shape(&gradient_archive);
+    let (gradient_entries, _) = cells::root_shape(&gradient_archive);
 
     println!(
         "{} planned tiles: flat root {flat_entries} entries, gradient root {gradient_entries}",
-        flat.planned_tiles()
+        planned(&flat)
     );
 
     // The reason flat is not a cell: its root is not the cell's tile count.
     assert!(
-        flat_entries < flat.planned_tiles(),
+        flat_entries < planned(&flat),
         "the flat source's root holds {flat_entries} entries for {} planned tiles, so nothing \
          deduplicated and this source is not the dedupe guard it is here to be",
-        flat.planned_tiles()
+        planned(&flat)
     );
     // The positive control for that: a source whose tiles are all distinct pays
     // one entry per tile, so the collapse above is the writer's run-length
     // encoding and not something about this canvas.
     assert_eq!(
         gradient_entries,
-        gradient.planned_tiles(),
+        planned(&gradient),
         "the gradient's tiles are meant to be all distinct"
     );
 
-    assert!(!Source::Flat.publishes_rows());
-    assert!(Source::Gradient.publishes_rows() && Source::Noise.publishes_rows());
+    assert!(!Source::Flat.publishable());
+    assert!(Source::Gradient.publishable() && Source::Noise.publishable());
 
     let sweep: Vec<Cell> = SOURCES.iter().map(|source| distinct_tiny(*source)).collect();
-    let published = scenarios::publishable(&sweep);
+    let published = cells::publishable(&sweep);
     assert_eq!(
         published.len(),
         2,
@@ -323,6 +336,7 @@ fn the_noise_source_is_incompressible_and_the_gradient_is_not() {
     let gradient = tiny(Source::Gradient);
     let raw: u64 = noise
         .plan()
+        .expect("the cell plans")
         .levels
         .iter()
         .map(|level| u64::from(level.width) * u64::from(level.height) * 3)
@@ -353,8 +367,8 @@ fn the_noise_source_is_incompressible_and_the_gradient_is_not() {
 
     // And it is deterministic, because a benchmark source that moves between
     // runs is a different amount of work each time.
-    let again = scenarios::noise(64, 64);
-    let once = scenarios::noise(64, 64);
+    let again = raster(Source::Noise, 64, 64);
+    let once = raster(Source::Noise, 64, 64);
     assert_eq!(again.data(), once.data(), "the noise source is seeded");
 }
 
@@ -376,7 +390,8 @@ fn open_counts_exactly_the_header_and_root_reads_and_no_tile() {
     let archive = write_archive(dir.path(), &cell);
     let coord = first_coord(&cell);
 
-    let (observation, lookup_requests) = open::observe_with_lookup(&archive, coord);
+    let counting = CountingFactory::new(&archive);
+    let (observation, lookup_requests) = open::observe_with_lookup(&counting, coord);
 
     assert_eq!(
         observation.request_count(),
@@ -403,7 +418,7 @@ fn open_counts_exactly_the_header_and_root_reads_and_no_tile() {
 
     // The plain observe() path is the scenario, and it agrees with the one that
     // also looks a tile up.
-    let plain = open::observe(&archive);
+    let plain = open::observe(&counting);
     assert_eq!(plain.request_count(), 2);
     assert_eq!(plain.root_entries, observation.root_entries);
 }
@@ -465,22 +480,16 @@ fn the_cold_split_accounts_for_the_whole_combined_row() {
     // on and small enough to generate in a minute. The plan's mid cell is
     // 8192x8192 at a 256 pixel tile, and the gradient collapses that one to a
     // root of thirteen entries, which the reconciliation guard rightly refuses.
-    let cell = Cell {
-        width: 2048,
-        height: 2048,
-        tile_size: 64,
-        source: Source::Gradient,
-        regime: Regime::Root,
-    };
+    let cell = cell_at(2048, 2048, 64, Source::Gradient);
     let archive = write_archive(dir.path(), &cell);
-    let (entries, _) = scenarios::root_shape(&archive);
+    let (entries, _) = cells::root_shape(&archive);
     open::reconciliation_is_meaningful(entries).expect("the mid cell's root is big enough");
 
-    let coords: Vec<TileCoord> = scenarios::plan_coordinates(&cell.plan())
+    let coords: Vec<TileCoord> = cells::coordinates(&cell.plan().expect("the cell plans"))
         .into_iter()
         .take(32)
         .collect();
-    let pass = open::split_pass(&archive, &coords, entries);
+    let pass = open::split_pass(&archive, &readers_for(&cell, &archive), &coords, entries);
 
     let split_us = median_micros(&pass.totals());
     let combined_us = median_micros(&pass.combined);
@@ -590,7 +599,7 @@ fn decode_root_reports_the_archives_own_entry_count_not_the_plans_tile_count() {
 
     let flat = distinct_tiny(Source::Flat);
     let flat_archive = write_archive(dir.path(), &flat);
-    let (flat_entries, _) = scenarios::root_shape(&flat_archive);
+    let (flat_entries, _) = cells::root_shape(&flat_archive);
     let decoded = decode_root::observe(&flat_archive, 3);
 
     assert_eq!(
@@ -600,7 +609,7 @@ fn decode_root_reports_the_archives_own_entry_count_not_the_plans_tile_count() {
     );
     assert_ne!(
         decoded.entries,
-        flat.planned_tiles(),
+        planned(&flat),
         "on a deduplicating source the root entry count and the tile count have to differ, or \
          this test cannot tell a decode from a restatement of the plan"
     );
@@ -611,7 +620,7 @@ fn decode_root_reports_the_archives_own_entry_count_not_the_plans_tile_count() {
     let gradient = distinct_tiny(Source::Gradient);
     let gradient_archive = write_archive(dir.path(), &gradient);
     let gradient_decoded = decode_root::observe(&gradient_archive, 1);
-    assert_eq!(gradient_decoded.entries, gradient.planned_tiles());
+    assert_eq!(gradient_decoded.entries, planned(&gradient));
 }
 
 // ---------------------------------------------------------------------------
@@ -629,8 +638,8 @@ fn decode_root_reports_the_archives_own_entry_count_not_the_plans_tile_count() {
 /// anything else, and the probe it prints comes out of it.
 #[test]
 fn tileid_order_is_monotone_in_tile_id_and_plan_order_is_not() {
-    let cell = scenarios::smoke_cell(Source::Gradient);
-    let plan = cell.plan();
+    let cell = cells::smoke_cell(Source::Gradient);
+    let plan = cell.plan().expect("the cell plans");
     let n = plan_order::coordinates(&plan, usize::MAX).len();
     let walked = plan_order::coordinates(&plan, n);
     let sorted = tileid_order::coordinates(&plan, n);
@@ -691,7 +700,7 @@ fn tileid_order_is_monotone_in_tile_id_and_plan_order_is_not() {
 /// short of the pyramid.
 #[test]
 fn both_walks_take_the_same_n_coordinates() {
-    let plan = scenarios::smoke_cell(Source::Gradient).plan();
+    let plan = cells::smoke_cell(Source::Gradient).plan().expect("the cell plans");
     let whole = plan_order::coordinates(&plan, usize::MAX).len();
 
     for n in [1usize, 7, 16, whole, whole + 100] {
@@ -730,15 +739,15 @@ fn cells_above_ncpu_are_skipped_with_a_reason_not_dropped() {
         concurrent_curve::THREAD_LADDER.to_vec()
     );
 
-    let skipped: Vec<_> = ladder.iter().filter(|arm| !arm.outcome.is_ok()).collect();
+    let skipped: Vec<_> = ladder.iter().filter(|arm| !arm.is_ok()).collect();
     assert_eq!(
         skipped.len(),
         1,
         "on six cores exactly the eight-thread rung is declined: {ladder:?}"
     );
     assert_eq!(skipped[0].threads, 8);
+    assert_eq!(skipped[0].outcome(), libviprs_bench::storage::scenarios::Outcome::Skipped);
     let reason = skipped[0]
-        .outcome
         .reason()
         .expect("a skipped rung carries its reason");
     assert!(
@@ -750,15 +759,12 @@ fn cells_above_ncpu_are_skipped_with_a_reason_not_dropped() {
     // always refuses eight.
     let roomy = concurrent_curve::ladder(16);
     assert!(
-        roomy.iter().all(|arm| arm.outcome.is_ok()),
+        roomy.iter().all(|arm| arm.is_ok()),
         "a sixteen-core host measures every rung: {roomy:?}"
     );
     let cramped = concurrent_curve::ladder(1);
     assert_eq!(
-        cramped
-            .iter()
-            .filter(|arm| arm.outcome == Outcome::Ok)
-            .count(),
+        cramped.iter().filter(|arm| arm.is_ok()).count(),
         1,
         "a single-core host measures only the control"
     );
@@ -778,9 +784,10 @@ fn the_t1_control_agrees_with_read_random_within_the_tie_band() {
     let dir = tempdir();
     let cell = tiny(Source::Gradient);
     let archive = write_archive(dir.path(), &cell);
-    let reader = PmTilesPyramidReader::try_open(&archive).expect("the archive opens for reading");
+    let readers = readers_for(&cell, &archive);
+    let reader = readers.fresh().expect("the archive opens for reading");
 
-    let coords = scenarios::random_order(&scenarios::plan_coordinates(&cell.plan()), SEED);
+    let coords = random_order(&cells::coordinates(&cell.plan().expect("the cell plans")), SEED);
 
     // The same coordinate set, in the same order.
     let pieces = concurrent_curve::chunks(&coords, 1);
@@ -792,7 +799,7 @@ fn the_t1_control_agrees_with_read_random_within_the_tie_band() {
     );
 
     let me = std::thread::current().id();
-    let control = concurrent_curve::run_arm(&reader, &coords, 1);
+    let control = concurrent_curve::run_arm(reader.as_ref(), &coords, 1);
     assert_eq!(control.coordinates_walked, coords.len());
     assert_eq!(control.latencies.len(), coords.len());
     assert!(
@@ -804,7 +811,7 @@ fn the_t1_control_agrees_with_read_random_within_the_tie_band() {
 
     // The positive control: a rung that really does spawn is visible here, so
     // `ran_on_only` is an observation rather than a constant.
-    let two = concurrent_curve::run_arm(&reader, &coords, 2);
+    let two = concurrent_curve::run_arm(reader.as_ref(), &coords, 2);
     assert!(
         !two.ran_on_only(me),
         "the two-thread rung reported only this thread, so the thread-id evidence cannot tell a \
@@ -884,10 +891,10 @@ fn the_directory_request_count_is_declared_and_the_archive_count_is_observed() {
     let tree = write_tree(dir.path(), &cell);
     assert!(tree.is_dir(), "the tree backend really wrote a tree");
 
-    let coords = scenarios::plan_coordinates(&cell.plan());
-    let walk = scenarios::random_order(&coords, SEED);
-    let archive_counts = requests::pmtiles(&archive, coords[0], None, &walk);
-    let tree_counts = requests::directory(cell.planned_tiles(), 4_096, walk.len() as u64, false);
+    let coords = cells::coordinates(&cell.plan().expect("the cell plans"));
+    let walk = random_order(&coords, SEED);
+    let archive_counts = requests::pmtiles(&CountingFactory::new(&archive), coords[0], None, &walk);
+    let tree_counts = requests::directory(planned(&cell), 4_096, walk.len() as u64, false);
 
     assert!(
         requests::all_observed(&archive_counts),
@@ -1010,11 +1017,11 @@ fn the_sync_model_uses_the_declared_parameters_and_names_them() {
 /// perfectly quiet host and disables every noise verdict downstream.
 #[test]
 fn the_replicate_cell_is_measured_first_and_last_and_its_spread_is_published() {
-    let control = scenarios::smoke_cell(Source::Gradient);
+    let control = cells::smoke_cell(Source::Gradient);
     let rest = [
-        scenarios::mid_cell(Source::Gradient),
-        scenarios::brink_cell(Source::Gradient),
-        scenarios::leaf_cell(Source::Gradient),
+        cells::mid_cell(Source::Gradient),
+        cells::brink_cell(Source::Gradient),
+        cells::leaf_cell(Source::Gradient),
     ];
 
     let schedule = replicate::schedule(control, &rest);
@@ -1109,6 +1116,18 @@ fn tempdir() -> Scratch {
     Scratch::new()
 }
 
+/// A seeded shuffle, the same Fisher-Yates `storage::coordinate_sets` runs, so
+/// the T=1 control walks `read_random`'s sequence rather than a lookalike.
+fn random_order(coords: &[TileCoord], seed: u64) -> Vec<TileCoord> {
+    let mut out = coords.to_vec();
+    let mut rng = libviprs_bench::storage::stats::Splitmix::new(seed);
+    for i in (1..out.len()).rev() {
+        let j = rng.below(i + 1);
+        out.swap(i, j);
+    }
+    out
+}
+
 fn median_micros(samples: &[std::time::Duration]) -> f64 {
     let mut micros: Vec<f64> = samples
         .iter()
@@ -1139,51 +1158,51 @@ fn median_micros(samples: &[std::time::Duration]) -> f64 {
 fn the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses() {
     // The arithmetic, first, because it is what the generated archives below
     // are supposed to confirm.
-    for tile_size in [256u32, 128, 64, 46] {
+    for tile_px in [256u32, 128, 64, 46] {
         assert!(
-            !scenarios::collapses_at(Source::Gradient, tile_size),
-            "the ported gradient would collapse at a {tile_size} pixel tile, which means its \
+            !cells::collapses_at(Source::Gradient, tile_px),
+            "the ported gradient would collapse at a {tile_px} pixel tile, which means its \
              moduli are not the engine's"
         );
-        assert!(!scenarios::collapses_at(Source::Noise, tile_size));
+        assert!(!cells::collapses_at(Source::Noise, tile_px));
         assert!(
-            scenarios::collapses_at(Source::Flat, tile_size),
+            cells::collapses_at(Source::Flat, tile_px),
             "a solid fill repeats every pixel, so it collapses at every tile size"
         );
     }
     assert!(
-        scenarios::collapses_at(Source::PeriodicGradient, 256),
+        cells::collapses_at(Source::PeriodicGradient, 256),
         "the control has to collapse at 256, or this test cannot tell a guard that fires from one \
          that cannot"
     );
-    assert!(!scenarios::collapses_at(Source::PeriodicGradient, 46));
-    assert_eq!(scenarios::period_px(Source::Gradient), Some(251 * 241 * 239));
+    assert!(!cells::collapses_at(Source::PeriodicGradient, 46));
+    assert_eq!(cells::period_px(Source::Gradient), Some(251 * 241 * 239));
 
     // And the archives agree with the arithmetic.
     let dir = tempdir();
     let at_256 = tiny(Source::Gradient);
-    let levels = at_256.plan().levels.len() as u64;
-    let (entries, _) = scenarios::root_shape(&write_archive(dir.path(), &at_256));
+    let levels = at_256.plan().expect("the cell plans").levels.len() as u64;
+    let (entries, _) = cells::root_shape(&write_archive(dir.path(), &at_256));
     println!(
         "{} plans {} tiles over {levels} levels and its root holds {entries} entries",
         at_256.spec(),
-        at_256.planned_tiles()
+        planned(&at_256)
     );
     assert_eq!(
         entries,
-        at_256.planned_tiles(),
+        planned(&at_256),
         "the ported gradient at a 256 pixel tile paid {entries} entries for {} tiles, so something \
          deduplicated and the moduli are not prime any more",
-        at_256.planned_tiles()
+        planned(&at_256)
     );
 
     // The control, at the same cell, really does collapse to one entry a level.
     let periodic = tiny(Source::PeriodicGradient);
-    let (collapsed, _) = scenarios::root_shape(&write_archive(dir.path(), &periodic));
+    let (collapsed, _) = cells::root_shape(&write_archive(dir.path(), &periodic));
     println!(
         "{} plans {} tiles over {levels} levels and its root holds {collapsed} entries",
         periodic.spec(),
-        periodic.planned_tiles()
+        planned(&periodic)
     );
     assert_eq!(
         collapsed, levels,
@@ -1201,24 +1220,18 @@ fn the_ported_gradient_does_not_collapse_at_any_tile_size_the_sweep_uses() {
 fn the_measured_root_entries_of_every_source() {
     let dir = tempdir();
     println!("cell\tplanned\tgradient\tnoise\tperiodic\tflat");
-    for (width, height, tile_size) in [
+    for (width, height, tile_px) in [
         (1024u32, 1024u32, 256u32),
         (1024, 1024, 128),
         (1024, 1024, 64),
         (1024, 1024, 46),
         (2048, 2048, 256),
     ] {
-        let base = Cell {
-            width,
-            height,
-            tile_size,
-            source: Source::Gradient,
-            regime: Regime::Root,
-        };
+        let base = cell_at(width, height, tile_px, Source::Gradient);
         let mut counts = Vec::new();
         for source in SOURCES {
-            let cell = base.with_source(source);
-            let (entries, leaves) = scenarios::root_shape(&write_archive(dir.path(), &cell));
+            let cell = cell_at(width, height, tile_px, source);
+            let (entries, leaves) = cells::root_shape(&write_archive(dir.path(), &cell));
             assert_eq!(leaves, 0, "{} grew leaves at this scale", cell.spec());
             counts.push((source, entries));
         }
@@ -1226,15 +1239,15 @@ fn the_measured_root_entries_of_every_source() {
             "{}x{}@{}\t{}\t{}\t{}\t{}\t{}",
             width,
             height,
-            tile_size,
-            base.planned_tiles(),
+            tile_px,
+            planned(&base),
             counts[0].1,
             counts[1].1,
             counts[3].1,
             counts[2].1
         );
 
-        let planned = base.planned_tiles();
+        let planned = planned(&base);
         for (source, entries) in &counts {
             match source {
                 // The two sources the sweep publishes pay one entry a tile at
@@ -1246,14 +1259,14 @@ fn the_measured_root_entries_of_every_source() {
                     "{}x{}@{} from {} paid {entries} entries for {planned} tiles",
                     width,
                     height,
-                    tile_size,
-                    source.label()
+                    tile_px,
+                    source.as_str()
                 ),
                 // The controls collapse, and they have to, or nothing above is
                 // a distinction.
                 Source::Flat => assert!(*entries < planned),
                 Source::PeriodicGradient => {
-                    if scenarios::collapses_at(Source::PeriodicGradient, tile_size) {
+                    if cells::collapses_at(Source::PeriodicGradient, tile_px) {
                         assert!(*entries < planned);
                     }
                 }
@@ -1271,31 +1284,31 @@ fn the_measured_root_entries_of_every_source() {
 #[test]
 fn the_cell_table_refuses_a_source_at_a_tile_size_that_collapses_it() {
     let refusal =
-        scenarios::source_suits_the_cell(&scenarios::smoke_cell(Source::PeriodicGradient))
+        cells::source_suits_the_cell(&cells::smoke_cell(Source::PeriodicGradient))
             .expect_err("a 256 pixel tile collapses a ramp whose period is 256");
     assert!(
         refusal.contains("256") && refusal.contains("run-length"),
         "the refusal has to name the period and the mechanism: {refusal}"
     );
-    scenarios::source_suits_the_cell(&scenarios::mid_cell(Source::Flat))
+    cells::source_suits_the_cell(&cells::mid_cell(Source::Flat))
         .expect_err("a solid fill collapses at every tile size");
 
     // The engine's gradient suits every cell in the family, which is the point
     // of porting it rather than reconstructing it.
     for cell in [
-        scenarios::smoke_cell(Source::Gradient),
-        scenarios::mid_cell(Source::Gradient),
-        scenarios::brink_cell(Source::Gradient),
-        scenarios::leaf_cell(Source::Gradient),
+        cells::smoke_cell(Source::Gradient),
+        cells::mid_cell(Source::Gradient),
+        cells::brink_cell(Source::Gradient),
+        cells::leaf_cell(Source::Gradient),
     ] {
-        scenarios::source_suits_the_cell(&cell)
+        cells::source_suits_the_cell(&cell)
             .unwrap_or_else(|why| panic!("the ported gradient suits every cell: {why}"));
     }
     for cell in [
-        scenarios::smoke_cell(Source::Noise),
-        scenarios::leaf_cell(Source::Noise),
+        cells::smoke_cell(Source::Noise),
+        cells::leaf_cell(Source::Noise),
     ] {
-        scenarios::source_suits_the_cell(&cell).expect("noise never repeats");
+        cells::source_suits_the_cell(&cell).expect("noise never repeats");
     }
 }
 
@@ -1317,8 +1330,8 @@ fn the_cell_table_refuses_a_source_at_a_tile_size_that_collapses_it() {
 #[test]
 fn the_gradient_in_this_binary_has_the_engines_prime_moduli() {
     const SIDE: u32 = 300;
-    let engine = scenarios::gradient(SIDE, SIDE);
-    let rounded = scenarios::periodic_gradient(SIDE, SIDE);
+    let engine = raster(Source::Gradient, SIDE, SIDE);
+    let rounded = raster(Source::PeriodicGradient, SIDE, SIDE);
     let engine_bytes = engine.data();
     let rounded_bytes = rounded.data();
     assert_eq!(engine_bytes.len(), rounded_bytes.len());

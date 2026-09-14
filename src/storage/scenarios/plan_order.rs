@@ -13,7 +13,7 @@ use libviprs::planner::{PyramidPlan, TileCoord};
 /// `n` is `min(n, plan length)`, so a profile asking for more coordinates than
 /// the pyramid has gets the pyramid rather than an error.
 pub fn coordinates(plan: &PyramidPlan, n: usize) -> Vec<TileCoord> {
-    let mut all = super::plan_coordinates(plan);
+    let mut all = super::super::cells::coordinates(plan);
     all.truncate(n);
     all
 }

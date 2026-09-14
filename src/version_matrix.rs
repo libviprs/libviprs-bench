@@ -38,7 +38,7 @@ use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use crate::RunMetrics;
-use crate::harness::{self, Engine};
+use crate::harness;
 use crate::version_id::version_key;
 
 /// The harness binary rebuilt per tag and re-invoked (as `--single` children)
@@ -477,6 +477,7 @@ fn toml_escape(s: &str) -> String {
 /// *measured* core's identity (resolved from the tag's worktree), and the
 /// environment fingerprint is captured live. Returns the new history length.
 pub fn append_version_snapshot(
+    family: crate::family::Family,
     history_path: &Path,
     version: &str,
     git_sha: &str,
@@ -491,6 +492,7 @@ pub fn append_version_snapshot(
     // axes (#25 review).
     let provenance = crate::provenance::Provenance::capture();
     let snapshot = crate::create_snapshot_for(
+        family,
         provenance,
         version,
         git_sha,
@@ -498,7 +500,11 @@ pub fn append_version_snapshot(
         tile_size,
         memory_budget_bytes,
     );
-    history.push(snapshot);
+    // `push_snapshot` rather than a bare `push`: the release-history axis writes
+    // into the family's own history file, and appending a snapshot of a
+    // different family there would make a release trend out of two different
+    // engine sets (issue #64).
+    crate::push_snapshot(&mut history, snapshot).map_err(MatrixError::History)?;
     // `save_history` is atomic (temp file + rename) and fallible: a write fault
     // is surfaced as a per-version `History` skip so the sweep continues and the
     // prior file stays intact, never a panic that aborts the whole run.
@@ -515,6 +521,10 @@ pub fn append_version_snapshot(
 /// literals.
 #[derive(Debug, Clone)]
 pub struct MatrixConfig {
+    /// The benchmark family every tag in the sweep is measured under. The
+    /// release-history axis has to hold one family constant or its trend line
+    /// compares different engine sets across tags (issue #64).
+    pub family: crate::family::Family,
     pub sizes: Vec<(u32, u32)>,
     pub concurrency: Vec<usize>,
     pub tile_size: u32,
@@ -531,6 +541,7 @@ pub struct MatrixConfig {
 impl Default for MatrixConfig {
     fn default() -> Self {
         MatrixConfig {
+            family: crate::family::DEFAULT_FAMILY,
             sizes: crate::DEFAULT_SIZES.to_vec(),
             concurrency: crate::DEFAULT_CONCURRENCY.to_vec(),
             tile_size: crate::BENCH_TILE_SIZE,
@@ -668,7 +679,7 @@ fn run_one_version(
     let worktree = CoreWorktree::checkout(repo, refname)?;
     let built = build_harness(&worktree, target_dir, &cfg.build)?;
 
-    let engines = engine_set();
+    let engines = cfg.family.engines();
     let runs = harness::run_isolated_suite(
         &built.exe,
         &cfg.sizes,
@@ -681,6 +692,7 @@ fn run_one_version(
     );
 
     let entries = append_version_snapshot(
+        cfg.family,
         history_path,
         worktree.version(),
         worktree.short_sha(),
@@ -693,16 +705,6 @@ fn run_one_version(
         worktree.short_sha().to_string(),
         entries,
     ))
-}
-
-/// The engine set the matrix measures: the three libviprs engines always, plus
-/// libvips when the system binary is present — matching the `report` bin.
-fn engine_set() -> Vec<Engine> {
-    let mut engines = vec![Engine::Monolithic, Engine::Streaming, Engine::MapReduce];
-    if crate::vips_available() {
-        engines.push(Engine::Libvips);
-    }
-    engines
 }
 
 /// Map an arbitrary ref to a filesystem-safe worktree basename component.

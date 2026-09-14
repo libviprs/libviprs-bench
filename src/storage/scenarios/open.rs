@@ -32,10 +32,9 @@ use libviprs::planner::TileCoord;
 use libviprs::pmtiles::directory::deserialize_entries;
 use libviprs::pmtiles::header::HEADER_BYTES;
 use libviprs::pmtiles::reader::MAX_DIRECTORY_BYTES;
-use libviprs::pmtiles::{FileRangeReader, Header, RangeReader, Reader};
-use libviprs::pyramid_reader::{PmTilesPyramidReader, PyramidReader};
-
-use super::counting::{CountingSource, Request};
+use libviprs::pmtiles::{FileRangeReader, Header, RangeReader};
+use super::counting::{CountingFactory, Request};
+use super::{ReaderFactory, TileReader};
 
 /// The phases a cold PMTiles open goes through, in the order `Reader::try_new`
 /// runs them, plus the lookup that follows.
@@ -111,15 +110,16 @@ impl OpenObservation {
 /// This is the scenario: the old cold row conflated the open with the lookup,
 /// and a client that opens an archive pays the open whether or not it goes on
 /// to read anything.
-pub fn observe(archive: &Path) -> OpenObservation {
-    let source = CountingSource::try_open(archive).expect("the archive opens");
-    let reader = Reader::try_new(source).expect("the archive's index is readable");
-    let header = reader.header();
+pub fn observe(readers: &CountingFactory) -> OpenObservation {
+    let reader = readers
+        .fresh_counting()
+        .expect("the archive's index is readable");
+    let (offset, length) = reader.tile_data_range();
     OpenObservation {
-        requests: reader.source().requests(),
-        root_entries: reader.root_entries().len() as u64,
-        tile_data_offset: header.tile_data_offset,
-        tile_data_length: header.tile_data_length,
+        requests: reader.open_requests().to_vec(),
+        root_entries: reader.root_entries(),
+        tile_data_offset: offset,
+        tile_data_length: length,
     }
 }
 
@@ -128,23 +128,22 @@ pub fn observe(archive: &Path) -> OpenObservation {
 /// The positive control for [`observe`]: if an open lands no request in the
 /// tile data section because nothing is counted at all, this one lands none
 /// either and the assertion is vacuous. Here the lookup must land one.
-pub fn observe_with_lookup(archive: &Path, coord: TileCoord) -> (OpenObservation, Vec<Request>) {
-    let source = CountingSource::try_open(archive).expect("the archive opens");
-    let reader = Reader::try_new(source).expect("the archive's index is readable");
-    let header = reader.header();
+pub fn observe_with_lookup(
+    readers: &CountingFactory,
+    coord: TileCoord,
+) -> (OpenObservation, Vec<Request>) {
+    let reader = readers
+        .fresh_counting()
+        .expect("the archive's index is readable");
+    let (offset, length) = reader.tile_data_range();
     let observation = OpenObservation {
-        requests: reader.source().requests(),
-        root_entries: reader.root_entries().len() as u64,
-        tile_data_offset: header.tile_data_offset,
-        tile_data_length: header.tile_data_length,
+        requests: reader.open_requests().to_vec(),
+        root_entries: reader.root_entries(),
+        tile_data_offset: offset,
+        tile_data_length: length,
     };
-
-    reader.source().forget();
-    let z = u8::try_from(coord.level).expect("a level PMTiles can address");
-    reader
-        .get_tile(z, coord.col, coord.row)
-        .expect("a lookup succeeds");
-    (observation, reader.source().requests())
+    let (_, lookup) = reader.counted(|r| r.tile(coord).expect("a lookup succeeds"));
+    (observation, lookup)
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +194,12 @@ impl SplitPass {
 /// measurement: nothing on the product's hot path changes to be measured, and
 /// the check that the hand-rolled walk really is the same work is that its
 /// phases reconcile with the combined row.
-pub fn split_pass(archive: &Path, coords: &[TileCoord], root_entries: u64) -> SplitPass {
+pub fn split_pass(
+    archive: &Path,
+    readers: &dyn ReaderFactory,
+    coords: &[TileCoord],
+    root_entries: u64,
+) -> SplitPass {
     let mut samples = Vec::with_capacity(coords.len());
     let mut combined = Vec::with_capacity(coords.len());
 
@@ -236,8 +240,11 @@ pub fn split_pass(archive: &Path, coords: &[TileCoord], root_entries: u64) -> Sp
         assert!(!entries.is_empty(), "a root of no entries is not a root");
 
         // Untimed on purpose: the lookup phase has to run against a reader the
-        // crate built, because that is the path a caller takes.
-        let reader = PmTilesPyramidReader::try_open(archive).expect("the archive opens for reading");
+        // crate built, because that is the path a caller takes, and it comes
+        // from the factory like every other reader in the family. Only the five
+        // index phases above are walked by hand, and they have to be: taking
+        // `Reader::try_new` apart is the measurement.
+        let reader = readers.fresh().expect("the archive opens for reading");
         let at = Instant::now();
         std::hint::black_box(reader.tile(*coord).expect("a lookup succeeds"));
         let lookup = at.elapsed();
@@ -249,7 +256,7 @@ pub fn split_pass(archive: &Path, coords: &[TileCoord], root_entries: u64) -> Sp
         // And the same work as one number, which is what the split reconciles
         // against.
         let at = Instant::now();
-        let whole = PmTilesPyramidReader::try_open(archive).expect("the archive opens for reading");
+        let whole = readers.fresh().expect("the archive opens for reading");
         std::hint::black_box(whole.tile(*coord).expect("a lookup succeeds"));
         combined.push(at.elapsed());
     }
