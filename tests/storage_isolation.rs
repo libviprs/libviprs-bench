@@ -6,6 +6,7 @@
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use libviprs::pmtiles::directory::serialize_entries;
@@ -366,6 +367,40 @@ fn every_read_scenario_runs_in_its_own_process_on_a_fresh_reader() {
 
 // ---------------------------------------------------------------------------
 
+/// A factory that counts what a scenario asked it for.
+///
+/// Two numbers, and both of them matter: how many readers the scenario opened,
+/// and how many lookups it made. The second is what proves a warm-up pass
+/// happened, because a pass is a fixed number of lookups and the arithmetic is
+/// exact.
+struct CountingFile {
+    inner: FileReaderFactory,
+    readers: Arc<AtomicU64>,
+    lookups: Arc<AtomicU64>,
+}
+
+struct CountingReader {
+    inner: Arc<dyn TileReader>,
+    lookups: Arc<AtomicU64>,
+}
+
+impl TileReader for CountingReader {
+    fn tile(&self, coord: TileCoord) -> Result<Option<Vec<u8>>, String> {
+        self.lookups.fetch_add(1, Ordering::SeqCst);
+        self.inner.tile(coord)
+    }
+}
+
+impl ReaderFactory for CountingFile {
+    fn fresh(&self) -> Result<Arc<dyn TileReader>, String> {
+        self.readers.fetch_add(1, Ordering::SeqCst);
+        Ok(Arc::new(CountingReader {
+            inner: self.inner.fresh()?,
+            lookups: self.lookups.clone(),
+        }))
+    }
+}
+
 /// A cell small enough that three whole regenerations are a unit test.
 fn tiny() -> Cell {
     let mut cell = Cell::new(512, 512, 256, Source::Gradient, 0);
@@ -463,7 +498,13 @@ fn pass_scenarios_discard_one_warmup_and_record_it() {
         .unwrap_or_else(|e| panic!("the fixture archive writes: {e}"));
 
     let coords = libviprs_bench::storage::coordinate_sets(&plan, Profile::Ci, SEED);
-    let factory = FileReaderFactory::new(Backend::PmTiles, &written.output, &plan);
+    let readers = Arc::new(AtomicU64::new(0));
+    let lookups = Arc::new(AtomicU64::new(0));
+    let factory = CountingFile {
+        inner: FileReaderFactory::new(Backend::PmTiles, &written.output, &plan),
+        readers: readers.clone(),
+        lookups: lookups.clone(),
+    };
     let ctx = ScenarioContext {
         backend: Backend::PmTiles,
         cell,
@@ -496,12 +537,29 @@ fn pass_scenarios_discard_one_warmup_and_record_it() {
         4,
         "four timed repetitions, and the warm-up is not one of them"
     );
-    for discarded in &run.discarded_warmup {
-        assert!(
-            !run.series[0].samples.contains(discarded),
-            "the discarded warm-up value {discarded} is in samples"
-        );
-    }
+
+    // The witness that the warm-up pass really ran and really is not one of
+    // the four. A pass is exactly `coords.len()` lookups, so five passes'
+    // worth of lookups behind four samples is a discarded pass, and four is
+    // not.
+    //
+    // This is a count and not a comparison of the discarded value against the
+    // samples, which is what the issue asks for in words. On this cell a pass
+    // is five lookups and the p50 of five is one of them, the clock ticks at
+    // about forty nanoseconds, and two passes land on the same p50 often
+    // enough that the comparison failed on its second run. A coincidence test
+    // is not a property test.
+    let per_pass = coords.plan_order.len() as u64;
+    assert_eq!(
+        lookups.load(Ordering::SeqCst),
+        per_pass * 5,
+        "five passes' worth of lookups: one discarded, four measured"
+    );
+    assert_eq!(
+        readers.load(Ordering::SeqCst),
+        1,
+        "and all five happened on one reader the scenario opened itself"
+    );
 
     // A scenario whose repetitions each own a process has nothing for a
     // discarded pass to warm, and says so rather than declaring a policy it
