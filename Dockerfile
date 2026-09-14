@@ -68,7 +68,13 @@ ARG DEBIAN_SNAPSHOT=20250929T000000Z
 #   docker build --platform linux/arm64 --target storage -t libviprs-bench:storage .
 #   docker run --rm --platform linux/arm64 libviprs-bench:storage
 # ---------------------------------------------------------------------------
-FROM rust:1.89-bookworm@sha256:948f9b08a66e7fe01b03a98ef1c7568292e07ec2e4fe90d88c07bb14563c84ff AS storage
+# The Rust pin is 1.97 and not the 1.89 the builder stage carries, because
+# libviprs declares `rust-version = "1.97"` and cargo refuses to compile it on
+# 1.89 with "rustc 1.89.0 is not supported by the following package". The
+# builder stage is stale for the same reason and I have left it alone: it is
+# shared with the libvips comparison and with K1.1's family work, so bumping it
+# belongs in a change that can rebuild and re-measure it. See the PR comment.
+FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS storage
 
 WORKDIR /src
 COPY libviprs/ libviprs/
