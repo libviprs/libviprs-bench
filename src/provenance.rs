@@ -528,6 +528,36 @@ fn cpu_model() -> String {
                     }
                 }
             }
+            // aarch64 has no `model name` line at all: it reports `CPU
+            // implementer`, `CPU architecture` and `CPU part` as separate hex
+            // fields. Falling through to "unknown" there is not a cosmetic
+            // gap, because the storage archive hashes the cpu model into the
+            // run id's environment bucket, so every arm64 host in the world
+            // would land in one bucket and two incomparable runs would look
+            // comparable. Composing the fields gives a stable, distinguishing
+            // string; `/proc/device-tree/model` is tried first because on a
+            // board or a Pi it is the human name.
+            if let Some(model) = std::fs::read_to_string("/proc/device-tree/model")
+                .ok()
+                .map(|m| m.trim_end_matches('\0').trim().to_string())
+                .filter(|m| !m.is_empty())
+            {
+                return model;
+            }
+            let mut parts: Vec<String> = Vec::new();
+            for field in ["CPU implementer", "CPU architecture", "CPU part", "CPU variant"] {
+                if let Some(value) = text
+                    .lines()
+                    .find(|l| l.starts_with(field))
+                    .and_then(|l| l.split_once(':'))
+                    .map(|(_, v)| v.trim())
+                {
+                    parts.push(format!("{field}={value}"));
+                }
+            }
+            if !parts.is_empty() {
+                return format!("{} {}", std::env::consts::ARCH, parts.join(" "));
+            }
         }
     }
     "unknown".to_string()
