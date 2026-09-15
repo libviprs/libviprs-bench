@@ -163,8 +163,8 @@ fn sweep_rows() -> &'static Vec<Value> {
         let path = dir.join("scalability_results.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("the sweep must write {}: {e}", path.display()));
-        let rows: Vec<Value> =
-            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display()));
+        let rows: Vec<Value> = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} is not JSON: {e}", path.display()));
         assert!(!rows.is_empty(), "the sweep published no rows at all");
         rows
     })
@@ -348,7 +348,15 @@ fn a_sweeps_derived_columns_are_recomputed_from_the_published_peak_rss() {
 #[test]
 fn the_scalability_binary_answers_the_single_cell_subcommand() {
     let out = Command::new(env!("CARGO_BIN_EXE_scalability"))
-        .args(["--single", "monolithic", "256", "256", "1", "256", "1000000"])
+        .args([
+            "--single",
+            "monolithic",
+            "256",
+            "256",
+            "1",
+            "256",
+            "1000000",
+        ])
         .output()
         .expect("run the scalability binary");
     assert!(

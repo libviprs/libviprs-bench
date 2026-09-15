@@ -64,7 +64,13 @@ use libviprs_bench::{
 /// `None` is a skipped cell (an engine fault, or libvips not present on a
 /// `vips` build); the child logs the reason and the sweep drops that one point
 /// rather than aborting (issue #46).
-fn measure_cell(exe: &Path, engine: Engine, w: u32, h: u32, concurrency: usize) -> Option<RunMetrics> {
+fn measure_cell(
+    exe: &Path,
+    engine: Engine,
+    w: u32,
+    h: u32,
+    concurrency: usize,
+) -> Option<RunMetrics> {
     harness::spawn_single_cell(
         exe,
         CellSpec {
@@ -582,15 +588,13 @@ fn main() {
             // A cell that comes back empty is a skip, not an abort: the child
             // logs the engine fault (or the missing libvips) to the inherited
             // stderr and the sweep drops that one point (issue #46).
-            if measure_libvips {
-                if let Some(m) = measure_cell(&exe, Engine::Libvips, w, h, conc) {
-                    print!(
-                        "vips={:.0}ms/{:.1}MB(rss)  ",
-                        m.wall_time_ms(),
-                        m.peak_rss_mb()
-                    );
-                    all_points.push(point_from_metrics("libvips", conc, &m));
-                }
+            if measure_libvips && let Some(m) = measure_cell(&exe, Engine::Libvips, w, h, conc) {
+                print!(
+                    "vips={:.0}ms/{:.1}MB(rss)  ",
+                    m.wall_time_ms(),
+                    m.peak_rss_mb()
+                );
+                all_points.push(point_from_metrics("libvips", conc, &m));
             }
 
             for (engine, label, tag) in [
