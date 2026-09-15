@@ -1,0 +1,132 @@
+{
+  "$schema": "./config.schema.json",
+  "description": "Every libviprs difference from causl's frozen dashboard, import and render stack. Nothing libviprs-specific is edited into tools/contract/upstream/. Every series id, scenario, metric and field path in this file was checked against the archived run named in contract.provenance; none of it is invented.",
+
+  "contract": {
+    "upstreamRev": "cd65c76",
+    "configVersion": 1,
+    "provenance": "20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939"
+  },
+
+  "series": {
+    "order": ["pmtiles", "directory"],
+    "label": {
+      "pmtiles": "PMTiles archive",
+      "directory": "directory tree"
+    },
+    "color": {
+      "pmtiles": "#4285f4",
+      "directory": "#795548"
+    },
+    "dash": {
+      "directory": "6 3"
+    },
+    "annotation": {}
+  },
+
+  "defaults": {
+    "libraries": ["pmtiles", "directory"],
+    "scales": ["8192x8192@64+gradient"]
+  },
+
+  "samples": {
+    "carry": ["unit", "direction", "confidence", "cell", "key", "source", "reps", "cov"]
+  },
+
+  "sections": {
+    "scenarioFrom": ["key", "source"],
+    "scenarioJoin": " \u00b7 ",
+    "scaleFrom": "scale",
+    "unitFrom": "unit",
+    "directionFrom": "direction"
+  },
+
+  "verdict": {
+    "regressionPct": 0.1,
+    "improvedPct": 0.1,
+    "passPct": 0.05,
+    "noisyProxy": 0.5,
+    "color": {
+      "pass": "#5EE6A8",
+      "regressed": "#FF646E",
+      "improved": "#4F7CFF",
+      "noisy": "#FFB347",
+      "unknown": "#A9B5C9",
+      "noise": "#8FA2AA",
+      "ungated": "#6E7A8A"
+    },
+    "noise": {
+      "enabled": true,
+      "kind": "noise",
+      "spreadField": "replicateSpreadPct",
+      "onMissingSpread": "unknown",
+      "floorPct": null
+    },
+    "gate": {
+      "enabled": true,
+      "field": "gated",
+      "kind": "ungated",
+      "label": "measured, not gated"
+    },
+    "noChipKinds": ["ungated"],
+    "observed": {
+      "runId": "20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939",
+      "replicateCell": "2048x2048@256+gradient",
+      "replicateReps": 2,
+      "spreadMetrics": 48,
+      "medianSpreadPct": 3.466404081041145,
+      "maxSpreadPct": 53.346575108075356,
+      "maxSpreadKey": "directory.read_concurrent@4.lookups_per_s",
+      "cellsOk": 332,
+      "cellsLowConfidence": 159,
+      "cellsTimerSaturated": 106,
+      "timerFloorUs": 4.1,
+      "timerTickNs": 41,
+      "covLowConfidence": 0.15
+    }
+  },
+
+  "era": {
+    "axes": [
+      { "id": "series", "from": "samples[].library", "kind": "set" },
+      { "id": "host", "from": "host.fingerprint", "kind": "value" },
+      { "id": "filesystem", "from": "host.fsType", "kind": "value" }
+    ]
+  },
+
+  "producer": {
+    "archiveDir": "archive/storage",
+    "documentIndex": "index.json",
+    "families": ["libviprs-storage", "libviprs-engines", "libviprs-vips"],
+    "seriesFrom": "backend",
+    "runnerToSeries": {},
+    "outcomes": {
+      "measured": ["ok"],
+      "structural": ["failed", "refused"],
+      "refusing": []
+    },
+    "hostFingerprintFrom": [
+      "provenance.os",
+      "provenance.arch",
+      "provenance.cpuModel",
+      "provenance.ncpu",
+      "provenance.inContainer",
+      "provenance.emulated"
+    ],
+    "fsTypeFrom": "provenance.filesystem.fsType",
+    "replicateSpreadFrom": "replicate.spreadPct",
+    "gatedFrom": null,
+    "invariantNames": [
+      "output_bytes",
+      "allocated_bytes",
+      "filesystem_entries",
+      "directories",
+      "tiles_produced",
+      "artefact_digest",
+      "root_entries",
+      "leaves",
+      "requests",
+      "request_bytes"
+    ]
+  }
+}
