@@ -5,80 +5,133 @@
   "description": "Every libviprs-specific difference from causl's frozen dashboard, import and render stack. Nothing libviprs-specific is edited into tools/contract/upstream/: it goes here, and `parameterize.mjs` applies it. Every path has causl's current literal as its fallback, so a consumer that loads no config behaves exactly as causl's page does.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract", "series", "defaults", "verdict", "era", "producer"],
+  "required": [
+    "contract",
+    "series",
+    "defaults",
+    "verdict",
+    "era",
+    "producer"
+  ],
   "properties": {
-    "$schema": { "type": "string" },
-    "description": { "type": "string" },
-
+    "$schema": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
     "contract": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["upstreamRev", "configVersion"],
+      "required": [
+        "upstreamRev",
+        "configVersion"
+      ],
       "description": "Which frozen copy this config was written against. `upstreamRev` must equal tools/contract/UPSTREAM_REV: a config written for one revision of dashboard.js is not automatically valid against another, and the parameteriser refuses when the two disagree.",
       "properties": {
-        "upstreamRev": { "type": "string", "minLength": 7 },
-        "configVersion": { "type": "integer", "minimum": 1 },
+        "upstreamRev": {
+          "type": "string",
+          "minLength": 7
+        },
+        "configVersion": {
+          "type": "integer",
+          "minimum": 1
+        },
         "provenance": {
           "type": "string",
           "description": "The archived run every series id, scenario and metric in this file was checked against. Not load-bearing at runtime; it is how a reader confirms the names are real."
         }
       }
     },
-
     "series": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["order", "label", "color", "dash", "annotation"],
+      "required": [
+        "order",
+        "label",
+        "color",
+        "dash",
+        "annotation"
+      ],
       "description": "Replaces LIBRARY_ORDER / LIBRARY_LABEL / LIBRARY_COLOR / LIBRARY_DASH / LIBRARY_ANNOTATION. A series id is exactly the value the importer writes into `samples[].library`, which for libviprs is the producer's `backend`.",
       "properties": {
         "order": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Canonical plot order. Ids not listed are drawn after these, alphabetically. Upstream fallback: the six causl runner ids."
         },
         "label": {
           "type": "object",
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "Legend label overrides, id -> label. An id with no entry prints as itself."
         },
         "color": {
           "type": "object",
-          "additionalProperties": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^#[0-9A-Fa-f]{6}$"
+          },
           "description": "Line colour per series id. An id with no entry falls back to the renderer's #A9B5C9."
         },
         "dash": {
           "type": "object",
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "SVG stroke-dasharray per series id. Absent means a solid line."
         },
         "annotation": {
           "type": "object",
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "Legend-chip tooltip per series id. A caveat that has to be attached to a series to keep it honest is a reason to stop charting the series, so this stays empty unless there is a real footnote."
         }
       }
     },
-
     "defaults": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["libraries", "scales"],
+      "required": [
+        "libraries",
+        "scales"
+      ],
       "description": "Replaces DEFAULT_LIBRARIES / DEFAULT_SCALES: the filter state the page opens on. Nothing is hidden, only un-defaulted.",
       "properties": {
-        "libraries": { "type": "array", "items": { "type": "string" } },
-        "scales": { "type": "array", "items": { "type": ["integer", "string"] } }
+        "libraries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scales": {
+          "type": "array",
+          "items": {
+            "type": [
+              "integer",
+              "string"
+            ]
+          }
+        }
       }
     },
-
     "samples": {
       "type": "object",
       "additionalProperties": false,
       "description": "Fields carried from a sample onto the chart point. `groupSections` builds a fixed-shape point and that point is the only thing the verdict rules ever see, so a field not listed here is invisible to them. The two verdict rules add their own field automatically when enabled; this is for everything else the page wants, such as a metric's unit and direction. Empty upstream, and empty means upstream's point object exactly.",
       "properties": {
-        "carry": { "type": "array", "items": { "type": "string" } }
+        "carry": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
-
     "sections": {
       "type": "object",
       "additionalProperties": false,
@@ -86,10 +139,15 @@
       "properties": {
         "scenarioFrom": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Producer cell fields joined to name a chart. libviprs uses `key` (scenario.metric, e.g. `read_random.p50`) and `source`. `key` because one scenario emits several metrics in different units and one y-axis cannot hold them; `source` because gradient and noise are different experiments and a chart that merged them would draw one line through two."
         },
-        "scenarioJoin": { "type": "string", "description": "Separator between the scenarioFrom parts." },
+        "scenarioJoin": {
+          "type": "string",
+          "description": "Separator between the scenarioFrom parts."
+        },
         "scaleFrom": {
           "type": "string",
           "description": "Producer cell field that separates sections within a scenario. libviprs uses `scale` (tile count). Note this is only sound BECAUSE `source` is part of the scenario: tile count is not unique across cells in the real capture (21851 is both 8192x8192@64+gradient and 8192x8192@64+noise), so a scenario without the source and a scale of tile count would silently draw two sources as one line."
@@ -104,16 +162,36 @@
         }
       }
     },
-
     "verdict": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["regressionPct", "improvedPct", "passPct", "noisyProxy", "color", "noise", "gate", "noChipKinds"],
+      "required": [
+        "regressionPct",
+        "improvedPct",
+        "passPct",
+        "noisyProxy",
+        "color",
+        "noise",
+        "gate",
+        "noChipKinds"
+      ],
       "description": "Replaces REGRESSION_PCT / IMPROVED_PCT / PASS_PCT / NOISY_PROXY / VERDICT_COLOR, and adds the two behaviours upstream has no equivalent of.",
       "properties": {
-        "regressionPct": { "type": "number", "minimum": 0, "description": "Fractional delta above which the latest run is `regressed`. Upstream 0.10." },
-        "improvedPct": { "type": "number", "minimum": 0, "description": "Fractional delta below which it is `improved`. Upstream 0.10." },
-        "passPct": { "type": "number", "minimum": 0, "description": "Fractional delta within which it is `pass`. Upstream 0.05." },
+        "regressionPct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Fractional delta above which the latest run is `regressed`. Upstream 0.10."
+        },
+        "improvedPct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Fractional delta below which it is `improved`. Upstream 0.10."
+        },
+        "passPct": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Fractional delta within which it is `pass`. Upstream 0.05."
+        },
         "noisyProxy": {
           "type": "number",
           "minimum": 0,
@@ -121,29 +199,54 @@
         },
         "color": {
           "type": "object",
-          "additionalProperties": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
-          "required": ["pass", "regressed", "improved", "noisy", "unknown"],
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^#[0-9A-Fa-f]{6}$"
+          },
+          "required": [
+            "pass",
+            "regressed",
+            "improved",
+            "noisy",
+            "unknown"
+          ],
           "description": "Verdict palette. Keys other than `unknown` also populate the page's verdict legend strip, so a new kind added here shows up in the legend without a code change."
         },
         "noise": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "kind", "spreadField", "onMissingSpread"],
+          "required": [
+            "enabled",
+            "kind",
+            "spreadField",
+            "onMissingSpread"
+          ],
           "description": "A delta smaller than the cell's own replicate spread is `noise`: not a pass and not a regression. Checked BEFORE the regression and improvement lines, because a metric whose replicate spread is 53.3% produces 20% deltas from nothing and calling one of those a regression is inventing a result. Disabled by default, which is upstream's behaviour exactly.",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "kind": { "type": "string", "description": "Verdict kind emitted. Needs an entry in verdict.color or it renders as `unknown`'s colour." },
+            "enabled": {
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "description": "Verdict kind emitted. Needs an entry in verdict.color or it renders as `unknown`'s colour."
+            },
             "spreadField": {
               "type": "string",
               "description": "Sample field carrying this cell's replicate spread as a PERCENT (3.46 means 3.46%). The producer measures it per `<backend>.<key>` in the document's `replicate.spreadPct`; the importer attaches the matching one to each sample."
             },
             "onMissingSpread": {
               "type": "string",
-              "enum": ["unknown", "skip"],
+              "enum": [
+                "unknown",
+                "skip"
+              ],
               "description": "What to do for a sample carrying no measured spread. `unknown` refuses to rule (the default for libviprs: a spread that was not measured is not a spread). `skip` falls through to the ordinary thresholds, which is what upstream does because it has no spread at all."
             },
             "floorPct": {
-              "type": ["number", "null"],
+              "type": [
+                "number",
+                "null"
+              ],
               "description": "Optional lower bound on the spread used, as a percent. A cell whose measured spread is implausibly small does not get a hair-trigger gate. Null means use the measured value as-is."
             }
           }
@@ -151,18 +254,35 @@
         "gate": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["enabled", "field", "kind", "label"],
+          "required": [
+            "enabled",
+            "field",
+            "kind",
+            "label"
+          ],
           "description": "A sample carrying `gated: false` is measured but not gated: it renders the label below and never gets a verdict chip, because a chip is a claim that a threshold ruled on the number and no threshold did. Disabled by default.",
           "properties": {
-            "enabled": { "type": "boolean" },
-            "field": { "type": "string", "description": "Sample field holding the boolean. Only the literal value `false` triggers this; absent or null does not, because 'not gated' and 'nobody said' are different facts." },
-            "kind": { "type": "string" },
-            "label": { "type": "string", "description": "Text rendered in the legend chip's verdict slot." }
+            "enabled": {
+              "type": "boolean"
+            },
+            "field": {
+              "type": "string",
+              "description": "Sample field holding the boolean. Only the literal value `false` triggers this; absent or null does not, because 'not gated' and 'nobody said' are different facts."
+            },
+            "kind": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string",
+              "description": "Text rendered in the legend chip's verdict slot."
+            }
           }
         },
         "noChipKinds": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Verdict kinds that render their label as plain text instead of a verdict chip. Empty upstream."
         },
         "observed": {
@@ -172,11 +292,12 @@
         }
       }
     },
-
     "era": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["axes"],
+      "required": [
+        "axes"
+      ],
       "description": "What starts a new comparable era. Upstream breaks on the measured library set alone, which is right when every run comes off one CI machine. libviprs runs are taken on whatever host is to hand, so the host fingerprint and the filesystem type are axes too: a run on a different machine starts a new era rather than drawing a line across two machines.",
       "properties": {
         "axes": {
@@ -185,16 +306,25 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id", "from", "kind"],
+            "required": [
+              "id",
+              "from",
+              "kind"
+            ],
             "properties": {
-              "id": { "type": "string" },
+              "id": {
+                "type": "string"
+              },
               "from": {
                 "type": "string",
                 "description": "Dotted path into a history entry. `samples[].library` means the SET of that field across the entry's samples."
               },
               "kind": {
                 "type": "string",
-                "enum": ["set", "value"],
+                "enum": [
+                  "set",
+                  "value"
+                ],
                 "description": "`set` compares the unordered set of values across samples; `value` compares one scalar on the entry."
               }
             }
@@ -202,55 +332,157 @@
         }
       }
     },
-
     "producer": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["archiveDir", "families", "seriesFrom", "outcomes", "hostFingerprintFrom", "fsTypeFrom"],
+      "required": [
+        "archiveDir",
+        "families",
+        "seriesFrom",
+        "outcomes",
+        "hostFingerprintFrom",
+        "fsTypeFrom"
+      ],
       "description": "Everything the importer needs that upstream hard-codes for causl-bench. Consumed by K2.4 (#77); the dashboard never reads this block.",
       "properties": {
-        "archiveDir": { "type": "string", "description": "Repo-relative archive root. The index.json inside it is what makes a run citable." },
-        "documentIndex": { "type": "string", "description": "Index file name inside archiveDir." },
+        "documentIndex": {
+          "type": "string",
+          "description": "Index file name inside archiveDir."
+        },
         "families": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Family names the crate emits. A document whose `family` is not in this list is refused rather than imported under a guessed name."
         },
-        "seriesFrom": { "type": "string", "description": "Producer cell field that becomes `samples[].library`." },
+        "seriesFrom": {
+          "type": "string",
+          "description": "Producer cell field that becomes `samples[].library`."
+        },
         "runnerToSeries": {
           "type": "object",
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "Rename map applied on the way in, the way upstream maps causl-wasm-ts -> causl-wasm. Empty for libviprs: the backend names are already the series names."
         },
         "outcomes": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["measured", "structural", "refusing"],
+          "required": [
+            "measured",
+            "structural",
+            "refusing"
+          ],
           "description": "How the producer's `outcome` values map onto import behaviour. Upstream has two buckets, `ok` and everything-else-is-a-failure, and refuses the whole run if any cell failed. The real libviprs capture has 7 cells whose outcome is `failed` for a structural reason (`a directory tree has no root directory to decode`), which under upstream's rule would refuse the entire run.",
           "properties": {
-            "measured": { "type": "array", "items": { "type": "string" }, "description": "Outcomes that produce a plotted sample." },
-            "structural": { "type": "array", "items": { "type": "string" }, "description": "Outcomes that are a fact about the backend rather than a broken run: imported as a skip with its reason, never as a refusal." },
-            "refusing": { "type": "array", "items": { "type": "string" }, "description": "Outcomes that refuse the whole import." }
+            "measured": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Outcomes that produce a plotted sample."
+            },
+            "structural": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Outcomes that are a fact about the backend rather than a broken run: imported as a skip with its reason, never as a refusal."
+            },
+            "refusing": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Outcomes that refuse the whole import."
+            }
           }
         },
         "hostFingerprintFrom": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Dotted paths into the producer document whose joined values are the host fingerprint. An era axis reads the result."
         },
-        "fsTypeFrom": { "type": "string", "description": "Dotted path to the filesystem type. An era axis reads it." },
+        "fsTypeFrom": {
+          "type": "string",
+          "description": "Dotted path to the filesystem type. An era axis reads it."
+        },
         "replicateSpreadFrom": {
           "type": "string",
           "description": "Dotted path to the map of replicate spreads, keyed `<series>.<key>`. The importer copies the matching entry onto each sample as verdict.noise.spreadField."
         },
         "gatedFrom": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "Dotted path on a producer cell to the boolean the gate behaviour reads, or null when the producer does not emit one yet. It does not emit one at the pinned capture: no cell in run 20260914T145707Z carries a `gated` field, so the importer writes null (not false) until a producer emits it, and the verdict stays whatever the thresholds say."
         },
         "invariantNames": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Invariant names the producer emits. These are the exact-equality results, not timings, and the epic wants them first-class."
+        },
+        "archiveRoot": {
+          "type": "string",
+          "description": "Directory the per-family archive directories sit under. Joined with the family id after `familyIdPrefix` is stripped, which is `archive::dir_for_family` on the producer side. One directory and one index per family: two families derive their run ids from the same fields, so a shared directory turns a coincidence into what looks like a collision."
+        },
+        "familyIdPrefix": {
+          "type": "string",
+          "description": "Prefix stripped from a document's `family` to get the page's id and the archive directory. `libviprs-storage` names the family and `storage` names both the tab and the directory; without this the lookup goes to `archive/libviprs-storage` where nothing is written."
+        },
+        "publishableProfiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Profiles a run may be published from. Absent this defaults to an empty list, which makes every profile unpublishable and refuses a calibrated sweep with a sentence about smoke runs. `ci` is deliberately excluded: it proves the harness runs and is never a measurement."
+        },
+        "historyPath": {
+          "type": "string",
+          "description": "Where imported entries are appended, one per line so a diff over the file is readable."
+        },
+        "attestedFrom": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Cell field names carrying the attestation verdict, newest first. Both spellings are read because the field was renamed from `storageAttested` when a second family started using it, and reading one name alone would refuse every document of the other shape while looking exactly like a gate working."
+        },
+        "gatedWhenUncalibrated": {
+          "type": "boolean",
+          "description": "What `gated` becomes while no fitted tolerance exists. `false` renders \"measured, not gated\" and suppresses the chip; `null` would hand every sample to a constant threshold at a moment when a third of them are low-confidence and one metric's replicate spread is 53.3%."
+        },
+        "invariantsExactWithinCommit": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Invariants that must reproduce byte for byte at a fixed commit. A change in one is a defect rather than a delta, so it refuses. An empty list silently disables that refusal entirely."
+        },
+        "invariantsFilesystemDependent": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Invariants that answer to the filesystem rather than to the code, and so are not held to exactness. `allocated_bytes` is `st_blocks * 512`, and the first full capture caught it differing between repetitions of one generation."
+        },
+        "schemaVersion": {
+          "type": "integer",
+          "description": "Document schema version this config reads. A document at any other version is refused rather than parsed under assumptions that no longer hold."
+        },
+        "ungateableMetrics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Metrics published as measured and never graded, whatever the calibration says. A p99 belongs here: the replicate pair moved one by 74.5% on an idle host running identical code."
         }
       }
     }
