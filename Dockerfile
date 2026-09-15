@@ -100,7 +100,7 @@ RUN cargo fetch --locked
 
 # Default features only. The `storage` family must build without `libvips`,
 # and this is where that is enforced rather than asserted.
-RUN cargo build --locked --release --bin storage
+RUN cargo build --locked --release --bin storage --bin storage-aggregate
 
 CMD ["cargo", "run", "--release", "--bin", "storage", "--", \
      "--family", "storage", "--profile", "ci"]
@@ -175,9 +175,17 @@ WORKDIR /src/libviprs-bench
 RUN cargo fetch --locked
 # Default features. If this line ever needs a `--features`, the family split has
 # been undone.
-RUN cargo build --locked --release --bin scalability --bin report
+# `engines` is the document runner (issue #75) and `storage-aggregate` is the
+# door it has to get through, so both are in the image: a sweep that cannot be
+# checked where it was measured gets checked somewhere else, or nowhere.
+RUN cargo build --locked --release --bin scalability --bin report --bin engines \
+    --bin storage-aggregate
 
-CMD ["cargo", "run", "--release", "--bin", "scalability", "--", "--family", "engines"]
+# `full` and not `ci`: `ci` is the smoke profile and is never published, so a
+# bare `docker run` of this image should produce the sweep the page is drawn
+# from, which is what the CMD it replaces did.
+CMD ["cargo", "run", "--release", "--bin", "engines", "--", \
+     "--family", "engines", "--profile", "full"]
 
 # ---------------------------------------------------------------------------
 # Stage 3: the `vips` comparison family.

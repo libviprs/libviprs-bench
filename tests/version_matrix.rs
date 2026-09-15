@@ -62,6 +62,7 @@ fn synthetic_run(engine: &str, wall_ms: u64) -> RunMetrics {
         peak_rss_bytes: 8 * 1024 * 1024,
         stats: None,
         per_level_tiles: vec![1],
+        artefact: None,
         tiles_produced: 1,
         levels_processed: 1,
         tiles_skipped: 0,
