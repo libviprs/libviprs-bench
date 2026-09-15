@@ -7,8 +7,9 @@
 # This is the capture half only: it brings two documents back and stops. The
 # publishing path is `tools/capture.py`, which does this and then checks,
 # archives, verifies and imports, and writes nothing into the repository unless
-# every one of those passes. The traps below are the same six, and the driver
-# carries them rather than restating them.
+# every one of those passes. The six traps below are six of the nine
+# that driver carries: it found three more by running, and they are in its header.
+# Two of them apply here too, so if you edit this script read that list.
 #
 # The NAS (rom@192.168.0.10, HIGARA) is the only native x86_64 host available.
 # Everything this suite publishes otherwise is arm64, and an amd64 container on
