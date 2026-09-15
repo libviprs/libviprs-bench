@@ -154,6 +154,7 @@
     ],
     "fsTypeFrom": "provenance.filesystem.fsType",
     "replicateSpreadFrom": "replicate.spreadPct",
+    "oversubscribedFrom": "oversubscribed",
     "gatedFrom": null,
     "invariantNames": [
       "output_bytes",

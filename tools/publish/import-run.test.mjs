@@ -704,6 +704,67 @@ test('a fitted baseline gates the metrics it fitted and still never a p99', () =
   assert.equal(unfitted.gated, false);
 });
 
+test('an oversubscribed rung is published and is never gated, even with a baseline', () => {
+  // A rung that asked for more threads than the host has cores. The number is
+  // real: on the one machine that measures x86_64 natively, six cores, it is the
+  // only way to reach the eight-thread rung the x86_64 knee sits on at all. It
+  // is not comparable with the same rung on a host that had the cores for it.
+  //
+  // RED against an importer that grades it anyway, which is what a fitted
+  // tolerance would do: the baseline below fits exactly this cell, and the
+  // control two lines down is the identical cell with the flag off, which IS
+  // gated. Without that control the test passes on an importer that gates
+  // nothing at all.
+  const baseline = join(scratch(), 'baseline.json');
+  writeFileSync(
+    baseline,
+    JSON.stringify({
+      host8: ARCHIVED_RUN_ID.split('-').pop(),
+      fsType: 'unknown',
+      cells: {
+        'pmtiles/read_concurrent@8.lookups_per_s@21851': { tolerancePct: 12.0, gateable: true },
+      },
+    }),
+  );
+
+  const key = 'read_concurrent@8.lookups_per_s';
+  const rung = (doc, value) => {
+    for (const cell of doc.cells) {
+      if (cell.backend === 'pmtiles' && cell.key === key && cell.scale === 21851) {
+        cell.oversubscribed = value;
+      }
+    }
+  };
+
+  const flagged = emptyHistory();
+  assert.equal(
+    runImport(mutate({ edit: (doc) => rung(doc, true) }), flagged, ['--baseline', baseline]).code,
+    EXIT.OK,
+  );
+  const sample = readHistory(flagged)[0].samples.find(
+    (s) => s.library === 'pmtiles' && s.key === key && s.scale === 21851,
+  );
+  assert.ok(sample, 'the oversubscribed rung is published, not dropped');
+  assert.equal(sample.oversubscribed, true, 'the flag has to reach the page');
+  assert.equal(sample.gated, false);
+  assert.equal(sample.tolerancePct, null);
+  assert.match(sample.ungateableReason, /more threads than the host has cores/);
+
+  // The control: the same cell, same baseline, flag off. If this one is not
+  // gated then the assertion above is about nothing.
+  const clear = emptyHistory();
+  assert.equal(
+    runImport(mutate({ edit: (doc) => rung(doc, false) }), clear, ['--baseline', baseline]).code,
+    EXIT.OK,
+  );
+  const control = readHistory(clear)[0].samples.find(
+    (s) => s.library === 'pmtiles' && s.key === key && s.scale === 21851,
+  );
+  assert.equal(control.oversubscribed, false);
+  assert.equal(control.gated, true, 'the baseline fits this cell, so with the flag off it grades');
+  assert.equal(control.tolerancePct, 12.0);
+});
+
 test('a baseline fitted on another host or filesystem gates nothing', () => {
   // RED against an importer that reads tolerances out of a baseline without
   // checking it describes this machine.

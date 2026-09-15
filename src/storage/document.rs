@@ -80,7 +80,7 @@ pub const DOCUMENT_FIELDS: [&str; 14] = [
 ];
 
 /// Every key a cell carries, in order.
-pub const CELL_FIELDS: [&str; 34] = [
+pub const CELL_FIELDS: [&str; 35] = [
     "backend",
     "scale",
     "source",
@@ -91,6 +91,7 @@ pub const CELL_FIELDS: [&str; 34] = [
     "unit",
     "direction",
     "isolation",
+    "oversubscribed",
     "warmup",
     "discardedWarmup",
     "reps",
@@ -418,6 +419,16 @@ pub struct DocumentCell {
     pub unit: String,
     pub direction: String,
     pub isolation: String,
+    /// Whether the scenario asked for more threads than this host has cores.
+    ///
+    /// `null` on every scenario that names no thread budget, which is all of
+    /// them but the concurrency ladder. `true` is not a failure: the rung ran
+    /// and the number is real, and it is what lets the one host that can
+    /// measure x86_64 natively reach the rung its knee sits on at all. What it
+    /// says is that the number must never be graded against the same rung on a
+    /// host that has the cores for it, because the two are not the same
+    /// measurement (libviprs-bench #84).
+    pub oversubscribed: Option<bool>,
     /// `null` on a scenario that measures from its first repetition.
     pub warmup: Option<WarmupBlock>,
     /// The primary-metric values of the discarded passes. Present so a reader
@@ -519,6 +530,9 @@ pub struct CellReport<'a> {
     pub scenario: &'a str,
     pub metric: MetricSpec,
     pub isolation: Isolation,
+    /// Whether the scenario asked for more threads than this host has cores.
+    /// `None` on a scenario that names no thread budget.
+    pub oversubscribed: Option<bool>,
     pub warmup: Option<Warmup>,
     pub discarded_warmup: Vec<f64>,
     pub reps_declared: u32,
@@ -583,6 +597,7 @@ impl DocumentCell {
             unit: report.metric.unit.as_str().to_string(),
             direction: report.metric.direction.as_str().to_string(),
             isolation: report.isolation.as_str().to_string(),
+            oversubscribed: report.oversubscribed,
             warmup: report.warmup.map(WarmupBlock::from),
             discarded_warmup: report.discarded_warmup,
             reps: report.reps_declared,
