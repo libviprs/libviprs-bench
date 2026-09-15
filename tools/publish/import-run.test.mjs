@@ -46,6 +46,22 @@ function readHistory(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+/** Assert a refusal, and that it is a refusal rather than a crash.
+ *
+ *  The mutation table found two tests passing for the wrong reason here: with
+ *  the check they were aiming at deleted outright, the importer threw, and the
+ *  stack trace happened to contain the word the test was matching on. An
+ *  uncaught exception and a refusal are both exit 1 and both go to stderr, so
+ *  every refusal test asserts the banner and the absence of a stack: a crash
+ *  cannot produce the first and cannot avoid the second.
+ */
+function refused(r, ...patterns) {
+  assert.equal(r.code, EXIT.REFUSED, `expected a refusal, got ${r.code}:\n${r.err}`);
+  assert.match(r.err, /REFUSED\. This run may not be published/);
+  assert.doesNotMatch(r.err, /^\s+at .*:\d+:\d+/m, 'a stack trace is a crash, not a refusal');
+  for (const pattern of patterns) assert.match(r.err, pattern);
+}
+
 /** Import the real run into a fresh history and return the single entry. */
 function importedEntry() {
   const history = emptyHistory();
@@ -117,24 +133,21 @@ test('an emulated run is refused', () => {
   // Rosetta and nothing recorded it. RED against an importer that reads the
   // dirty flag and not the probe.
   const r = runImport(mutate({ set: { 'provenance.emulated': true } }), emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /emulat/i);
+  refused(r, /emulat/i);
 });
 
 test('an unknown emulation verdict is refused', () => {
   // RED against `emulated !== true`, which admits every run whose probe could
   // not tell. An unobserved run is not a native one.
   const r = runImport(mutate({ set: { 'provenance.emulated': 'unknown' } }), emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /emulat/i);
+  refused(r, /emulat/i);
 });
 
 test('an absent emulation verdict is refused', () => {
   // "absent" is the state the published PMTiles numbers are in. RED against a
   // truthiness check, which reads a missing key as false and admits it.
   const r = runImport(mutate({ remove: ['provenance.emulated'] }), emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /emulat/i);
+  refused(r, /emulat/i);
 });
 
 test('a document whose digests do not verify is refused', () => {
@@ -148,15 +161,12 @@ test('a document whose digests do not verify is refused', () => {
     },
   });
   const r = runImport(run, emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /digest/i);
-  assert.match(r.err, /cells/, 'the refusal must name the block that moved');
+  refused(r, /digests do not verify/, /cells/);
 });
 
 test('a document carrying no integrity block at all is refused', () => {
   const r = runImport(mutate({ remove: ['integrity'], reseal: false }), emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /integrity/i);
+  refused(r, /carries no `integrity` block/);
 });
 
 test('a document that is not archived is refused', () => {
@@ -164,8 +174,10 @@ test('a document that is not archived is refused', () => {
   // importer that reads the document and never the archive.
   const run = mutate({ index: false });
   const r = runImport(run, emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /archive|index\.json/i);
+  // Not "exit 1 with the words index.json somewhere in it": with this check
+  // deleted the importer threw reading the file that is not there, and the
+  // stack trace carried the phrase the test was matching on.
+  refused(r, /has no index\.json/, /not citable/);
 });
 
 test('a document whose digest is not the one the index records is refused', () => {
@@ -177,8 +189,7 @@ test('a document whose digest is not the one the index records is refused', () =
   index[0].documentDigest = 'sha256:' + '0'.repeat(64);
   writeFileSync(join(run.dir, 'index.json'), JSON.stringify(index, null, 2));
   const r = runImport(run, emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /index/i);
+  refused(r, /the archive index records documentDigest/);
 });
 
 test('the ci profile is refused', () => {
@@ -186,10 +197,15 @@ test('the ci profile is refused', () => {
   // indistinguishably from `full`. RED against an importer that admits any
   // profile, which lets a three-rep smoke run sit in the same era as a
   // calibrated sweep.
-  const r = runImport(mutate({ set: { profile: 'ci' } }), emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /profile/i);
-  assert.match(r.err, /\bci\b/);
+  // Both the label and the resolved invocation, so the only check that can
+  // refuse this is the publishable-profile one. With only the label changed, the
+  // agreement check below fired instead and this test passed against an importer
+  // that publishes every profile there is.
+  const r = runImport(
+    mutate({ set: { profile: 'ci', 'provenance.invocation.resolved.profile': 'ci' } }),
+    emptyHistory(),
+  );
+  refused(r, /is not publishable/, /\bci\b/);
 });
 
 test('a profile the document and its invocation disagree about is refused', () => {
@@ -199,8 +215,7 @@ test('a profile the document and its invocation disagree about is refused', () =
     mutate({ set: { 'provenance.invocation.resolved.profile': 'ci' } }),
     emptyHistory(),
   );
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /profile/i);
+  refused(r, /invocation resolved/);
 });
 
 test('an invariant that moved within one commit is refused', () => {
@@ -221,9 +236,7 @@ test('an invariant that moved within one commit is refused', () => {
     },
   });
   const r = runImport(second, history);
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /invariant/i);
-  assert.match(r.err, /output_bytes/);
+  refused(r, /invariant\(s\) moved within one commit/, /output_bytes/);
   assert.equal(readHistory(history).length, 1, 'the refused run must not land');
 });
 
@@ -262,15 +275,13 @@ test('a debug build is refused', () => {
     mutate({ set: { 'provenance.node.debugAssertions': true } }),
     emptyHistory(),
   );
-  assert.equal(assertions.code, EXIT.REFUSED);
-  assert.match(assertions.err, /debug/i);
+  refused(assertions, /debugAssertions/);
 
   const profile = runImport(
     mutate({ set: { 'provenance.node.buildProfile': 'debug' } }),
     emptyHistory(),
   );
-  assert.equal(profile.code, EXIT.REFUSED);
-  assert.match(profile.err, /debug|release/i);
+  refused(profile, /buildProfile/);
 });
 
 test('a dirty tree is refused', () => {
@@ -278,12 +289,10 @@ test('a dirty tree is refused', () => {
     mutate({ set: { 'provenance.library.dirty': true } }),
     emptyHistory(),
   );
-  assert.equal(library.code, EXIT.REFUSED);
-  assert.match(library.err, /dirty/i);
+  refused(library, /provenance\.library\.dirty/);
 
   const harness = runImport(mutate({ set: { 'provenance.dirty': true } }), emptyHistory());
-  assert.equal(harness.code, EXIT.REFUSED);
-  assert.match(harness.err, /dirty/i);
+  refused(harness, /provenance\.dirty/);
 });
 
 test('a run with no ok cells is refused', () => {
@@ -301,8 +310,7 @@ test('a run with no ok cells is refused', () => {
     }),
     emptyHistory(),
   );
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /no|none/i);
+  refused(r, /none of them is `ok`/);
 });
 
 test('a run measured mostly under contention is refused', () => {
@@ -321,8 +329,7 @@ test('a run measured mostly under contention is refused', () => {
     }),
     emptyHistory(),
   );
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /quiet|contention|load/i);
+  refused(r, /machineLoad\.quiet: false/);
 });
 
 test('an unattested ok cell is refused', () => {
@@ -337,18 +344,15 @@ test('an unattested ok cell is refused', () => {
     }),
     emptyHistory(),
   );
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /attest/i);
+  refused(r, /without `storageAttested: true`/);
 });
 
 test('a document from another family or schema version is refused', () => {
   const family = runImport(mutate({ set: { family: 'libviprs-something' } }), emptyHistory());
-  assert.equal(family.code, EXIT.REFUSED);
-  assert.match(family.err, /family/i);
+  refused(family, /is not one this config knows/);
 
   const version = runImport(mutate({ set: { schemaVersion: 2 } }), emptyHistory());
-  assert.equal(version.code, EXIT.REFUSED);
-  assert.match(version.err, /schema/i);
+  refused(version, /schemaVersion/);
 });
 
 test('every reason is reported, never the first', () => {
@@ -365,10 +369,7 @@ test('every reason is reported, never the first', () => {
     }),
     emptyHistory(),
   );
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /emulat/i);
-  assert.match(r.err, /dirty/i);
-  assert.match(r.err, /debug/i);
+  refused(r, /emulat/i, /dirty/i, /debugAssertions/);
 });
 
 test('an unknown flag is a usage error and not a silent no op', () => {
@@ -435,7 +436,7 @@ test('the replicate spread reaches the entry and every sample it was measured fo
   assert.ok(worst > 50, `expected the 53% outlier to survive, saw ${worst}`);
 
   const one = entry.samples.find(
-    (s) => s.library === 'directory' && s.scenario === 'read_concurrent@4.lookups_per_s',
+    (s) => s.library === 'directory' && s.key === 'read_concurrent@4.lookups_per_s',
   );
   assert.equal(
     one.replicateSpreadPct,
@@ -455,7 +456,7 @@ test('nothing is gated without a fitted baseline and a p99 is never gated', () =
   assert.ok(entry.samples.every((s) => s.tolerancePct === null));
   assert.ok(entry.samples.every((s) => typeof s.ungateableReason === 'string'));
 
-  const p99 = entry.samples.filter((s) => s.scenario.endsWith('.p99'));
+  const p99 = entry.samples.filter((s) => s.key.endsWith('.p99'));
   assert.ok(p99.length > 0);
   assert.ok(p99.every((s) => /ungateable/.test(s.ungateableReason)));
 });
@@ -483,19 +484,19 @@ test('a fitted baseline gates the metrics it fitted and still never a p99', () =
   const entry = readHistory(history)[0];
 
   const p50 = entry.samples.find(
-    (s) => s.library === 'pmtiles' && s.scenario === 'read_random.p50' && s.scale === 21851,
+    (s) => s.library === 'pmtiles' && s.key === 'read_random.p50' && s.scale === 21851,
   );
   assert.equal(p50.gated, true);
   assert.equal(p50.tolerancePct, 14.2);
 
   const p99 = entry.samples.find(
-    (s) => s.library === 'pmtiles' && s.scenario === 'read_random.p99' && s.scale === 21851,
+    (s) => s.library === 'pmtiles' && s.key === 'read_random.p99' && s.scale === 21851,
   );
   assert.equal(p99.gated, false);
   assert.equal(p99.tolerancePct, null);
 
   const unfitted = entry.samples.find(
-    (s) => s.library === 'directory' && s.scenario === 'read_random.p50' && s.scale === 21851,
+    (s) => s.library === 'directory' && s.key === 'read_random.p50' && s.scale === 21851,
   );
   assert.equal(unfitted.gated, false);
 });
@@ -573,13 +574,18 @@ test('a non ok cell becomes a skip with its reason and does not refuse the run',
   assert.equal(entry.skipped.length, 11);
   assert.ok(entry.skipped.every((s) => typeof s.reason === 'string' && s.reason.length > 0));
 
-  const decode = entry.skipped.filter((s) => s.scenario === 'decode_root.p50');
+  const decode = entry.skipped.filter((s) => s.key === 'decode_root.p50');
   assert.equal(decode.length, 7);
-  assert.ok(decode.every((s) => s.library.startsWith('directory')));
+  assert.ok(decode.every((s) => s.library === 'directory'));
+  assert.ok(decode.every((s) => s.kind === 'structural'));
 
-  const refused = entry.skipped.filter((s) => s.outcome === 'refused');
-  assert.equal(refused.length, 4);
-  assert.ok(refused.every((s) => /allocated_bytes differs/.test(s.reason)));
+  // A cell that refused itself because allocated_bytes moved between reps of one
+  // pyramid is a different fact from a scenario that cannot apply, and the page
+  // has to be able to tell them apart. RED against folding both into `SKIP`.
+  const selfRefused = entry.skipped.filter((s) => s.outcome === 'refused');
+  assert.equal(selfRefused.length, 4);
+  assert.ok(selfRefused.every((s) => /allocated_bytes differs/.test(s.reason)));
+  assert.ok(selfRefused.every((s) => s.library === 'pmtiles'));
 });
 
 test('the replicate cell is published once and its second pass is kept beside it', () => {
@@ -602,21 +608,21 @@ test('a sample keeps its unit and direction and never converts a rate into milli
   // RED against an importer that writes every median into `medianMs`, which is
   // how a field called milliseconds comes to hold lookups per second.
   const entry = importedEntry();
-  const p50 = entry.samples.find((s) => s.scenario === 'read_random.p50' && s.scale === 21851);
+  const p50 = entry.samples.find((s) => s.key === 'read_random.p50' && s.scale === 21851);
   assert.equal(p50.unit, 'us');
   assert.equal(p50.direction, 'lower-is-better');
   assert.equal(p50.medianMs, p50.median / 1000);
   assert.equal(p50.throughput, null);
 
   const rate = entry.samples.find(
-    (s) => s.scenario === 'read_random.lookups_per_s' && s.scale === 21851,
+    (s) => s.key === 'read_random.lookups_per_s' && s.scale === 21851,
   );
   assert.equal(rate.unit, '1/s');
   assert.equal(rate.direction, 'higher-is-better');
   assert.equal(rate.medianMs, null);
   assert.equal(rate.throughput, rate.median);
 
-  const wall = entry.samples.find((s) => s.scenario === 'generate.wall' && s.scale === 21851);
+  const wall = entry.samples.find((s) => s.key === 'generate.wall' && s.scale === 21851);
   assert.equal(wall.unit, 'ms');
   assert.equal(wall.medianMs, wall.median);
 });
@@ -628,26 +634,45 @@ test('the declared request counts are marked declared and are never gated', () =
   const entry = importedEntry();
   const declared = entry.samples.filter((s) => s.declared === true);
   assert.ok(declared.length > 0);
-  assert.ok(declared.every((s) => s.scenario.endsWith('_declared')));
+  assert.ok(declared.every((s) => s.key.endsWith('_declared')));
   assert.ok(declared.every((s) => s.gated === false));
-  const measured = entry.samples.filter((s) => s.scenario === 'requests.requests');
+  const measured = entry.samples.filter((s) => s.key === 'requests.requests');
   assert.ok(measured.length > 0);
   assert.ok(measured.every((s) => s.declared === false));
 });
 
-test('the source image is an era of its own and not a second line on one chart', () => {
-  // gradient and noise are different inputs, so folding them into one series
-  // would draw two experiments as one line. RED against an importer that keys
-  // a series on the backend alone.
+test('the source image is part of the section and not folded into the tile count', () => {
+  // The tile count is not unique across cells: 21851 is both `8192x8192@64+gradient`
+  // and `8192x8192@64+noise` in this one run, and 16369 is two `4096x6256@46`
+  // cells. A section keyed on the tile count alone draws two different inputs as
+  // one line and nothing on the page says so.
+  //
+  // RED against an importer that leaves `source` out of the scenario, which is
+  // provable here rather than assertable: dropping it collides real sections.
   const entry = importedEntry();
-  const libraries = new Set(entry.samples.map((s) => s.library));
-  assert.deepEqual(
-    [...libraries].sort(),
-    ['directory', 'directory+noise', 'pmtiles', 'pmtiles+noise'],
+  assert.deepEqual([...new Set(entry.samples.map((s) => s.library))].sort(), [
+    'directory',
+    'pmtiles',
+  ]);
+  assert.ok(entry.samples.every((s) => / · (gradient|noise)$/.test(s.scenario)));
+
+  const withSource = new Set(entry.samples.map((s) => `${s.library}/${s.scenario}@${s.scale}`));
+  const withoutSource = new Set(entry.samples.map((s) => `${s.library}/${s.key}@${s.scale}`));
+  assert.equal(withSource.size, entry.samples.length);
+  assert.ok(
+    withoutSource.size < entry.samples.length,
+    'if dropping the source collided nothing, this test would be proving nothing',
   );
-  const noise = entry.samples.filter((s) => s.library.endsWith('+noise'));
-  assert.ok(noise.every((s) => s.sourceImage === 'noise'));
-  assert.ok(noise.every((s) => s.backend === s.library.replace('+noise', '')));
+  assert.equal(entry.samples.length - withoutSource.size, 94, '94 real sections would collide');
+
+  // The named case, so the count above cannot drift into meaning something else.
+  const at21851 = entry.samples.filter(
+    (s) => s.library === 'pmtiles' && s.key === 'read_random.p50' && s.scale === 21851,
+  );
+  assert.equal(at21851.length, 2);
+  assert.deepEqual(at21851.map((x) => x.source).sort(), ['gradient', 'noise']);
+  assert.notEqual(at21851[0].scenario, at21851[1].scenario);
+  assert.notEqual(at21851[0].median, at21851[1].median);
 });
 
 test('the entry carries the era axes the page breaks a line on', () => {
@@ -655,9 +680,15 @@ test('the entry carries the era axes the page breaks a line on', () => {
   // drawing a line across two experiments. RED against an entry that records
   // the host as prose and leaves the page to parse it.
   const entry = importedEntry();
-  assert.equal(entry.host.fingerprint, ARCHIVED_RUN_ID.split('-').pop());
+  // Two fingerprints over two lists. The archive files a run under one and the
+  // page breaks an era on the other, and letting either stand in for the other
+  // silently changes what counts as the same machine.
+  assert.equal(entry.host.archiveBucket, ARCHIVED_RUN_ID.split('-').pop());
+  assert.match(entry.host.fingerprint, /^[0-9a-f]{8}$/);
+  assert.notEqual(entry.host.fingerprint, entry.host.archiveBucket);
   assert.equal(entry.host.arch, 'aarch64');
   assert.equal(entry.host.os, 'linux');
+  assert.equal(entry.host.fsType, 'unknown');
   assert.equal(entry.filesystem.fsType, 'unknown');
   assert.equal(entry.emulated, false);
   assert.ok(Array.isArray(entry.emulationEvidence) && entry.emulationEvidence.length === 4);
@@ -675,6 +706,5 @@ test('a run id the index states but the document does not derive is refused', ()
   index[0].file = `${run.runId}.json`;
   writeFileSync(join(run.dir, 'index.json'), JSON.stringify(index, null, 2));
   const r = runImport(run, emptyHistory());
-  assert.equal(r.code, EXIT.REFUSED);
-  assert.match(r.err, /run id/i);
+  refused(r, /carries the run id/);
 });

@@ -1,81 +1,135 @@
 {
   "_": [
-    "Every libviprs difference from causl's import-run.mjs, expressed here rather",
-    "than edited into the importer. K2.3 (#76) owns tools/contract/config.json for",
-    "the dashboard, the era axes and the series palette; when that lands these keys",
-    "move into it and --config's default follows. Nothing here is a threshold: a",
-    "tolerance is fitted from repeat sweeps by the gate and read from a baseline,",
-    "never written down as a constant."
+    "The importer's half of K2.3's config schema (libviprs-bench#76, comment 5673286441),",
+    "in the shape that comment publishes. It is provisional and lives here only so this",
+    "lane's tests can run before #79 merges: at compose it folds into",
+    "tools/contract/config.json and this file goes away, which costs no code because",
+    "--config already prefers the contract copy when one is there.",
+    "",
+    "Only the blocks the importer reads are filled in. series, defaults, samples.carry",
+    "and the verdict palette are the dashboard's and stay K2.3's, with one exception",
+    "noted under producer.gatedWhenUncalibrated."
   ],
 
-  "archive": "archive/storage",
-  "history": "tools/publish/history.json",
+  "contract": {
+    "upstreamRev": "cd65c76",
+    "configVersion": 1,
+    "provenance": "20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939"
+  },
 
-  "families": {
-    "libviprs-storage": {
-      "id": "storage",
-      "label": "PMTiles against a directory tree",
-      "runner": "libviprs-storage",
-      "schemaVersion": 1
+  "sections": {
+    "scenarioFrom": ["key", "source"],
+    "scenarioJoin": " · ",
+    "scaleFrom": "scale",
+    "unitFrom": "unit",
+    "directionFrom": "direction"
+  },
+
+  "samples": {
+    "carry": ["unit", "direction", "confidence", "cell", "key", "source", "reps", "cov"]
+  },
+
+  "era": {
+    "axes": [
+      { "id": "series", "from": "samples[].library", "kind": "set" },
+      { "id": "host", "from": "host.fingerprint", "kind": "value" },
+      { "id": "filesystem", "from": "host.fsType", "kind": "value" }
+    ]
+  },
+
+  "producer": {
+    "archiveDir": "archive/storage",
+    "documentIndex": "index.json",
+    "historyPath": "tools/publish/history.json",
+
+    "families": ["libviprs-storage", "libviprs-engines", "libviprs-vips"],
+    "familyIdPrefix": "libviprs-",
+    "schemaVersion": 1,
+
+    "seriesFrom": "backend",
+    "runnerToSeries": {},
+
+    "outcomes": {
+      "measured": ["ok"],
+      "structural": ["failed", "refused"],
+      "refusing": []
     },
-    "libviprs-engines": {
-      "id": "engines",
-      "label": "Monolithic against streaming against mapreduce",
-      "runner": "libviprs-engines",
-      "schemaVersion": 1
-    }
-  },
-
-  "publishableProfiles": ["full", "xl"],
-  "_publishableProfiles": [
-    "`ci` proves the harness runs and is never a measurement: three reps, a cut-down",
-    "cell list, and an archive entry indistinguishable from a calibrated sweep. It is",
-    "the one profile that is refused here rather than at the archive door, because",
-    "the archive is allowed to hold it and the page is not."
-  ],
-
-  "series": {
-    "sourceSuffix": { "gradient": "", "noise": "+noise" },
-    "_sourceSuffix": [
-      "The source image is folded into the series id rather than left as a facet, so",
-      "gradient and noise never share a chart line. They are different inputs and one",
-      "line through both is one line through two experiments."
+    "_outcomes": [
+      "Three buckets, not causl's two. Upstream refuses the whole import if any cell is",
+      "`failed`, because there a failed cell means a runner crashed. Seven cells in the",
+      "real capture are `failed` for a fact about the backend (a directory tree has no",
+      "root directory to decode) and four are `refused` because allocated_bytes moved",
+      "between reps of one generation. Both import as skips carrying their reason, and",
+      "`refusing` is empty because the run-level form of causl's check is the one that",
+      "survives: at least one cell must be measured."
     ],
-    "order": ["pmtiles", "directory", "pmtiles+noise", "directory+noise"],
-    "label": {
-      "pmtiles": "PMTiles",
-      "directory": "Directory tree",
-      "pmtiles+noise": "PMTiles (noise)",
-      "directory+noise": "Directory tree (noise)"
-    }
-  },
 
-  "defaults": {
-    "libraries": ["pmtiles", "directory"],
-    "scenarios": ["read_random.p50", "first_lookup.p50", "open.p50", "generate.wall"],
-    "scales": [16369, 21851]
-  },
+    "publishableProfiles": ["full", "xl"],
+    "_publishableProfiles": [
+      "`ci` proves the harness runs and is never a measurement: three reps, a cut-down",
+      "cell list, and an archive entry indistinguishable from a calibrated sweep. It is",
+      "refused here rather than at the archive door, because the archive is allowed to",
+      "hold it and the page is not."
+    ],
 
-  "eraAxes": ["library", "host.fingerprint", "filesystem.fsType", "emulated", "profile"],
+    "hostFingerprintFrom": [
+      "provenance.os",
+      "provenance.arch",
+      "provenance.cpuModel",
+      "provenance.ncpu",
+      "provenance.inContainer",
+      "provenance.emulated"
+    ],
+    "archiveBucketFrom": [
+      "provenance.os",
+      "provenance.arch",
+      "provenance.cpuModel",
+      "provenance.node.rustc",
+      "provenance.filesystem.fsType",
+      "provenance.emulated"
+    ],
+    "_archiveBucketFrom": [
+      "Two fingerprints, because there are two questions. hostFingerprintFrom is the",
+      "page's era axis and is K2.3's list. archiveBucketFrom is the producer's own",
+      "host8, the last segment of every run id, and it is a different set of fields:",
+      "rustc and the scratch filesystem are in it and ncpu is not. The importer derives",
+      "the run id from the document and joins it to the archive index, so it has to",
+      "reproduce the producer's list exactly; carrying both keeps the era axis right",
+      "without making the archive join wrong."
+    ],
+    "fsTypeFrom": "provenance.filesystem.fsType",
+    "replicateSpreadFrom": "replicate.spreadPct",
 
-  "units": {
-    "toMilliseconds": { "ns": 1e-6, "us": 0.001, "ms": 1, "s": 1000 },
-    "throughput": ["1/s"]
-  },
-
-  "gate": {
+    "gatedFrom": null,
+    "gatedWhenUncalibrated": false,
+    "_gatedWhenUncalibrated": [
+      "One deliberate disagreement with the schema comment, flagged rather than",
+      "smuggled. gatedFrom is null because no cell carries a `gated` field, and the",
+      "comment then has the importer write null, on the sound argument that 'nobody",
+      "said' and 'not gated' are different facts. But verdict.gate only suppresses a",
+      "chip on a literal false, so null hands all 284 cells to verdict.regressionPct,",
+      "a 10% constant, when 159 of them are low-confidence and the free replicate pair",
+      "already moved one metric 53.3%. Chips computed against a guess are the defect",
+      "this epic exists to remove, so the importer writes false with a reason while no",
+      "calibration exists, and true only where a fitted baseline supplies a tolerance.",
+      "Set this to null to get the schema comment's literal behaviour."
+    ],
     "ungateableMetrics": ["p99", "max"],
-    "_ungateableMetrics": [
-      "Named here as a floor, not as the answer. The calibration decides what is",
-      "gateable per cell; these two are ungateable on this suite whatever it says,",
-      "because the free replicate pair already moved p99 by 74.5% on an idle host.",
-      "A metric no calibration has fitted is `gated: false` and gets no verdict chip."
-    ],
-    "declaredSuffix": "_declared"
-  },
+    "declaredSuffix": "_declared",
 
-  "invariants": {
-    "exactWithinCommit": [
+    "invariantNames": [
+      "output_bytes",
+      "allocated_bytes",
+      "filesystem_entries",
+      "directories",
+      "tiles_produced",
+      "artefact_digest",
+      "root_entries",
+      "leaves",
+      "requests",
+      "request_bytes"
+    ],
+    "invariantsExactWithinCommit": [
       "output_bytes",
       "filesystem_entries",
       "directories",
@@ -86,30 +140,23 @@
       "requests",
       "request_bytes"
     ],
-    "filesystemDependent": ["allocated_bytes"],
-    "_filesystemDependent": [
+    "invariantsFilesystemDependent": ["allocated_bytes"],
+    "_invariantsFilesystemDependent": [
       "allocated_bytes is the filesystem's answer to the same bytes, so it moves with",
       "the block size and is compared only between runs on the same fsType and mount",
-      "source. Putting it in the exact list would refuse an honest run on another disk."
+      "source. In the exact list it would refuse an honest run on another disk."
     ],
-    "commitKeys": ["provenance.library.commit", "provenance.commit"],
-    "_commitKeys": [
+    "invariantCommitKeys": ["provenance.library.commit", "provenance.commit"],
+    "_invariantCommitKeys": [
       "Both trees, because the harness generates the source image: a harness-only",
       "change can move output_bytes honestly and refusing it would block publication",
-      "with no way to clear it. The cost is that a harness-only change does not get",
-      "the within-commit check, which the gate's own invariant comparison still does."
-    ]
-  },
-
-  "refuse": {
-    "anyFailedCell": false,
-    "_anyFailedCell": [
-      "causl refuses a run with any failed cell because a failed cell there means a",
-      "runner crashed. In this family `failed` is the honest label for a scenario that",
-      "does not apply to a backend: a directory tree has no root directory to decode.",
-      "The run-level form of causl's check is kept instead, and it is `noOkCells`."
+      "with no way to clear it. The cost is that a harness-only change does not get the",
+      "within-commit check."
     ],
-    "majorityNoisyCells": true,
-    "perturbingRustflags": ["-C instrument-coverage", "-Z"]
+
+    "refuse": {
+      "majorityNoisyCells": true,
+      "perturbingRustflags": ["-C instrument-coverage", "-Z"]
+    }
   }
 }
