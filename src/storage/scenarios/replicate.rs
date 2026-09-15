@@ -326,23 +326,6 @@ pub fn block(
         ));
     }
     let reps = measurements.len();
-    // Symmetric, on purpose. Checking only that every key of the first
-    // measurement is in the others would miss a placement that grew a key, and
-    // a placement measuring something the others did not is the same disagreement
-    // read from the other end.
-    for (index, measurement) in measurements.iter().enumerate() {
-        if measurement.len() != measurements[0].len() {
-            return Err(format!(
-                "measurement 1 of {} reports {} metrics and measurement {} reports {}, so the \
-                 placements are not the same measurement",
-                cell.spec(),
-                measurements[0].len(),
-                index + 1,
-                measurement.len()
-            ));
-        }
-    }
-
     let mut spread = BTreeMap::new();
     let mut drift = BTreeMap::new();
     let mut residual = BTreeMap::new();
@@ -368,6 +351,24 @@ pub fn block(
         spread.insert(metric.clone(), found.floor_pct);
         drift.insert(metric.clone(), found.drift_pct);
         residual.insert(metric.clone(), found.residual_pct);
+    }
+
+    // After the loop above, not before it, and symmetric. A placement MISSING a
+    // key is caught in there by name, which is the message worth having; this
+    // catches the other direction, a placement that measured something the
+    // others did not, which the loop cannot see because it walks the first
+    // measurement's keys.
+    for (index, measurement) in measurements.iter().enumerate() {
+        if measurement.len() != measurements[0].len() {
+            return Err(format!(
+                "measurement 1 of {} reports {} metrics and measurement {} reports {}, so the \
+                 placements are not the same measurement",
+                cell.spec(),
+                measurements[0].len(),
+                index + 1,
+                measurement.len()
+            ));
+        }
     }
 
     Ok(ReplicateBlock {
