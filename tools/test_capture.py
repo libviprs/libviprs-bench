@@ -337,8 +337,9 @@ class DriverWiring(unittest.TestCase):
         # Red against an unnamed `docker run`. Interrupting the driver does not
         # stop the build: SIGINT reaches the Python process, subprocess.run
         # raises, and the ssh child and everything downstream keep going, so the
-        # machine compiles for another half hour with nobody attached. I watched
-        # that happen. Cleanup can only remove a container it can name.
+        # machine keeps compiling with nobody attached until somebody removes the
+        # container by hand. I watched that happen. Cleanup can only remove a
+        # container it can name.
         recorder = Recorder()
         self.drive(recorder)
         sent = {s.label: (s.remote or "") for s in recorder.steps}
@@ -351,7 +352,8 @@ class DriverWiring(unittest.TestCase):
 
     def test_a_hard_failure_still_writes_the_summary(self):
         # Red against letting the exception out with nothing written. The first
-        # end-to-end run died fifty minutes in and left a traceback and no
+        # end-to-end run died after both images were built and left a traceback
+        # and no
         # record: which families had been captured, whether the machine was
         # clean, what the revisions were, all of it only in the scrollback.
         recorder = Recorder()
