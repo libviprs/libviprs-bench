@@ -55,13 +55,12 @@
 // saturation; the `gated` flag, so an ungateable metric never gets a verdict
 // chip; and the invariants, which are the epic's actual claim and are exact.
 //
-// Usage:
-//   node tools/publish/import-run.mjs \
-//     --document archive/storage/<runId>.json \
-//     --archive  archive/storage \
-//     [--history tools/publish/history.json] \
-//     [--config  tools/publish/config.json] \
-//     [--baseline archive/storage/baseline-<host8>.json] \
+// Usage, where everything but the document defaults out of the config:
+//   node tools/publish/import-run.mjs --document archive/storage/<runId>.json
+//     [--archive  archive/storage]                  producer.archiveDir
+//     [--history  tools/publish/history.json]       producer.historyPath
+//     [--config   tools/contract/config.json]       then tools/publish/config.json
+//     [--baseline archive/storage/baseline-<host8>.json]
 //     [--dry-run]
 //
 // Exit codes: 0 imported · 1 refused · 2 usage.
@@ -639,7 +638,6 @@ function sampleOf(cell) {
     // rule that is switched off.
     key: cell.key,
     source: cell.source,
-    sourceImage: cell.source,
     scenario: scenarioOf(cell),
     scale: cell[SCALE_FROM] ?? null,
     cell: cell.cell,
@@ -701,7 +699,6 @@ for (const cell of cells) {
       backend: cell.backend,
       key: cell.key,
       source: cell.source,
-      sourceImage: cell.source,
       scenario: scenarioOf(cell),
       scale: cell[SCALE_FROM] ?? null,
       cell: cell.cell,
@@ -848,7 +845,7 @@ for (const sample of samples) {
     version: prov.library?.version ?? null,
     commit: libraryCommit,
     backend: sample.backend,
-    source: sample.sourceImage,
+    source: sample.source,
     attested: true,
   };
   libraries[sample.library].attested &&= sample.attested === true;
