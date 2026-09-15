@@ -251,12 +251,13 @@ impl Profile {
         }
     }
 
-    /// The cell measured first and last in the sweep, or `None`.
+    /// The cell measured through the whole sweep, or `None`.
     ///
-    /// The smallest canvas at one thread, because the control is paid for twice
-    /// and the cheapest cell is the one to pay for. `ci` has no control: it is
-    /// never published, so it has no noise floor to publish either, and
-    /// measuring its one cell twice would double the smoke test to say nothing.
+    /// The smallest canvas at one thread, because the control is paid for once
+    /// per measured cell and the cheapest cell is the one to pay for. `ci` has
+    /// no control: it is never published, so it has no noise floor to publish
+    /// either, and measuring its one cell twice would double the smoke test to
+    /// say nothing.
     pub fn replicate_cell(self) -> Option<EngineCell> {
         if self == Profile::Ci {
             return None;
@@ -265,13 +266,15 @@ impl Profile {
         Some(EngineCell::new(width, height, 1))
     }
 
-    /// Every cell this profile walks, canvas-major, with the control at both
-    /// ends.
+    /// Every cell this profile walks, canvas-major, with the control before the
+    /// first of them and after every one.
     ///
-    /// First and last rather than twice in a row, because what the spread is
-    /// trying to see is drift across the sweep: thermal, a neighbour waking up,
-    /// the page cache filling. Two measurements back to back would see none of
-    /// it and would publish a flatteringly small noise floor.
+    /// Spread through the sweep rather than twice in a row, because what the
+    /// floor is trying to see is drift across the sweep: thermal, a neighbour
+    /// waking up, the page cache filling. Two measurements back to back would
+    /// see none of it and would publish a flatteringly narrow noise floor. The
+    /// `full` profile walks fifteen measured cells, so the floor rests on
+    /// sixteen placements (#84).
     pub fn cells(self) -> Vec<EngineCell> {
         let mut out = Vec::new();
         for concurrency in self.concurrency_levels() {
