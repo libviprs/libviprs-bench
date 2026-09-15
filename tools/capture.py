@@ -35,11 +35,14 @@ THE TRAPS, CARRIED FORWARD FROM tools/capture-nas.sh RATHER THAN REDISCOVERED
  1. The tree is pushed WITH `.git`. `tools/nas.sh` excludes it, which is right
     for every other job on that machine and wrong for this one: without it the
     provenance layer cannot resolve a commit and the aggregator refuses the run.
- 2. There is no wait-for-idle. The NAS carries resident backupd and postgres
-    containers and its load floor is 1.4 to 2.2 on six cores with all of them at
-    0% CPU, so an absolute threshold spins for the full timeout every time. The
-    settle threshold is half the core count, which is reachable there and well
-    under the ncpu ceiling the harness refuses at.
+ 2. The settle threshold is relative to core count, never absolute. The NAS
+    carries resident backupd and postgres containers and its load floor is 1.4 to
+    2.2 on six cores with all of them at 0% CPU, so an absolute 1.2 can never be
+    met and the wait becomes a fixed delay. Half the core count is reachable and
+    still well under the ncpu ceiling the harness refuses at. The budget is
+    twenty minutes rather than the script's five, because two image builds leave
+    the box at a load five minutes does not shed, and running out of it REFUSES
+    rather than measuring anyway: see the note on `settle`.
  3. Retrieval is `ssh cat` through a container, never scp. scp fails there with
     "No such file or directory" on a file that plainly exists, because the SFTP
     subsystem is not available.
