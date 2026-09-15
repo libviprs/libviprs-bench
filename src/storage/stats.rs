@@ -175,11 +175,6 @@ pub struct Summary {
     pub tail: Tail,
 }
 
-/// Summarise one metric's samples.
-///
-/// `seed` seeds the bootstrap, so the interval is reproducible from the
-/// published samples.
-
 /// The magnitude below which `integrity::canonical_number` refuses a non-zero
 /// value, because it is where `Number.prototype.toString` switches to exponent
 /// form while Rust still prints digits, so the two languages would digest
@@ -211,6 +206,10 @@ fn floor_derived(value: f64) -> f64 {
     value
 }
 
+/// Summarise one metric's samples.
+///
+/// `seed` seeds the bootstrap, so the interval is reproducible from the
+/// published samples.
 pub fn summarise(samples: &[f64], seed: u64) -> Option<Summary> {
     if samples.is_empty() {
         return None;

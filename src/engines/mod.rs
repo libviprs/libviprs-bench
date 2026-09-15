@@ -507,9 +507,14 @@ fn rotated(rep: usize) -> Vec<Engine> {
 /// is the one the engines' sink really writes into, so the recorded `fsType`
 /// describes where the tiles went rather than where this function happened to
 /// look.
+///
+/// Through [`crate::family::Family::scratch_root`] rather than [`crate::engine_sink_root`] and
+/// a `create_dir_all` spelled out again, so the `storage` family cannot drift
+/// from this one: the two disagreed about the filesystem on one host because
+/// each had its own copy of these two lines and only one copy made the
+/// directory.
 fn sweep_provenance(profile: Profile, doc: &Document) -> serde_json::Value {
-    let scratch = crate::engine_sink_root();
-    let _ = std::fs::create_dir_all(&scratch);
+    let scratch = crate::family::Family::Engines.scratch_root();
     let provenance = crate::provenance::Provenance::capture_for_document(&scratch);
     for warning in provenance.document_provenance_warnings() {
         eprintln!("{warning}");
