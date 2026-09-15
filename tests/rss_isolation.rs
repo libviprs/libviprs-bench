@@ -367,13 +367,15 @@ fn the_scalability_binary_answers_the_single_cell_subcommand() {
 }
 
 /// Source-level guard, in the style of `tests/pdf_scalability_series.rs`: it
-/// fails the moment the publishing binary goes back to a process-wide
-/// watermark, without needing a sweep to run.
+/// fails the moment the publishing binary goes back to reading a rusage
+/// watermark of its own, without needing a sweep to run.
 ///
-/// The behavioural tests above are the real guard, but they cost a sweep. This
-/// one costs nothing and is the tripwire for the exact regression: `#74` was
-/// `RUSAGE_SELF` living on in `scalability.rs` long after the fix landed next
-/// to it.
+/// The behavioural tests above are the real guard, and this one is only a
+/// tripwire — it reads text, and text cannot tell code from the prose around
+/// it. So it matches on the *call path* `libc::getrusage`, which is how the
+/// deleted `process_peak_rss` reached the watermark, and not on `RUSAGE_SELF`,
+/// which the comment explaining #74 quite reasonably contains. I wrote it the
+/// other way round first and it failed on my own doc comment...
 #[test]
 fn the_scalability_binary_measures_through_the_child_harness() {
     const SCALABILITY: &str = include_str!("../src/scalability.rs");
@@ -388,8 +390,9 @@ fn the_scalability_binary_measures_through_the_child_harness() {
          it spawns cannot run a cell (issue #74)"
     );
     assert!(
-        !SCALABILITY.contains("RUSAGE_SELF"),
-        "scalability must not read a process-wide RSS watermark: every engine in \
-         the sweep shares it, which is exactly how #74 shipped"
+        !SCALABILITY.contains("libc::getrusage"),
+        "scalability must not read a rusage watermark of its own: RUSAGE_SELF is \
+         process-wide and every engine in the sweep shares it, which is exactly \
+         how #74 shipped"
     );
 }

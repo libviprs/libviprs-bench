@@ -38,7 +38,8 @@ use libviprs_bench::provenance::Provenance;
 use libviprs_bench::{
     BENCH_STREAMING_BUDGET, BENCH_TILE_SIZE, DEFAULT_CONCURRENCY, DEFAULT_SIZES, comparison_table,
     core_git_sha, core_version, create_snapshot, executive_verdict, load_history,
-    print_comparison_table, print_savings_summary, push_snapshot, save_history,
+    parse_concurrency, parse_sizes, print_comparison_table, print_savings_summary, push_snapshot,
+    save_history,
 };
 
 /// Everything the run is parameterised on. The suite constants are the
@@ -74,39 +75,6 @@ fn usage() {
     println!("  --iters <n>            Timed iterations per cell (env: BENCH_ITERS)");
     println!("  --warmup <n>           Discarded warm-up iterations (env: BENCH_WARMUP)");
     println!("  -h, --help             Show this help and exit");
-}
-
-/// Parse `WxH,WxH` into sizes, or die with a message naming the bad token.
-fn parse_sizes(raw: &str) -> Vec<(u32, u32)> {
-    raw.split(',')
-        .map(|token| {
-            let token = token.trim();
-            let bad = || {
-                eprintln!("--sizes wants WxH pairs, comma separated; got {token:?}");
-                std::process::exit(2);
-            };
-            let Some((w, h)) = token.split_once('x') else {
-                bad()
-            };
-            match (w.trim().parse::<u32>(), h.trim().parse::<u32>()) {
-                (Ok(w), Ok(h)) if w > 0 && h > 0 => (w, h),
-                _ => bad(),
-            }
-        })
-        .collect()
-}
-
-fn parse_concurrency(raw: &str) -> Vec<usize> {
-    raw.split(',')
-        .map(|token| {
-            token.trim().parse::<usize>().unwrap_or_else(|_| {
-                eprintln!(
-                    "--concurrency wants non-negative integers, comma separated; got {token:?}"
-                );
-                std::process::exit(2);
-            })
-        })
-        .collect()
 }
 
 fn parse_u32(flag: &str, raw: Option<String>) -> u32 {
