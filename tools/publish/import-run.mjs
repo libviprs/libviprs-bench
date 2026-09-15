@@ -171,12 +171,19 @@ if (!family) {
       `${families.join(', ') || 'none configured'}`,
   );
 } else {
-  const wantVersion = producer.schemaVersion ?? 1;
-  if (doc.schemaVersion !== wantVersion) {
+  // One version or a list of them. A list is not laxity: version 2 redefined
+  // `replicate.spreadPct` from the gap between two measurements of the control
+  // cell to a dispersion over every placement of it, and both are readable, but
+  // they are different statistics. What keeps them apart is the `documentSchema`
+  // era axis, which puts a version-1 run and a version-2 run on separate x-axes
+  // rather than drawing one line through both (libviprs-bench #84). A version
+  // this config does not name is still refused outright.
+  const known = [producer.schemaVersion ?? 1].flat();
+  if (!known.includes(doc.schemaVersion)) {
     refuse(
-      `schemaVersion ${JSON.stringify(doc.schemaVersion ?? null)} is not version ` +
-        `${wantVersion} of ${doc.family}; the numbering is per family and a reader that ` +
-        'guesses reads a different document',
+      `schemaVersion ${JSON.stringify(doc.schemaVersion ?? null)} is not a version this ` +
+        `config reads for ${doc.family} (${known.join(', ')}); the numbering is per family ` +
+        'and a reader that guesses reads a different document',
     );
   }
   // The runner is a constant per family, so it says the same thing twice and a

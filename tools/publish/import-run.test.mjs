@@ -523,8 +523,39 @@ test('a document from another family or schema version is refused', () => {
   const family = runImport(mutate({ set: { family: 'libviprs-something' } }), emptyHistory());
   refused(family, /is not one this config knows/);
 
-  const version = runImport(mutate({ set: { schemaVersion: 2 } }), emptyHistory());
+  // A version the config does not name. Not 2: version 2 is the replicate floor
+  // and this importer reads it, which is why the list exists. RED against a
+  // check that accepts anything once the config carries more than one version
+  // (libviprs-bench #84).
+  const version = runImport(mutate({ set: { schemaVersion: 3 } }), emptyHistory());
   refused(version, /schemaVersion/);
+});
+
+test('both replicate eras import, and they do not land on one axis', () => {
+  // The archived document is version 1, where `replicate.spreadPct` was the gap
+  // between two measurements of the control cell. Version 2 publishes a
+  // dispersion over every placement under the same key. Both are real
+  // measurements and both import; what must never happen is one line drawn
+  // through the two.
+  //
+  // RED against an importer that reads a single version (the version-2 run is
+  // then refused) and against one that drops `schemaVersion` from the entry,
+  // which leaves the era axis with nothing to separate them by.
+  const eraOne = emptyHistory();
+  assert.equal(runImport(pristine(), eraOne).code, EXIT.OK);
+  const eraTwo = emptyHistory();
+  const two = runImport(mutate({ set: { schemaVersion: 2 } }), eraTwo);
+  assert.equal(two.code, EXIT.OK, `a version-2 document must import:\n${two.err}`);
+
+  const [first] = readHistory(eraOne);
+  const [second] = readHistory(eraTwo);
+  assert.equal(first.schemaVersion, 1);
+  assert.equal(second.schemaVersion, 2);
+  assert.notEqual(
+    first.schemaVersion,
+    second.schemaVersion,
+    'the entries carry no document schema version, so nothing can separate the two eras',
+  );
 });
 
 test('every reason is reported, never the first', () => {

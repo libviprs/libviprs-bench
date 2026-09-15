@@ -232,7 +232,7 @@
             },
             "spreadField": {
               "type": "string",
-              "description": "Sample field carrying this cell's replicate spread as a PERCENT (3.46 means 3.46%). The producer measures it per `<backend>.<key>` in the document's `replicate.spreadPct`; the importer attaches the matching one to each sample."
+              "description": "Sample field carrying this cell's replicate floor as a PERCENT (3.46 means 3.46%). The producer measures it per `<backend>.<key>` in the document's `replicate.spreadPct`; the importer attaches the matching one to each sample. At document schemaVersion 1 that number was the gap between two measurements of the control cell and had no dispersion of its own; from schemaVersion 2 it is a 95% prediction half-width over every placement, and `replicate.estimator` in the document says which."
             },
             "onMissingSpread": {
               "type": "string",
@@ -413,7 +413,7 @@
         },
         "replicateSpreadFrom": {
           "type": "string",
-          "description": "Dotted path to the map of replicate spreads, keyed `<series>.<key>`. The importer copies the matching entry onto each sample as verdict.noise.spreadField."
+          "description": "Dotted path to the map of replicate floors, keyed `<series>.<key>`. The importer copies the matching entry onto each sample as verdict.noise.spreadField. The document also carries `replicate.driftPct` and `replicate.residualPct` beside it, which split the floor into the trend across the sweep and the scatter around it; the floor the verdict uses is the one that still contains both."
         },
         "gatedFrom": {
           "type": [
@@ -474,8 +474,19 @@
           "description": "Invariants that answer to the filesystem rather than to the code, and so are not held to exactness. `allocated_bytes` is `st_blocks * 512`, and the first full capture caught it differing between repetitions of one generation."
         },
         "schemaVersion": {
-          "type": "integer",
-          "description": "Document schema version this config reads. A document at any other version is refused rather than parsed under assumptions that no longer hold."
+          "oneOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              },
+              "minItems": 1
+            }
+          ],
+          "description": "Document schema version, or versions, this config reads. A document at any other version is refused rather than parsed under assumptions that no longer hold. Version 2 redefined `replicate.spreadPct` from a gap between two measurements of the control cell to a dispersion over every placement of it, so a list here is not laxity: both are readable, and the `documentSchema` era axis is what stops a floor from two points and a floor from six sharing an x-axis (libviprs-bench #84)."
         },
         "ungateableMetrics": {
           "type": "array",
