@@ -8,6 +8,13 @@
 //! each size and at matched thread budgets (1 and num_cpus), measuring how wall
 //! time, peak RSS, and efficiency scale with image area.
 //!
+//! Every cell runs in its OWN child process (`harness::spawn_single_cell`), so
+//! the peak RSS each row reports is that child's `ru_maxrss` and nobody else's.
+//! It did not always: the sweep read `getrusage(RUSAGE_SELF)` with all three
+//! engines in one process, and since that watermark is process-wide and never
+//! comes back down, monolithic set it and every engine after it published
+//! monolithic's number (issue #74).
+//!
 //! Run: cargo run --release --bin scalability [-- --family <name>]
 //!
 //! Output: report/<family>/scalability_results.json. This binary emits JSON only; the
@@ -22,40 +29,63 @@
 
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
-use libviprs::streaming::BudgetPolicy;
-use libviprs::{
-    EngineBuilder, EngineConfig, EngineKind, Layout, PyramidPlanner, Raster, RasterStripSource,
-};
 use libviprs_bench::family::{ALL_FAMILIES, DEFAULT_FAMILY, Family};
+use libviprs_bench::harness::{self, CellSpec, Engine};
 use libviprs_bench::provenance::Provenance;
 use libviprs_bench::{
-    bench_libvips, format_thousands, gradient_raster, streaming_budget_for, vips_available,
-    write_temp_png,
+    RunMetrics, format_thousands, parse_concurrency, parse_sizes, streaming_budget_for,
+    vips_available,
 };
 
-/// Peak RSS of the current process in bytes. Mirrors the RSS basis the
-/// libvips paths report so the scalability charts compare like-for-like
-/// memory (issue #153). `ru_maxrss` is a process-wide high-water mark; see
-/// the note in `libviprs_bench::RunMetrics::peak_rss_mb`.
-fn process_peak_rss() -> u64 {
-    use std::mem::MaybeUninit;
-    let mut rusage = MaybeUninit::<libc::rusage>::uninit();
-    let ret = unsafe { libc::getrusage(libc::RUSAGE_SELF, rusage.as_mut_ptr()) };
-    if ret != 0 {
-        return 0;
-    }
-    let rusage = unsafe { rusage.assume_init() };
-    if cfg!(target_os = "macos") {
-        // macOS reports ru_maxrss in bytes.
-        rusage.ru_maxrss as u64
-    } else {
-        // Linux reports ru_maxrss in kilobytes.
-        rusage.ru_maxrss as u64 * 1024
-    }
+/// Measure one `(engine, size, concurrency)` cell in its OWN child process and
+/// take that child's `ru_maxrss` as its peak RSS.
+///
+/// This is the whole of issue #74. The sweep used to run every engine in one
+/// process and read `getrusage(RUSAGE_SELF).ru_maxrss`, a process-wide
+/// watermark that never comes back down: monolithic holds the entire canvas, it
+/// sets the watermark, and every engine measured afterwards reported
+/// monolithic's number as its own. The first full `engines` capture published
+/// byte-identical peak RSS for all three engines in twenty of twenty
+/// (megapixel, concurrency) groups, to seven decimal places, and
+/// `tiles_per_second_per_mb` and `resource_cost` are derived from it, so two
+/// more published columns carried the same one number.
+///
+/// [`harness::spawn_single_cell`] is the fix that already existed — the `report`
+/// binary has been measuring through it since #157 — and it is reached here
+/// exactly as `report` reaches it: re-invoke this binary with the hidden
+/// `--single` subcommand, read the child's metrics JSON, and reap it with
+/// `wait4`. Reordering the engines so monolithic runs last would make the
+/// numbers look plausible without making them measurements, and the next person
+/// to add an engine would put it back.
+///
+/// `None` is a skipped cell (an engine fault, or libvips not present on a
+/// `vips` build); the child logs the reason and the sweep drops that one point
+/// rather than aborting (issue #46).
+fn measure_cell(
+    exe: &Path,
+    engine: Engine,
+    w: u32,
+    h: u32,
+    concurrency: usize,
+) -> Option<RunMetrics> {
+    harness::spawn_single_cell(
+        exe,
+        CellSpec {
+            engine,
+            width: w,
+            height: h,
+            concurrency,
+            tile_size: TILE_SIZE,
+            // A FLOOR, not the effective budget: `bench_streaming` /
+            // `bench_mapreduce` size it up per canvas through
+            // `streaming_budget_for`, which is the same value this binary used
+            // to compute for itself before handing it to the engine.
+            budget_bytes: STREAMING_BUDGET_FLOOR,
+        },
+    )
 }
 
 const TILE_SIZE: u32 = 256;
@@ -66,6 +96,31 @@ const TILE_SIZE: u32 = 256;
 /// centred DeepZoom plans have `canvas_width == width`, so passing the image
 /// width here is identical to sizing from `plan.canvas_width` (RGB8, bpp = 3).
 const STREAMING_BUDGET_FLOOR: u64 = 4_000_000; // 4 MB
+
+/// The swept image sizes. Gradient rasters at progressively larger sizes, at
+/// the 1.42:1 aspect ratio of 43551_California_South.pdf (4608x3240 pts). The
+/// grid intentionally spans the sub-megapixel "noise" regime (where fixed setup
+/// costs dominate) through ~280 MP, so the log-log charts (rendered by
+/// tools/charts/render.mjs; `--linear` selects linear axes) show a full trend
+/// rather than a cluster of dots. Memory: monolithic peak is about
+/// `w x h x 3 x 1.25` bytes, capped here at ~1.7 GB so the default 4 GB Docker
+/// container still has headroom for libvips alongside.
+///
+/// `--sizes` overrides it. That override is not a measurement knob: it exists so
+/// a test can drive this binary over one or two cells in seconds, which nothing
+/// could do before #74.
+const SWEEP_SIZES: &[(u32, u32)] = &[
+    (512, 360),
+    (1024, 720),
+    (2048, 1440),
+    (4096, 2880),
+    (4608, 3240),   // full California South page at 72 DPI (14.93 MP)
+    (8192, 5760),   // beyond the PDF — pure scaling (47.18 MP)
+    (10000, 7000),  // 70 MP
+    (12000, 8400),  // 100.8 MP
+    (16384, 11520), // 188.7 MP
+    (20000, 14000), // 280 MP — mono peak is about 1.05 GB
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ScalabilityPoint {
@@ -85,7 +140,9 @@ struct ScalabilityPoint {
     /// conflated (issue #153). Defaults to 0 for pre-#153 history.
     #[serde(default)]
     tracked_memory_mb: f64,
-    /// Process/child peak RSS — the cross-engine-comparable memory basis.
+    /// Peak RSS of the child process this one cell ran in — the
+    /// cross-engine-comparable memory basis, and a true per-run peak rather
+    /// than a watermark shared with whatever ran before it (issue #74).
     /// The `peak_memory_mb` alias lets pre-#153 scalability history (which
     /// used that field name) deserialize unchanged.
     #[serde(alias = "peak_memory_mb")]
@@ -96,148 +153,6 @@ struct ScalabilityPoint {
     tiles_per_second_per_mb: f64,
     /// RSS-MB-seconds per tile (common basis).
     resource_cost: f64,
-}
-
-/// A libviprs engine run's measurements: wall time, engine-tracked working
-/// set, process peak RSS, and tile count.
-struct EngineRun {
-    dur: std::time::Duration,
-    tracked_bytes: u64,
-    rss_bytes: u64,
-    tiles: u64,
-}
-
-/// Fresh temp directory for on-disk tile output. The libviprs engines write
-/// real PNG tiles here just like libvips `dzsave`, so neither side gets an
-/// in-RAM sink advantage (issue #153). Removed by the caller once counted.
-fn sink_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir()
-        .join("libviprs-bench")
-        .join(format!("scal_{}_{label}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn run_monolithic(src: &Raster, tile_size: u32, concurrency: usize) -> Option<EngineRun> {
-    let planner =
-        PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
-    let plan = planner.plan();
-    let out_dir = sink_dir("mono");
-    let sink = libviprs_bench::engine_fs_sink(&out_dir, &plan);
-    let start = Instant::now();
-    let run_result = EngineBuilder::new(src, plan, &sink)
-        .with_engine(EngineKind::Monolithic)
-        .with_config(EngineConfig::default().with_concurrency(concurrency))
-        .run();
-    let dur = start.elapsed();
-    let rss_bytes = process_peak_rss();
-    // Reclaim the temp dir on every exit — including the error path — so a
-    // genuine engine fault degrades this point to a skipped series instead of
-    // aborting the whole sweep and leaking a dir under $TMPDIR (issue #46).
-    let _ = std::fs::remove_dir_all(&out_dir);
-    let result = match run_result {
-        Ok(r) => r,
-        Err(e) => {
-            libviprs_bench::warn_engine_skip(
-                &format!("scalability monolithic {}x{}", src.width(), src.height()),
-                &e,
-            );
-            return None;
-        }
-    };
-    Some(EngineRun {
-        dur,
-        tracked_bytes: result.peak_memory_bytes,
-        rss_bytes,
-        tiles: result.tiles_produced,
-    })
-}
-
-fn run_streaming(
-    src: &Raster,
-    tile_size: u32,
-    budget: u64,
-    concurrency: usize,
-) -> Option<EngineRun> {
-    let planner =
-        PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
-    let plan = planner.plan();
-    let out_dir = sink_dir("stream");
-    let sink = libviprs_bench::engine_fs_sink(&out_dir, &plan);
-    let strip_src = RasterStripSource::new(src);
-    let start = Instant::now();
-    let run_result = EngineBuilder::new(strip_src, plan, &sink)
-        .with_engine(EngineKind::Streaming)
-        .with_config(EngineConfig::default().with_concurrency(concurrency))
-        .with_memory_budget(budget)
-        .with_budget_policy(BudgetPolicy::Error)
-        .run();
-    let dur = start.elapsed();
-    let rss_bytes = process_peak_rss();
-    // Reclaim the temp dir on every exit — including the error path — so a
-    // genuine engine fault degrades this point to a skipped series instead of
-    // aborting the whole sweep and leaking a dir under $TMPDIR (issue #46).
-    let _ = std::fs::remove_dir_all(&out_dir);
-    let result = match run_result {
-        Ok(r) => r,
-        Err(e) => {
-            libviprs_bench::warn_engine_skip(
-                &format!("scalability streaming {}x{}", src.width(), src.height()),
-                &e,
-            );
-            return None;
-        }
-    };
-    Some(EngineRun {
-        dur,
-        tracked_bytes: result.peak_memory_bytes,
-        rss_bytes,
-        tiles: result.tiles_produced,
-    })
-}
-
-fn run_mapreduce(
-    src: &Raster,
-    tile_size: u32,
-    budget: u64,
-    concurrency: usize,
-) -> Option<EngineRun> {
-    let planner =
-        PyramidPlanner::new(src.width(), src.height(), tile_size, 0, Layout::DeepZoom).unwrap();
-    let plan = planner.plan();
-    let out_dir = sink_dir("mr");
-    let sink = libviprs_bench::engine_fs_sink(&out_dir, &plan);
-    let strip_src = RasterStripSource::new(src);
-    let start = Instant::now();
-    let run_result = EngineBuilder::new(strip_src, plan, &sink)
-        .with_engine(EngineKind::MapReduce)
-        .with_config(EngineConfig::default().with_concurrency(concurrency))
-        .with_memory_budget(budget)
-        .with_budget_policy(BudgetPolicy::Error)
-        .run();
-    let dur = start.elapsed();
-    let rss_bytes = process_peak_rss();
-    // Reclaim the temp dir on every exit — including the error path — so a
-    // genuine engine fault degrades this point to a skipped series instead of
-    // aborting the whole sweep and leaking a dir under $TMPDIR (issue #46).
-    let _ = std::fs::remove_dir_all(&out_dir);
-    let result = match run_result {
-        Ok(r) => r,
-        Err(e) => {
-            libviprs_bench::warn_engine_skip(
-                &format!("scalability mapreduce {}x{}", src.width(), src.height()),
-                &e,
-            );
-            return None;
-        }
-    };
-    Some(EngineRun {
-        dur,
-        tracked_bytes: result.peak_memory_bytes,
-        rss_bytes,
-        tiles: result.tiles_produced,
-    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -280,6 +195,24 @@ fn to_point(
         tiles_per_second_per_mb: tps_mb,
         resource_cost: cost,
     }
+}
+
+/// Turn one child's [`RunMetrics`] into a chart point.
+///
+/// The dimensions come from the metrics rather than from the requested size, so
+/// a row is always plotted at what was actually measured — the same rule the
+/// `streaming-pdf` series already follows.
+fn point_from_metrics(engine: &str, concurrency: usize, m: &RunMetrics) -> ScalabilityPoint {
+    to_point(
+        m.width,
+        m.height,
+        engine,
+        concurrency,
+        m.wall_time,
+        m.tracked_memory_bytes,
+        m.peak_rss_bytes,
+        m.tiles_produced,
+    )
 }
 
 /// Path to the committed real-content PDF fixture (issue #30), resolved against
@@ -402,6 +335,15 @@ struct CliOpts {
     /// Where the sweep writes `scalability_results.json`. Defaults to
     /// `report/<family>/`.
     report_dir: std::path::PathBuf,
+    /// The swept image sizes. Defaults to [`SWEEP_SIZES`]; `--sizes` narrows
+    /// them so a test can drive the real binary over one or two cells in
+    /// seconds instead of the full grid up to 280 MP. Nothing in this crate
+    /// could drive this binary cheaply before, which is a large part of why
+    /// #74 survived a release.
+    sizes: Vec<(u32, u32)>,
+    /// The swept thread budgets. Empty means the default pair (1 and
+    /// num_cpus); `--concurrency` overrides it.
+    concurrency: Vec<usize>,
     /// Megapixel cap for the real-content PDF series (`--pdf-max-mp`, default
     /// [`DEFAULT_PDF_MAX_MP`]). Only meaningful on a `pdfium` build; the four
     /// gradient series always run the full sweep.
@@ -414,6 +356,8 @@ fn parse_cli() -> CliOpts {
     let mut pdf_max_mp = DEFAULT_PDF_MAX_MP;
     let mut family_name = DEFAULT_FAMILY.as_str().to_string();
     let mut report_dir: Option<std::path::PathBuf> = None;
+    let mut sizes: Vec<(u32, u32)> = SWEEP_SIZES.to_vec();
+    let mut concurrency: Vec<usize> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -447,9 +391,12 @@ fn parse_cli() -> CliOpts {
                     std::process::exit(2);
                 })));
             }
+            "--sizes" => sizes = parse_sizes(&args.next().unwrap_or_default()),
+            "--concurrency" => concurrency = parse_concurrency(&args.next().unwrap_or_default()),
             "-h" | "--help" => {
                 println!(
-                    "Usage: scalability [--family <name>] [--report-dir <dir>] [--pdf-max-mp <n>]"
+                    "Usage: scalability [--family <name>] [--report-dir <dir>] [--sizes <WxH,WxH>] \
+                     [--concurrency <n,n>] [--pdf-max-mp <n>]"
                 );
                 println!();
                 println!("Families:");
@@ -464,6 +411,10 @@ fn parse_cli() -> CliOpts {
                 println!();
                 println!("  --family <name>   Which family to sweep (default: {DEFAULT_FAMILY})");
                 println!("  --report-dir <d>  Write the sweep here instead of report/<family>/");
+                println!("  --sizes <WxH,..>  Override the swept image sizes");
+                println!(
+                    "  --concurrency <n,..>  Override the swept thread budgets (default: 1 and num_cpus)"
+                );
                 println!("  --pdf-max-mp <n>  Cap the real-content PDF series at n megapixels");
                 println!(
                     "                   (pdfium builds only; the gradient series are uncapped)."
@@ -490,12 +441,24 @@ fn parse_cli() -> CliOpts {
     CliOpts {
         family,
         report_dir,
+        sizes,
+        concurrency,
         #[cfg(feature = "pdfium")]
         pdf_max_mp,
     }
 }
 
 fn main() {
+    // Hidden per-cell child subcommand (`--single ...`). Invoked this way the
+    // process runs exactly one cell and prints its metrics as JSON; the parent
+    // sweep spawns these and reads each child's true per-run RSS via `wait4`
+    // (issues #157, #74). Not a `--single` invocation → fall through to the
+    // normal sweep. It has to come first, ahead of this binary's own argument
+    // parser, exactly as it does in `report`.
+    if let Some(code) = harness::maybe_run_single_subcommand() {
+        std::process::exit(code);
+    }
+
     let opts = parse_cli();
     #[cfg(not(feature = "pdfium"))]
     let _ = &opts;
@@ -504,30 +467,14 @@ fn main() {
     let report_dir = opts.report_dir.clone();
     fs::create_dir_all(&report_dir).unwrap();
 
+    // The binary to re-invoke per cell. Every engine's peak RSS is read off one
+    // of these children rather than off this process (issue #74).
+    let exe = harness::current_exe();
+
     // The family, not the environment, decides whether libvips is measured.
     let has_vips = family.measures_libvips() && vips_available();
 
-    // Scalability series: generate gradient rasters at progressively larger
-    // sizes. Uses 1.42:1 aspect ratio matching 43551_California_South.pdf
-    // (4608x3240 pts). The grid intentionally spans the sub-megapixel
-    // "noise" regime (where fixed setup costs dominate) through ~280 MP, so
-    // the log-log charts (rendered by tools/charts/render.mjs; `--linear`
-    // selects linear axes) show a full trend rather than a cluster of dots.
-    // Memory: monolithic peak ≈ w×h×3×1.25 bytes — capped here at ~1.7 GB so
-    // the default 4 GB Docker container still has headroom for libvips
-    // alongside.
-    let sizes: Vec<(u32, u32)> = vec![
-        (512, 360),
-        (1024, 720),
-        (2048, 1440),
-        (4096, 2880),
-        (4608, 3240),   // full California South page at 72 DPI (14.93 MP)
-        (8192, 5760),   // beyond the PDF — pure scaling (47.18 MP)
-        (10000, 7000),  // 70 MP
-        (12000, 8400),  // 100.8 MP
-        (16384, 11520), // 188.7 MP
-        (20000, 14000), // 280 MP — mono peak ≈ 1.05 GB
-    ];
+    let sizes: &[(u32, u32)] = &opts.sizes;
 
     println!("=== Engine Scalability Benchmark ({family}) ===");
     println!("Family: {family} — {}", family.summary());
@@ -554,7 +501,9 @@ fn main() {
              render (no strip-render parallelism);"
         );
         println!(
-            "    * peak RSS is a shared in-process high-water mark, not per-run — use the \
+            "    * and it is the one series still measured IN THIS PROCESS: the four gradient \
+             series each run in their own child, so their peak RSS is a true per-run figure \
+             (issue #74), while the PDF line's is a shared high-water mark — use its \
              tracked_memory_mb column for the true per-run footprint."
         );
     }
@@ -603,138 +552,70 @@ fn main() {
     // matched `VIPS_CONCURRENCY` — at both a single thread and all cores, so
     // no engine is silently pinned to a different thread count than another
     // (issue #156). The two levels are charted separately, never mixed.
+    // `--concurrency` overrides the pair; it exists for the same reason
+    // `--sizes` does.
     let ncpu = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    let concurrency_levels: Vec<usize> = if ncpu > 1 { vec![1, ncpu] } else { vec![1] };
+    let concurrency_levels: Vec<usize> = if !opts.concurrency.is_empty() {
+        opts.concurrency.clone()
+    } else if ncpu > 1 {
+        vec![1, ncpu]
+    } else {
+        vec![1]
+    };
     println!("Thread budgets: {concurrency_levels:?} (1 and num_cpus)");
     println!();
 
+    // Whether the libvips row is measured at all. The family decides; on a
+    // build with the FFI compiled in the child can measure it without a `vips`
+    // binary on PATH, so the CLI probe is only half the answer.
+    let measure_libvips = family.measures_libvips() && (cfg!(feature = "libvips") || has_vips);
+
     for &conc in &concurrency_levels {
         println!("--- thread budget: {conc} ---");
-        for &(w, h) in &sizes {
-            let src = gradient_raster(w, h);
+        for &(w, h) in sizes {
             let mp = w as f64 * h as f64 / 1_000_000.0;
             print!("[c{conc}] {w}x{h} ({mp:.1} MP): ");
 
-            // libvips: prefer in-process FFI, fall back to CLI. Both honour
-            // the matched thread budget (`concurrency_set` / VIPS_CONCURRENCY).
-            // `vips_done` is only reassigned under the `libvips` feature.
-            #[cfg_attr(not(feature = "libvips"), allow(unused_mut))]
-            let mut vips_done = !family.measures_libvips();
-            #[cfg(feature = "libvips")]
-            if family.measures_libvips() {
-                if let Some(r) =
-                    libviprs_bench::bench_libvips_inprocess(&src, TILE_SIZE, conc, "vips")
-                {
-                    print!(
-                        "vips={:.0}ms/{:.1}MB(rss)  ",
-                        r.wall_time_ms(),
-                        r.peak_rss_mb()
-                    );
-                    all_points.push(to_point(
-                        w,
-                        h,
-                        "libvips",
-                        conc,
-                        r.wall_time,
-                        r.tracked_memory_bytes,
-                        r.peak_rss_bytes,
-                        r.tiles_produced,
-                    ));
-                    vips_done = true;
+            // Every engine below is measured in its OWN child process, so the
+            // `ru_maxrss` each row reports is that child's and nobody else's
+            // (issue #74). The child picks the libvips measurement path
+            // (in-process FFI, else the `vips dzsave` CLI) exactly as the
+            // `report` binary's children do, and both honour the matched thread
+            // budget (`concurrency_set` / VIPS_CONCURRENCY).
+            //
+            // A cell that comes back empty is a skip, not an abort: the child
+            // logs the engine fault (or the missing libvips) to the inherited
+            // stderr and the sweep drops that one point (issue #46).
+            if measure_libvips && let Some(m) = measure_cell(&exe, Engine::Libvips, w, h, conc) {
+                print!(
+                    "vips={:.0}ms/{:.1}MB(rss)  ",
+                    m.wall_time_ms(),
+                    m.peak_rss_mb()
+                );
+                all_points.push(point_from_metrics("libvips", conc, &m));
+            }
+
+            for (engine, label, tag) in [
+                (Engine::Monolithic, "monolithic", "mono"),
+                (Engine::Streaming, "streaming", "stream"),
+                (Engine::MapReduce, "mapreduce", "mr"),
+            ] {
+                match measure_cell(&exe, engine, w, h, conc) {
+                    Some(m) => {
+                        print!(
+                            "{tag}={:.0}ms/{:.1}MB(trk)/{:.1}MB(rss)  ",
+                            m.wall_time_ms(),
+                            m.tracked_memory_mb(),
+                            m.peak_rss_mb(),
+                        );
+                        all_points.push(point_from_metrics(label, conc, &m));
+                    }
+                    None => print!("{tag}=skipped  "),
                 }
             }
-            if !vips_done && has_vips {
-                let png_path = write_temp_png(&src);
-                if let Some(r) = bench_libvips(&png_path, w, h, TILE_SIZE, conc, "vips") {
-                    print!(
-                        "vips={:.0}ms/{:.1}MB(rss)  ",
-                        r.wall_time_ms(),
-                        r.peak_rss_mb()
-                    );
-                    all_points.push(to_point(
-                        w,
-                        h,
-                        "libvips",
-                        conc,
-                        r.wall_time,
-                        r.tracked_memory_bytes,
-                        r.peak_rss_bytes,
-                        r.tiles_produced,
-                    ));
-                }
-                let _ = fs::remove_file(&png_path);
-            }
-
-            // Monolithic — a genuine engine fault degrades to a skipped series
-            // (the reason is logged to stderr) rather than aborting the sweep.
-            if let Some(run) = run_monolithic(&src, TILE_SIZE, conc) {
-                print!(
-                    "mono={:.0}ms/{:.1}MB(trk)  ",
-                    run.dur.as_secs_f64() * 1000.0,
-                    run.tracked_bytes as f64 / (1024.0 * 1024.0),
-                );
-                all_points.push(to_point(
-                    w,
-                    h,
-                    "monolithic",
-                    conc,
-                    run.dur,
-                    run.tracked_bytes,
-                    run.rss_bytes,
-                    run.tiles,
-                ));
-            } else {
-                print!("mono=skipped  ");
-            }
-
-            // Streaming + MapReduce share a budget chosen per-width so the
-            // tile-aligned minimum strip always fits.
-            let budget = streaming_budget_for(STREAMING_BUDGET_FLOOR, w, TILE_SIZE, 3);
-
-            // Streaming — a genuine engine fault degrades to a skipped series
-            // (the reason is logged to stderr) rather than aborting the sweep.
-            if let Some(run) = run_streaming(&src, TILE_SIZE, budget, conc) {
-                print!(
-                    "stream={:.0}ms/{:.1}MB(trk)  ",
-                    run.dur.as_secs_f64() * 1000.0,
-                    run.tracked_bytes as f64 / (1024.0 * 1024.0),
-                );
-                all_points.push(to_point(
-                    w,
-                    h,
-                    "streaming",
-                    conc,
-                    run.dur,
-                    run.tracked_bytes,
-                    run.rss_bytes,
-                    run.tiles,
-                ));
-            } else {
-                print!("stream=skipped  ");
-            }
-
-            // MapReduce
-            if let Some(run) = run_mapreduce(&src, TILE_SIZE, budget, conc) {
-                println!(
-                    "mr={:.0}ms/{:.1}MB(trk)",
-                    run.dur.as_secs_f64() * 1000.0,
-                    run.tracked_bytes as f64 / (1024.0 * 1024.0),
-                );
-                all_points.push(to_point(
-                    w,
-                    h,
-                    "mapreduce",
-                    conc,
-                    run.dur,
-                    run.tracked_bytes,
-                    run.rss_bytes,
-                    run.tiles,
-                ));
-            } else {
-                println!("mr=skipped");
-            }
+            println!();
 
             // Real-content counterpart (issue #31): rasterize the committed PDF
             // fixture to ~this width via PdfiumStripSource (streaming) and
@@ -818,8 +699,13 @@ fn main() {
     println!("=== Memory Bottleneck Analysis ===");
     println!();
 
-    // Group by size and find the largest
-    let largest = sizes.last().unwrap();
+    // Group by size and find the largest. By AREA, not by position: `--sizes`
+    // takes whatever order it is given, and the analysis below is about the
+    // biggest canvas in the sweep, not the last one that happened to be typed.
+    let largest = sizes
+        .iter()
+        .max_by_key(|(w, h)| *w as u64 * *h as u64)
+        .unwrap();
     let largest_mp = largest.0 as f64 * largest.1 as f64 / 1_000_000.0;
 
     // Monolithic bottleneck
@@ -920,7 +806,10 @@ fn main() {
     // Scaling comparison
     println!();
     println!("SCALING SUMMARY:");
-    let smallest = sizes.first().unwrap();
+    let smallest = sizes
+        .iter()
+        .min_by_key(|(w, h)| *w as u64 * *h as u64)
+        .unwrap();
     let scale_factor =
         (largest.0 as f64 * largest.1 as f64) / (smallest.0 as f64 * smallest.1 as f64);
 
