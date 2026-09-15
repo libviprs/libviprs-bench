@@ -1,0 +1,68 @@
+name: Capture tools
+
+# The guards on the capture path: the shell script's and the Python driver's.
+#
+# `tools/capture-nas.test.mjs` existed before this file and no workflow ran it.
+# It walks every command the capture sends to the measurement host and holds the
+# rule that none of them may execute outside a container, which is the one rule
+# on that machine that is absolute, and for its whole life it was a guard on a
+# path nothing took. A gate nobody runs is indistinguishable from a gate that
+# passes, so this is the job that makes it a gate.
+#
+# A new workflow **file** rather than a step in `ci.yml`, deliberately and for
+# the same reason `publish-tests.yml` and `storage-measured.yml` are: the Hook
+# Mirror guard in libviprs-tests compares `ci.yml`'s job list against
+# `tools/install-hooks.sh`, so a job added there reddens another repository until
+# it is mirrored in the same wave, and a whole new file is exempt.
+#
+# Node and Python are both on the runner image and the suite needs nothing else:
+# no dependencies, no lockfile, no network, no measurement host. `--plan` runs
+# the driver's real control flow against a recording executor, so what this
+# walks is what a capture would send rather than what a regex found in the
+# source.
+
+on:
+  push:
+    branches: ['**']
+  schedule:
+    - cron: '11 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  capture-tools:
+    name: Capture guards (node --test, unittest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The containment guard, over both the shell script and the driver's plan.
+      - name: Nothing the capture sends to the NAS runs outside a container
+        run: node --test tools/capture-nas.test.mjs
+
+      - name: The driver's own guards
+        run: python3 -m unittest discover -s tools -t tools -p 'test_capture.py' -v
+
+      # A gate that cannot fail is not a gate. This mutates the driver the way a
+      # careless edit would and asserts the guard goes red, so a walk that
+      # quietly stopped finding any commands is caught here rather than on the
+      # capture that publishes a contended number.
+      - name: The containment guard can actually fail
+        run: |
+          set -eu
+          cp tools/capture.py "$RUNNER_TEMP/capture.py.orig"
+          # Stop the one function that wraps a remote errand in a container from
+          # wrapping it. Every command the driver sends then executes on the
+          # machine itself, which is the exact thing the rule forbids and the
+          # exact thing a walk that had stopped finding commands would miss.
+          sed -i 's|    parts = \["docker run --rm"\]|    parts = [""]|' tools/capture.py
+          grep -q 'parts = \[""\]' tools/capture.py
+          if node --test --test-name-pattern 'runs outside a container' tools/capture-nas.test.mjs; then
+            cp "$RUNNER_TEMP/capture.py.orig" tools/capture.py
+            echo "::error::the guard passed on a driver whose remote commands are not containerised, so it is not gating anything"
+            exit 1
+          fi
+          cp "$RUNNER_TEMP/capture.py.orig" tools/capture.py
+          echo "the guard is red on an uncontainerised remote command, as it should be"
