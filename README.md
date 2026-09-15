@@ -330,6 +330,39 @@ Two refusals can be cleared and neither by making the problem go away.
 `--allow-dirty` records the dirt and stamps it onto every cell; a profile that
 declares tmpfs records that the run means to measure RAM.
 
+## Capturing a run and publishing it
+
+Benchmarks do not run on GitHub. A hosted runner is a shared virtual machine and
+the importer refuses a run whose typical cell was not quiet, so a number measured
+there is either turned away or, worse, admitted and wrong. Measuring happens on
+the measurement host, and one command drives the whole of it from a Mac:
+
+```bash
+python3 tools/capture.py --profile full
+python3 tools/capture.py --plan          # every command it would send, and none of them run
+```
+
+It stages clean checkouts, pushes them to the NAS with their git history, builds
+both images there through the socket-mounted driver, settles, captures, retrieves,
+checks, archives, verifies and imports, and leaves the machine as it found it.
+Nothing it causes to run on that machine runs outside a container, including the
+errands that do not feel like work, and `tools/capture-nas.test.mjs` walks
+`--plan` and holds that.
+
+Nothing reaches this repository until every gate has passed. The whole chain runs
+against a staging copy of `archive/` and `tools/publish/history.json`, so a
+contended, emulated, debug-built, unarchived, digest-broken or unpublishable
+capture leaves `git status` clean and prints every reason it was refused. What a
+successful run writes is the sealed document under `archive/<family>/` and the
+history entry derived from it; `--commit` commits exactly those paths.
+
+`tools/capture-nas.sh` is the same capture without the publishing half, and is
+still the way to get two documents out of the machine and look at them.
+
+libviprs-org reads `tools/publish/history.json` and `archive/` out of this
+repository at a revision it pins in `benchmarks/BENCH_REV`, and regenerates its
+page from them. Nothing is pushed to the site from here.
+
 ## Cargo features
 
 | Feature | Default | Description |
