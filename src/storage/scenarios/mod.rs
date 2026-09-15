@@ -363,6 +363,19 @@ pub trait Scenario: Send + Sync {
         self.reps(profile)
     }
 
+    /// Whether this scenario asks for more threads than the host has cores, on
+    /// a host with `ncpu` of them.
+    ///
+    /// `None` on a scenario that does not name a thread budget, which is every
+    /// one of them but the concurrency ladder. It is a fact about the rung and
+    /// not about the outcome: a rung that ran and a rung that was declined both
+    /// answer the same thing here, because what it says is that the number
+    /// would not be comparable with the same rung on a host that has the cores
+    /// for it.
+    fn oversubscribed(&self, _ncpu: usize) -> Option<bool> {
+        None
+    }
+
     /// The metric the row is ranked on.
     fn primary(&self) -> MetricSpec;
 
