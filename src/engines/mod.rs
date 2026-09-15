@@ -378,6 +378,12 @@ pub fn rows_for(
 /// the old sweep published as three different engines' memory.
 pub fn run_sweep(profile: Profile) -> Document {
     let exe = harness::current_exe();
+    // First, and it has to stay first: see the note on `run_sweep` in
+    // `storage`. This family is the reason the field exists, because it is the
+    // one whose job is to saturate the cores it was given, and a load average
+    // taken while it does that says nothing about whether anyone else was
+    // there (#100).
+    let starting_load = MachineLoad::sample();
     let started = crate::storage::now_iso();
     let mut doc = Document::new_for(
         FAMILY,
@@ -386,6 +392,7 @@ pub fn run_sweep(profile: Profile) -> Document {
         started,
         measurement(profile),
     );
+    doc.starting_load = Some(starting_load);
     let timer = Some(stats::probe_timer());
     let reps = profile.reps();
     let warmup = profile.warmup();

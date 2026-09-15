@@ -62,7 +62,7 @@ pub const FAMILY: &str = "libviprs-storage";
 pub const RUNNER: &str = "libviprs-storage";
 
 /// Every top-level key, in order.
-pub const DOCUMENT_FIELDS: [&str; 14] = [
+pub const DOCUMENT_FIELDS: [&str; 15] = [
     "schemaVersion",
     "family",
     "runner",
@@ -70,6 +70,7 @@ pub const DOCUMENT_FIELDS: [&str; 14] = [
     "startedAt",
     "finishedAt",
     "runId",
+    "startingLoad",
     "measurement",
     "provenance",
     "cells",
@@ -752,6 +753,29 @@ pub struct Document {
     /// the provenance it refuses to guess. K1.3 fills it.
     #[serde(rename = "runId")]
     pub run_id: Option<String>,
+    /// What the machine was doing before this sweep measured anything.
+    ///
+    /// Sampled by the runner as its first act, so nothing in it is ours: at
+    /// that instant this process has started no cell and spawned no child. That
+    /// is the whole point of the field. A cell's own `machineLoad` cannot
+    /// separate our work from anyone else's, because a one-minute load average
+    /// has a one-minute memory and a sweep spends every second of it working:
+    /// the engines family flagged 108 of 558 cells as loud on a box nobody else
+    /// was on, while the storage family flagged 0 of 539 back to back on the
+    /// same machine, and the difference between them is how many threads each
+    /// one asked for (#100).
+    ///
+    /// `Option` because the archive keeps documents forever and every document
+    /// written before #100 has no such key. Three states, and the importer keeps
+    /// all three apart. The key ABSENT is a run that predates the field, and it
+    /// keeps the rule it was published under. The key present and NULL is this
+    /// `None`, which serde writes out rather than dropping, and it is a runner
+    /// that skipped its own first act: refused, or deleting one line of
+    /// `run_sweep` would be a way to turn the gate off. The key present holding
+    /// a `MachineLoad::unknown()` is "I looked and the platform would not tell
+    /// me", which is an empty reading and refused as one.
+    #[serde(rename = "startingLoad")]
+    pub starting_load: Option<MachineLoad>,
     pub measurement: Measurement,
     /// K1.3's slot: library and harness commits, emulation, filesystem,
     /// cgroups, toolchain, dependencies.
@@ -786,6 +810,10 @@ impl Document {
             started_at,
             finished_at: None,
             run_id: None,
+            // Left empty here on purpose. A document that never went through a
+            // sweep must not be able to claim it watched the machine, and the
+            // runner is the only thing that can honestly fill this.
+            starting_load: None,
             measurement,
             provenance: None,
             cells: Vec::new(),

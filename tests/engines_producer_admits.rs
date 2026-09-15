@@ -565,3 +565,75 @@ fn an_engines_run_that_collides_is_refused_rather_than_overwritten() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The sweep looks at the machine before it measures anything, and the document
+/// carries what it saw.
+///
+/// This is the reading the publish gate turns on (#100). A cell's own
+/// `machineLoad` cannot say whether anyone else was on the box, because a
+/// one-minute load average has a one-minute memory and this family spends every
+/// second of it saturating the cores it was given. `startingLoad` is taken
+/// before the first child is spawned, so at that instant none of the load is
+/// ours.
+///
+/// Goes red against: a runner that never samples, which leaves the field null
+/// and earns the importer's refusal; and against a `skip_serializing_if` that
+/// drops the key, which would make an unsampled run indistinguishable from one
+/// written before the field existed, and those two are judged by different
+/// rules.
+///
+/// What it cannot see is a sample taken at the END of the sweep. That is held by
+/// the call site instead: the sample is taken before `Document::new_for` runs,
+/// so it necessarily precedes every cell the document holds.
+#[test]
+fn the_sweep_records_the_machine_before_it_measures_anything() {
+    let doc = document();
+    let starting = &doc["startingLoad"];
+    assert!(
+        starting.is_object(),
+        "the sweep published `startingLoad: {starting}`, so nothing looked at the machine \
+         before it started measuring"
+    );
+
+    // `available_parallelism` answers on every platform this crate builds for,
+    // so the core count is not allowed to be a platform excuse.
+    assert!(
+        starting["cores"].as_u64().is_some_and(|n| n > 0),
+        "the core count is {} and a zero-core host is a read that failed",
+        starting["cores"]
+    );
+
+    // Both arms assert. A `#[cfg]` that asserts on one platform and returns on
+    // the other is a skip wearing a pass's colour, and the whole point of the
+    // field is that "I could not read it" is a refusal rather than a shrug.
+    if cfg!(target_os = "linux") {
+        let load = starting["loadAvg1m"]
+            .as_f64()
+            .expect("linux has /proc/loadavg, so the load is a number");
+        let contention = starting["contentionPerCore"]
+            .as_f64()
+            .expect("the contention is derived from the load and the cores");
+        let cores = starting["cores"].as_u64().expect("the cores are a number") as f64;
+        assert!(load >= 0.0 && load.is_finite(), "load {load}");
+        assert!(
+            (contention - load / cores).abs() < 1e-9,
+            "the contention must be the load over the cores: {contention} against {load}/{cores}"
+        );
+        assert_eq!(
+            starting["quiet"].as_bool(),
+            Some(contention < 1.0),
+            "the verdict has to follow from the number beside it, or the importer refuses the run"
+        );
+    } else {
+        assert!(
+            starting["loadAvg1m"].is_null(),
+            "this platform has no /proc/loadavg, so the load is null: an unknown load must not \
+             be published as a number the gate would then read as quiet"
+        );
+        assert!(
+            starting["quiet"].is_null(),
+            "unknown is not quiet, got {}",
+            starting["quiet"]
+        );
+    }
+}
