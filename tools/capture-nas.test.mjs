@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -73,4 +74,145 @@ test('the scratch tree is removed by mounting its parent, not itself', () => {
   // Docker creates a missing bind-mount source as root, so mounting the scratch
   // root is what left it root-owned and unwritable for the next run.
   assert.match(script, /-v \\?\$HOME\/workspace:\/ws/, 'the parent is mounted, not the scratch root');
+});
+
+// ---------------------------------------------------------------------------
+// The same rule, over the Python driver.
+//
+// `tools/capture.py` is the driver the shell script became, and the rule does
+// not care which language sends the command. Walking a Python source file with
+// a regex would be the fragile way to do this, so the driver has a `--plan`
+// mode that runs every line of its own orchestration against a recording
+// executor and prints the commands it WOULD send. That is stronger than reading
+// the source: the plan is produced by the code path a real run takes, so a
+// command added inside a branch is in it and a command a refactor moved is
+// still in it.
+//
+// The plan is also the completeness control. A guard that walks an empty list
+// is green for the same reason a clean script is, so the labels below are
+// asserted to be present: if the plan stops containing the capture, the archive
+// or the cleanup, this fails rather than passing on a walk of nothing.
+
+/** The driver's own account of every command it would send. */
+function plan() {
+  const proc = spawnSync(
+    'python3',
+    [join(here, 'capture.py'), '--plan', '--name', 'guard-fixture', '--json', '-'],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  // Never a skip. A host without python3 cannot check this rule, and a check
+  // that cannot run has to be the same colour as a check that failed: a
+  // capability skip is the exact shape that ships as a pass.
+  assert.equal(
+    proc.status,
+    0,
+    `tools/capture.py --plan did not run, so nothing below checked anything:\n${proc.stderr}`,
+  );
+  const started = proc.stdout.indexOf('{');
+  const summary = JSON.parse(proc.stdout.slice(started));
+  assert.ok(Array.isArray(summary.plan), '--plan emits the command list');
+  return summary.plan;
+}
+
+test('the driver sends nothing to the NAS that runs outside a container', () => {
+  const steps = plan().filter((s) => s.where === 'nas');
+  assert.ok(steps.length >= 15, `expected a plan with the whole run in it, got ${steps.length} steps`);
+  const offenders = steps.filter(
+    (s) => !s.remote.includes('docker') && !SCRATCH_MKDIR.test(s.remote),
+  );
+  assert.deepEqual(
+    offenders.map((s) => `${s.label}: ${s.remote}`),
+    [],
+    'these would run on the machine itself rather than in a container',
+  );
+});
+
+test('the driver plans the whole run, so the walk above is not a walk of nothing', () => {
+  const labels = plan().map((s) => s.label);
+  for (const needed of [
+    'stage.clone.libviprs-bench',
+    'push.untar.guard-fixture',
+    'driver.image',
+    'build.storage',
+    'build.engines',
+    'settle.cores',
+    'capture.storage',
+    'retrieve.document.storage',
+    'check.storage',
+    'archive.storage',
+    'verify.storage',
+    'import.storage',
+    'cleanup.images',
+    'cleanup.scratch',
+    'cleanup.list',
+  ]) {
+    assert.ok(labels.includes(needed), `the plan has no ${needed} step; it holds ${labels.join(', ')}`);
+  }
+});
+
+test('the driver builds the driver image rather than assuming it', () => {
+  // A local image on no registry. Assume it and docker goes to a pull that
+  // cannot succeed and reports an authentication problem, which is the wrong
+  // trail entirely; the script's own teardown is what exposed it.
+  const build = plan().find((s) => s.label === 'driver.image');
+  assert.match(build.remote, /docker build .* -t nas-driver:latest/);
+  assert.match(build.remote, /docker-buildx-plugin/, 'on Docker 29 a CLI without buildx exits 125');
+});
+
+test('the driver pushes the tree with .git and without target', () => {
+  const tar = plan().find((s) => s.label === 'stage.tar.tree');
+  assert.ok(tar, 'the tree is tarred for the push');
+  assert.ok(
+    !tar.argv.some((a) => a.includes('--exclude=.git')),
+    'the benchmark tree is pushed with its git history, or provenance resolves no commit',
+  );
+  assert.ok(tar.argv.includes('--exclude=target'), 'build output is not worth pushing');
+});
+
+test('the archive staging is pushed outside the git checkout', () => {
+  // Copying the repository's archive into the pushed clone would make that tree
+  // dirty, and `provenance.dirty` is a refusal: the staging that exists to file
+  // the run would refuse it.
+  const steps = plan().filter((s) => s.where === 'nas');
+  const archivePush = steps.find((s) => s.label === 'push.untar.archive');
+  assert.ok(archivePush, 'the archive goes up as its own tree');
+  assert.match(archivePush.remote, /nas-work\/guard-fixture\/archive:\/dest/);
+});
+
+test('the aggregator is given the family directory, not its parent', () => {
+  // `archive_text` writes `<root>/<runId>.json` and `<root>/index.json` into
+  // exactly what it is handed, so `--root archive` files an engines run beside
+  // the storage ones under an index that is not theirs.
+  for (const family of ['storage', 'engines']) {
+    const step = plan().find((s) => s.label === `archive.${family}`);
+    assert.match(step.remote, new RegExp(`--root /archive/${family}(\\s|$)`));
+  }
+});
+
+test('retrieval is a container cat, never scp', () => {
+  const steps = plan();
+  assert.ok(
+    !steps.some((s) => JSON.stringify(s).includes('scp')),
+    'scp fails on that host with "No such file or directory" on a file that exists',
+  );
+  const get = steps.find((s) => s.label === 'retrieve.document.storage');
+  assert.match(get.remote, /docker run .*cat \/out\/storage-x86\.json/);
+});
+
+test('the scratch tree is removed by mounting its parent, not itself', () => {
+  const step = plan().find((s) => s.label === 'cleanup.scratch');
+  assert.match(step.remote, /-v \$HOME\/workspace:\/ws/, 'the parent is mounted, not the scratch root');
+  assert.match(step.remote, /rm -rf \/ws\/nas-work\/guard-fixture/);
+});
+
+test('every local command is git, tar, or a container with its platform spelled out', () => {
+  // `DOCKER_DEFAULT_PLATFORM` has been both values on this Mac, and it is
+  // inherited by a shell started before it changed. An unpinned `docker run`
+  // here is whatever that variable happened to be.
+  const locals = plan().filter((s) => s.where === 'local');
+  const offenders = locals.filter((s) => {
+    if (['git', 'tar'].includes(s.argv[0])) return false;
+    return !(s.argv[0] === 'docker' && s.argv.includes('--platform') && s.argv.includes('linux/arm64'));
+  });
+  assert.deepEqual(offenders.map((s) => s.label), [], 'these run on the host toolchain unpinned');
 });
