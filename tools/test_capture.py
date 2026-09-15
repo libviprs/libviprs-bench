@@ -333,6 +333,22 @@ class DriverWiring(unittest.TestCase):
         for needed in ("cleanup.images", "cleanup.scratch", "cleanup.list"):
             self.assertIn(needed, labels)
 
+    def test_cleanup_can_name_the_build_container_it_has_to_stop(self):
+        # Red against an unnamed `docker run`. Interrupting the driver does not
+        # stop the build: SIGINT reaches the Python process, subprocess.run
+        # raises, and the ssh child and everything downstream keep going, so the
+        # machine compiles for another half hour with nobody attached. I watched
+        # that happen. Cleanup can only remove a container it can name.
+        recorder = Recorder()
+        self.drive(recorder)
+        sent = {s.label: (s.remote or "") for s in recorder.steps}
+        for family in ("storage", "engines"):
+            expected = f"viprs-build-{family}-unit-test"
+            self.assertIn(expected, sent[f"build.{family}"], "the build container is named")
+            self.assertIn(
+                f"docker rm -f {expected}", sent["cleanup.images"], "and cleanup removes it"
+            )
+
     def test_a_hard_failure_still_writes_the_summary(self):
         # Red against letting the exception out with nothing written. The first
         # end-to-end run died fifty minutes in and left a traceback and no
