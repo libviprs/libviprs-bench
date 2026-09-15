@@ -83,7 +83,7 @@ use libviprs::sink_pmtiles::PmTilesSink;
 use libviprs::{EngineBuilder, FsSink, PixelFormat, Raster};
 
 use cells::{Backend, Cell, Profile, Regime, SEED, Source};
-use document::{CellReport, Document, DocumentCell, InvariantBlock, MachineLoad};
+use document::{CellLabels, CellReport, Document, DocumentCell, InvariantBlock, MachineLoad};
 use scenarios::{
     Coordinates, Invariants, Isolation, MetricSpec, Outcome, ReaderFactory, RepFacts, Scenario,
     ScenarioContext, ScenarioRun, Skip, TileReader, Unit,
@@ -904,8 +904,7 @@ pub fn rows_from_wire(
     let mut rows = Vec::new();
     if wire.series.is_empty() {
         rows.push(DocumentCell::from_report(CellReport {
-            backend,
-            cell,
+            labels: CellLabels::storage(backend, cell),
             scenario: &scenario.name(),
             metric: scenario.primary(),
             isolation: scenario.isolation(),
@@ -924,8 +923,7 @@ pub fn rows_from_wire(
     }
     for series in &wire.series {
         rows.push(DocumentCell::from_report(CellReport {
-            backend,
-            cell,
+            labels: CellLabels::storage(backend, cell),
             scenario: &scenario.name(),
             metric: MetricSpec {
                 name: leak(&series.metric),
@@ -958,6 +956,9 @@ fn parse_unit(s: &str) -> Unit {
         "ms" => Unit::Milliseconds,
         "us" => Unit::Microseconds,
         "1/s" => Unit::PerSecond,
+        "MB" => Unit::Megabytes,
+        "1/s/MB" => Unit::PerSecondPerMegabyte,
+        "MB*s/tile" => Unit::MegabyteSecondsPerTile,
         "bytes" => Unit::Bytes,
         "ratio" => Unit::Ratio,
         _ => Unit::Count,
@@ -1085,7 +1086,7 @@ pub fn run_sweep(profile: Profile) -> Document {
                             // From the observation, never from the cell. A
                             // constant `true` here is the exact failure
                             // `attest` exists to prevent.
-                            row.storage_attested = verdict;
+                            row.attested = verdict;
                             doc.push(row);
                         }
                     }
@@ -1104,6 +1105,14 @@ pub fn run_sweep(profile: Profile) -> Document {
     doc.replicate = scenarios::replicate::block_for(&doc, profile);
     doc.finished_at = Some(now_iso());
     doc.provenance = Some(sweep_provenance(profile, &doc));
+    // The dirt travels with every number or the run is refused for the rule
+    // `--allow-dirty` exists to satisfy. Nothing filled this until #75.
+    doc.stamp_dirty_from_provenance();
+    // After the provenance, because the id is derived from it. The aggregator
+    // derives the same id from the same fields when it files the run; the
+    // document carrying it means a reader who never runs the aggregator can
+    // still name the run (#75).
+    doc.stamp_run_id();
     doc
 }
 
@@ -1113,7 +1122,7 @@ pub fn run_sweep(profile: Profile) -> Document {
 /// `Document::new` leaves this `None` and the aggregator refuses a document
 /// without it, which is the correct refusal and was, until this existed, one the
 /// producer earned on every run. Everything in the block is observed:
-/// `capture_for_storage` probes emulation, the scratch filesystem, the cgroup
+/// `capture_for_document` probes emulation, the scratch filesystem, the cgroup
 /// ceilings and the resolved dependency graph, and `build.rs` stamped the two
 /// trees' commits at compile time.
 ///
@@ -1122,8 +1131,8 @@ pub fn run_sweep(profile: Profile) -> Document {
 /// still says `"all"`, so the names are written out.
 fn sweep_provenance(profile: Profile, doc: &Document) -> serde_json::Value {
     let scratch = std::env::temp_dir().join("libviprs-storage-provenance");
-    let provenance = crate::provenance::Provenance::capture_for_storage(&scratch);
-    for warning in provenance.storage_provenance_warnings() {
+    let provenance = crate::provenance::Provenance::capture_for_document(&scratch);
+    for warning in provenance.document_provenance_warnings() {
         eprintln!("{warning}");
     }
     let allow_dirty = std::env::var("STORAGE_ALLOW_DIRTY").is_ok();
@@ -1143,7 +1152,7 @@ fn sweep_provenance(profile: Profile, doc: &Document) -> serde_json::Value {
         seen.dedup();
         seen
     };
-    provenance.to_storage_block(
+    provenance.to_document_block(
         &serde_json::json!({
             "argv": std::env::args().collect::<Vec<_>>(),
             "command": "storage",

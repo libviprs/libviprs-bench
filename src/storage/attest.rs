@@ -113,7 +113,7 @@ pub struct EquivalenceSample {
 /// declaring agreement. Sixty-four is what the plan names, and a smaller sample
 /// is refused rather than scaled down, because a cell that sampled four
 /// coordinates and a cell that sampled sixty-four would otherwise carry the
-/// same `storageAttested: true` and mean different things.
+/// same `attested: true` and mean different things.
 pub const MIN_EQUIVALENCE_SAMPLE: u32 = 64;
 
 /// The verdict.
@@ -136,7 +136,7 @@ pub enum Attestation {
 }
 
 impl Attestation {
-    /// Whether the cell may carry `storageAttested: true`.
+    /// Whether the cell may carry `attested: true`.
     pub fn is_attested(&self) -> bool {
         matches!(self, Attestation::Attested { .. })
     }

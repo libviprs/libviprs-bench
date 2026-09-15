@@ -55,7 +55,12 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<u8, String> {
     let mut mode: Option<&str> = None;
     let mut document: Option<PathBuf> = None;
-    let mut root = PathBuf::from(archive::ARCHIVE_DIR);
+    // `None` until `--root` says otherwise, and then derived from the
+    // document's own `family`. A flat default would file an `engines` document
+    // under `archive/storage`, where the next `storage` run started in the same
+    // second against the same commit would collide with it on a run id neither
+    // is wrong about.
+    let mut root: Option<PathBuf> = None;
     let mut scratch = std::env::temp_dir();
 
     let mut i = 0;
@@ -87,7 +92,9 @@ fn run(args: &[String]) -> Result<u8, String> {
             }
             "--root" => {
                 i += 1;
-                root = PathBuf::from(args.get(i).ok_or("--root needs a directory")?);
+                root = Some(PathBuf::from(
+                    args.get(i).ok_or("--root needs a directory")?,
+                ));
             }
             "--scratch" => {
                 i += 1;
@@ -105,7 +112,7 @@ fn run(args: &[String]) -> Result<u8, String> {
     match mode {
         Some("provenance") => provenance(&scratch),
         Some("check") => check(&document.expect("parsed with the mode")),
-        Some("archive") => do_archive(&document.expect("parsed with the mode"), &root),
+        Some("archive") => do_archive(&document.expect("parsed with the mode"), root.as_deref()),
         Some("verify") => verify(&document.expect("parsed with the mode")),
         _ => {
             print_usage();
@@ -154,9 +161,20 @@ fn check(path: &Path) -> Result<u8, String> {
 }
 
 /// Admit, seal and file.
-fn do_archive(path: &Path, root: &Path) -> Result<u8, String> {
+///
+/// `root` is `None` unless `--root` said otherwise, and then the family the
+/// document declares decides the directory. A family this build has never heard
+/// of still gets a directory of its own rather than the storage one.
+fn do_archive(path: &Path, root: Option<&Path>) -> Result<u8, String> {
     let text = read_document(path)?;
-    match archive::archive_text(&text, root) {
+    let root = match root {
+        Some(root) => root.to_path_buf(),
+        None => archive::dir_for_document(
+            &integrity::parse_document(&text)
+                .map_err(|err| format!("{}: {err}", path.display()))?,
+        ),
+    };
+    match archive::archive_text(&text, &root) {
         Ok(entry) if entry.written => {
             println!(
                 "archived {} as {} ({})",
@@ -222,9 +240,9 @@ fn verify(path: &Path) -> Result<u8, String> {
 fn provenance(scratch: &Path) -> Result<u8, String> {
     std::fs::create_dir_all(scratch)
         .map_err(|err| format!("{} could not be created: {err}", scratch.display()))?;
-    let provenance = Provenance::capture_for_storage(scratch);
-    let warnings = provenance.storage_provenance_warnings();
-    let block = provenance.to_storage_block(
+    let provenance = Provenance::capture_for_document(scratch);
+    let warnings = provenance.document_provenance_warnings();
+    let block = provenance.to_document_block(
         &json!({
             "argv": std::env::args().collect::<Vec<_>>(),
             "command": "provenance",

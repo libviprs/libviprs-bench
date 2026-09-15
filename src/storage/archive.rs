@@ -35,10 +35,46 @@ use serde_json::{Map, Value, json};
 use crate::sha256::sha256_hex;
 use crate::storage::integrity::{self, CanonicalError, Digests};
 
+/// Where archived runs live, relative to the crate root. One directory per
+/// family under it.
+pub const ARCHIVE_ROOT: &str = "archive";
 /// Where archived storage runs live, relative to the crate root.
 pub const ARCHIVE_DIR: &str = "archive/storage";
-/// The index file inside [`ARCHIVE_DIR`].
+/// The index file inside a family's archive directory.
 pub const INDEX_FILE: &str = "index.json";
+
+/// The archive directory for a family name.
+///
+/// One directory and one index per family, never a shared one. Two families
+/// derive their run ids the same way from the same fields, so a `storage` and
+/// an `engines` sweep started in the same second against the same commit on the
+/// same host derive the *same id*, and in one directory the second would be
+/// reported as a collision with the first: "two different runs derived the same
+/// id, which means the id is missing a field that distinguishes them". Adding
+/// the family to the id would be the other fix and is the wrong one, because
+/// the id is what a page keys an era on and a family is not part of an era.
+///
+/// An unknown family gets its own directory under its own name rather than
+/// falling into `storage`'s: a document nobody has taught this function about
+/// must not be filed beside documents that mean something else.
+pub fn dir_for_family(family: &str) -> PathBuf {
+    let leaf = family.strip_prefix("libviprs-").unwrap_or(family);
+    let leaf: String = leaf
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    Path::new(ARCHIVE_ROOT).join(if leaf.is_empty() {
+        "unknown".to_string()
+    } else {
+        leaf
+    })
+}
+
+/// The archive directory a document belongs in, read from the document's own
+/// `family`.
+pub fn dir_for_document(doc: &Value) -> PathBuf {
+    dir_for_family(non_empty_str(doc, "family").unwrap_or("unknown"))
+}
 
 /// One reason a document may not be archived.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -457,15 +493,15 @@ fn check_cells(doc: &Value, refusals: &mut Vec<Refusal>) {
     for (i, cell) in cells.iter().enumerate() {
         let outcome = cell.get("outcome").and_then(|v| v.as_str()).unwrap_or("");
         if outcome == "ok" {
-            if cell.get("storageAttested").and_then(Value::as_bool) != Some(true) {
+            if cell.get("attested").and_then(Value::as_bool) != Some(true) {
                 refusals.push(refuse(
                     "unattested-cell",
                     format!(
-                        "{} claims outcome ok and storageAttested is {}; an ok cell that was \
-                         never observed to have measured the backend it names is a label, not \
-                         a measurement",
+                        "{} claims outcome ok and attested is {}; an ok cell that was never \
+                         observed to have produced the artefact it names is a label, not a \
+                         measurement",
                         cell_name(i, cell),
-                        describe(cell.get("storageAttested"))
+                        describe(cell.get("attested"))
                     ),
                 ));
             }

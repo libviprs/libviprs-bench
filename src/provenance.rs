@@ -138,7 +138,7 @@ pub struct Provenance {
     /// The resolved dependency graph, `{name: {version, source, checksum}}`.
     ///
     /// Empty from [`Provenance::capture`] and filled only by
-    /// [`Provenance::capture_for_storage`]. That split is deliberate: this is a
+    /// [`Provenance::capture_for_document`]. That split is deliberate: this is a
     /// few hundred entries and `report/benchmark_history.json` appends one
     /// provenance per snapshot forever, so filling it on the everyday path
     /// would grow the history file by an order of magnitude to record the same
@@ -289,7 +289,7 @@ impl Provenance {
     /// Capture everything, including the axes a storage sweep needs and the
     /// everyday path leaves out: the filesystem under `scratch_dir` and the
     /// resolved dependency graph.
-    pub fn capture_for_storage(scratch_dir: &Path) -> Provenance {
+    pub fn capture_for_document(scratch_dir: &Path) -> Provenance {
         Provenance {
             filesystem: Some(FilesystemInfo::of(scratch_dir)),
             dependencies: locked_dependencies(),
@@ -1063,8 +1063,13 @@ pub fn locked_dependencies() -> BTreeMap<String, LockedDependency> {
 }
 
 impl Provenance {
-    /// The `provenance` block of a storage document, in the shape
+    /// The `provenance` block of an archivable document, in the shape
     /// `SUITE-PLAN.md` §5.4 names and `storage::archive::admit` reads.
+    ///
+    /// Family-independent, and that is the point rather than an accident: both
+    /// families are refused by the same rules over the same field names, so
+    /// there is one function producing them. Nothing here knows which sweep is
+    /// asking (#75).
     ///
     /// `invocation` comes from the driver rather than from here, because the
     /// argv, the working directory and the defaults that were resolved are
@@ -1076,7 +1081,7 @@ impl Provenance {
     /// different documents with different digests, and the cross-language
     /// digest test K2.2 will pin cannot survive a field that Rust drops and
     /// JavaScript writes.
-    pub fn to_storage_block(&self, invocation: &Value, allow_dirty: bool) -> Value {
+    pub fn to_document_block(&self, invocation: &Value, allow_dirty: bool) -> Value {
         json!({
             "library": {
                 "name": "libviprs",
@@ -1135,13 +1140,13 @@ impl Provenance {
         })
     }
 
-    /// The storage-specific warnings, for stderr before a sweep starts rather
+    /// The archivability warnings, for stderr before a sweep starts rather
     /// than as a refusal forty minutes after it finishes.
     ///
     /// Every one of these is also a refusal in `storage::archive::admit`. Saying
     /// it twice is the point: the refusal is what keeps the archive honest, and
     /// the warning is what stops somebody burning an afternoon to earn it.
-    pub fn storage_provenance_warnings(&self) -> Vec<String> {
+    pub fn document_provenance_warnings(&self) -> Vec<String> {
         let mut warnings = Vec::new();
         match self.emulation.as_ref().map(|e| e.emulated) {
             Some(EmulationVerdict::Native) => {}

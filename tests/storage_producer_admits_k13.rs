@@ -131,7 +131,7 @@ fn the_sweep_writes_a_document_its_own_aggregator_accepts() {
 /// RED against an attestation that does not look.
 ///
 /// The reviewer's warning was that the likely shortcut for all this is to stamp
-/// `storageAttested: true` and move on, and a mutation row proved my first
+/// `attested: true` and move on, and a mutation row proved my first
 /// attempt at guarding it was worthless: stamping `Some(true)` in `run_sweep`
 /// left every assertion I had written green. It had to, and the reason is worth
 /// recording rather than hiding. In the `ci` profile every cell is legitimately

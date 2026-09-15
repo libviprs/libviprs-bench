@@ -26,7 +26,7 @@ use libviprs_bench::storage::attest::{
 };
 use libviprs_bench::storage::cells::{Backend, Cell, Profile, Source};
 use libviprs_bench::storage::document::{
-    CellReport, Document, DocumentCell, InvariantBlock, MachineLoad,
+    CellLabels, CellReport, Document, DocumentCell, InvariantBlock, MachineLoad,
 };
 use libviprs_bench::storage::integrity::{self, CanonicalError};
 use libviprs_bench::storage::scenarios::{Direction, Isolation, MetricSpec, Outcome, Unit, Warmup};
@@ -70,12 +70,12 @@ fn fixture_cell(backend: &str, scale: u64) -> DocumentCell {
     // Attested because the fixture stands for a cell that WAS observed. Nothing
     // in the product sets this from a label; `run_sweep` sets it from
     // `attest_artefacts`, and the tests that matter drive that end to end.
-    cell.storage_attested = Some(true);
+    cell.attested = Some(true);
     cell.dirty = Some(false);
     cell
 }
 
-/// The provenance block, shaped as `Provenance::to_storage_block` shapes it, so
+/// The provenance block, shaped as `Provenance::to_document_block` shapes it, so
 /// the refusal tests below poke at the same keys the producer writes.
 fn fixture_provenance(doc: &Document) -> Value {
     json!({
@@ -138,11 +138,13 @@ fn sample_cell(backend: &str, scale: u64) -> DocumentCell {
     let samples = vec![10.0, 11.0, 12.0];
     let reps = samples.len() as u32;
     DocumentCell::from_report(CellReport {
-        backend: match backend {
-            "pmtiles" => Backend::PmTiles,
-            _ => Backend::Directory,
-        },
-        cell: Cell::new(2048, 2048, 256, Source::Gradient, scale as u32),
+        labels: CellLabels::storage(
+            match backend {
+                "pmtiles" => Backend::PmTiles,
+                _ => Backend::Directory,
+            },
+            Cell::new(2048, 2048, 256, Source::Gradient, scale as u32),
+        ),
         scenario: "read_random",
         metric: MetricSpec {
             name: "p50",
@@ -566,17 +568,17 @@ fn storage_attestation_is_observed_not_asserted() {
     };
     assert!(
         !attest(Regime::Leaves, &spilled, &too_few).is_attested(),
-        "eight coordinates and sixty-four must not both mean storageAttested: true"
+        "eight coordinates and sixty-four must not both mean attested: true"
     );
 }
 
-/// RED against an aggregator that treats the cell's `storageAttested` as
+/// RED against an aggregator that treats the cell's `attested` as
 /// optional, which would let an unobserved cell into the archive wearing an
 /// `ok`.
 #[test]
 fn an_ok_cell_without_attestation_is_refused() {
     let mut doc = clean_document();
-    set(&mut doc["cells"][0], "storageAttested", json!(false));
+    set(&mut doc["cells"][0], "attested", json!(false));
     assert!(
         codes(&doc).contains(&"unattested-cell"),
         "{:?}",
@@ -584,7 +586,7 @@ fn an_ok_cell_without_attestation_is_refused() {
     );
 
     let mut absent = clean_document();
-    remove(&mut absent["cells"][0], "storageAttested");
+    remove(&mut absent["cells"][0], "attested");
     assert!(
         codes(&absent).contains(&"unattested-cell"),
         "{:?}",
@@ -594,7 +596,7 @@ fn an_ok_cell_without_attestation_is_refused() {
     // A cell that failed is allowed to be unattested, but it has to say why.
     let mut failed = clean_document();
     set(&mut failed["cells"][0], "outcome", json!("error"));
-    set(&mut failed["cells"][0], "storageAttested", json!(false));
+    set(&mut failed["cells"][0], "attested", json!(false));
     assert!(
         codes(&failed).contains(&"outcome-without-reason"),
         "{:?}",
@@ -1169,8 +1171,8 @@ fn a_core_that_is_not_at_main_warns_and_is_still_archivable() {
         provenance.trees.library.main_relation = relation;
         provenance.trees.library.commits_behind_main = behind;
         (
-            provenance.storage_provenance_warnings(),
-            provenance.to_storage_block(&json!({"argv": []}), false),
+            provenance.document_provenance_warnings(),
+            provenance.to_document_block(&json!({"argv": []}), false),
         )
     };
 
@@ -1338,7 +1340,7 @@ fn the_toolchain_block_is_read_from_the_build_not_declared() {
 #[test]
 fn the_dependency_graph_names_the_measured_library() {
     let dir = scratch("dependencies");
-    let provenance = Provenance::capture_for_storage(&dir);
+    let provenance = Provenance::capture_for_document(&dir);
     assert!(
         provenance.dependencies.len() > 10,
         "the resolved graph should have the whole tree in it, it has {}",
@@ -1363,7 +1365,7 @@ fn the_dependency_graph_names_the_measured_library() {
     );
 
     // The block the aggregator actually reads has to carry all of it.
-    let block = provenance.to_storage_block(&json!({"argv": []}), false);
+    let block = provenance.to_document_block(&json!({"argv": []}), false);
     assert!(block["dependencies"]["libviprs"].is_object());
     assert!(block["node"]["debugAssertions"].is_boolean());
     assert!(block["filesystem"]["fsType"].is_string());
