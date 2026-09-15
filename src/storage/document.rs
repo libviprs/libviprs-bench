@@ -539,10 +539,10 @@ impl DocumentCell {
                 report.min_reps
             ));
         }
-        if let Some(cov) = summary.as_ref().and_then(|s| s.cov) {
-            if cov > stats::COV_LOW_CONFIDENCE {
-                reasons.push(format!("cov {cov:.3} above {}", stats::COV_LOW_CONFIDENCE));
-            }
+        if let Some(cov) = summary.as_ref().and_then(|s| s.cov)
+            && cov > stats::COV_LOW_CONFIDENCE
+        {
+            reasons.push(format!("cov {cov:.3} above {}", stats::COV_LOW_CONFIDENCE));
         }
         if report.machine_load.quiet != Some(true) {
             reasons.push(match report.machine_load.quiet {

@@ -162,9 +162,15 @@ fn normalize(text: &str) -> String {
 /// refuses the phrases the stale in-memory-sink story is written in.
 ///
 /// What this test can reach is this repository. The libviprs.org article lives
-/// in libviprs-org and still carries "Neither side encodes to PNG or JPEG" and
-/// "libviprs writes to a `MemorySink`"; correcting it is the site lane's edit,
-/// and [`TILE_ENCODING_CLAIM`] is the sentence it should carry.
+/// in libviprs-org and carried "Neither side encodes to PNG or JPEG" and
+/// "libviprs writes to a `MemorySink`" until the site lane corrected it
+/// (libviprs-org `85f8603` "Say that both sides encode, because both sides do",
+/// with `79c2cb5` taking out the paragraph that argued against its own
+/// methodology, both on `main`). So the contradiction is gone from both sides
+/// now. Nothing here can hold it that way, because the article is in another
+/// repository and no test in this one can read it: what this file guards is
+/// every document libviprs-bench ships, and [`TILE_ENCODING_CLAIM`] is the
+/// sentence the article was corrected to.
 #[test]
 fn readme_and_the_article_agree_on_whether_tiles_are_encoded() {
     for rel in DOCUMENTS {

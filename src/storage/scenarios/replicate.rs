@@ -163,6 +163,14 @@ pub fn block_for_cell(doc: &Document, spec: &str) -> Option<Replicate> {
         }
         let Some(median) = cell.median else { continue };
         let key = format!("{}.{}", cell.backend, cell.key);
+        // `clippy::map_entry` reads this as a lookup-then-insert on one map and
+        // suggests the `Entry` API. It is not: the two arms write to two
+        // different maps, so the entry form would have to hold a vacant slot in
+        // `firsts` while inserting into `lasts`, clone the key to keep one for
+        // the other map, and end up longer and harder to read than the sentence
+        // it replaces. The lint is wrong about this code, so it is allowed here
+        // and nowhere else.
+        #[allow(clippy::map_entry)]
         if !firsts.contains_key(&key) {
             firsts.insert(key, median);
         } else {
