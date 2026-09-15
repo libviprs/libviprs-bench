@@ -16,6 +16,9 @@ use libviprs::{
 use serde::{Deserialize, Serialize};
 
 pub mod emulation;
+/// Monolithic against streaming against mapreduce, with repetitions and an
+/// archivable document (issue #75).
+pub mod engines;
 pub mod family;
 pub mod flame;
 /// How to read `git status` run twice, shared with `build.rs` by `include!`.
@@ -195,6 +198,29 @@ pub struct BenchmarkSnapshot {
     pub runs: Vec<RunMetrics>,
 }
 
+/// What one run's pyramid was observed to be on disk.
+///
+/// Four counters over the real sink directory, taken with the same walk the
+/// `storage` family uses ([`storage::occupancy`]) so a tile tree costs the same
+/// number whichever family counted it. Not a measurement of speed and never
+/// charted as one: these are the exact columns, and the `engines` document
+/// carries them as invariants whose verdict is equality.
+///
+/// A file counts one entry and so does a directory, because the cost the entry
+/// count exists to show is namespace pressure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArtefactFacts {
+    /// Sum of file sizes under the pyramid root.
+    pub output_bytes: u64,
+    /// Files plus directories, the root included.
+    pub filesystem_entries: u64,
+    /// Directories alone, the root included.
+    pub directories: u64,
+    /// Sum of `st_blocks * 512`, which is what the tree really takes off the
+    /// filesystem rather than what its files add up to.
+    pub allocated_bytes: u64,
+}
+
 /// Metrics collected from a single benchmark run.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunMetrics {
@@ -250,6 +276,22 @@ pub struct RunMetrics {
     /// count + per-level grid). Empty for legacy history.
     #[serde(default)]
     pub per_level_tiles: Vec<u64>,
+    /// What the run's on-disk pyramid was OBSERVED to be, walked from the real
+    /// sink directory after the timed section and before the directory is
+    /// reclaimed.
+    ///
+    /// The `engines` family's document publishes these as invariants with
+    /// equality verdicts rather than as timings, which is what they are: three
+    /// engines writing the same plan through the same PNG codec produce the same
+    /// bytes, and a run where they do not is a defect rather than a delta
+    /// (libviprs-bench #75). `None` where nothing walked it, which is every
+    /// libvips path (the CLI and FFI runs write through `dzsave` into a
+    /// directory this crate does not own) and all legacy history.
+    ///
+    /// Untimed: [`RunMetrics::wall_time`] is taken before the walk, so adding
+    /// this cost nothing to the number it sits beside.
+    #[serde(default)]
+    pub artefact: Option<ArtefactFacts>,
     /// Minimum PSNR (dB) of **this engine's own** mid-pyramid tiles against the
     /// libvips `dzsave` reference, from the pixel-level output-equivalence
     /// spot-check ([`harness::spot_check_tile_psnr`]). Each libviprs engine
@@ -516,10 +558,18 @@ impl Drop for TempOutDir {
 /// engines and libvips `dzsave` write their tiles as real files under
 /// `TMPDIR/libviprs-bench/…`, so neither side gets an in-RAM sink advantage
 /// (issue #153). The directory is removed when the returned guard drops.
+/// The directory under `$TMPDIR` every engine's tile sink is rooted in.
+///
+/// Public and named, because the `engines` family has to record which
+/// filesystem its tiles were written to, and a provenance block that probed
+/// some other directory would describe a benchmark nobody ran: overlayfs, a
+/// virtiofs bind mount and a real ext4 are three different measurements.
+pub fn engine_sink_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("libviprs-bench")
+}
+
 fn fs_sink_dir(label: &str) -> TempOutDir {
-    let dir = std::env::temp_dir()
-        .join("libviprs-bench")
-        .join(format!("engine_{}_{label}", std::process::id()));
+    let dir = engine_sink_root().join(format!("engine_{}_{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     // A writable `$TMPDIR` is a precondition for running any benchmark at all,
     // so this is an accepted environmental panic — the right loud failure if the
@@ -573,6 +623,28 @@ pub fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
     FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(BENCH_TILE_FORMAT)
 }
 
+/// Walk a written pyramid and record what it really is on disk.
+///
+/// [`storage::occupancy`] does the walking, which is the whole point: the
+/// `storage` family's directory backend and an `engines` run write the same
+/// kind of tree, so a byte total and an entry count mean the same thing in both
+/// documents rather than being two walks that agree today.
+///
+/// `None` when the path cannot be walked at all, and never a zero-filled
+/// record: zero entries is a *better* number than the one a real tree costs, so
+/// a broken measurement must not publish a win on a column the comparison is
+/// about.
+pub fn artefact_facts(tiles_dir: &std::path::Path) -> Option<ArtefactFacts> {
+    let (output_bytes, filesystem_entries, directories, allocated_bytes) =
+        storage::occupancy(tiles_dir)?;
+    Some(ArtefactFacts {
+        output_bytes,
+        filesystem_entries,
+        directories,
+        allocated_bytes,
+    })
+}
+
 /// Run the monolithic engine and collect metrics, or return the engine error.
 ///
 /// Symmetric with [`bench_streaming`] / [`bench_mapreduce`]: returns `Err`
@@ -606,6 +678,7 @@ pub fn bench_monolithic(
     // the success-path tile count below runs while the guard is still alive.
     let result = run_result?;
     let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
+    let artefact = artefact_facts(&out_dir.path().join("pyramid"));
 
     Ok(RunMetrics {
         label: label.to_string(),
@@ -618,6 +691,7 @@ pub fn bench_monolithic(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        artefact,
         equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
@@ -759,6 +833,7 @@ pub fn bench_streaming(
     // the success-path tile count below runs while the guard is still alive.
     let result = run_result?;
     let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
+    let artefact = artefact_facts(&out_dir.path().join("pyramid"));
 
     let strips = observer
         .events()
@@ -777,6 +852,7 @@ pub fn bench_streaming(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        artefact,
         equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
@@ -841,6 +917,7 @@ pub fn bench_mapreduce(
     // the success-path tile count below runs while the guard is still alive.
     let result = run_result?;
     let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
+    let artefact = artefact_facts(&out_dir.path().join("pyramid"));
 
     let events = observer.events();
     let strips = events
@@ -884,6 +961,7 @@ pub fn bench_mapreduce(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        artefact,
         equivalence_psnr_db: None,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
@@ -1036,6 +1114,7 @@ pub fn bench_streaming_pdf(
     // while the guard is still alive.
     let result = run_result.map_err(PdfBenchError::Engine)?;
     let per_level_tiles = per_level_png_tiles(&out_dir.path().join("pyramid"));
+    let artefact = artefact_facts(&out_dir.path().join("pyramid"));
 
     let strips = observer
         .events()
@@ -1054,6 +1133,7 @@ pub fn bench_streaming_pdf(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        artefact,
         tiles_produced: result.tiles_produced,
         levels_processed: result.levels_processed,
         tiles_skipped: result.tiles_skipped,
@@ -1351,6 +1431,9 @@ pub fn bench_libvips(
         peak_rss_bytes: peak_memory_bytes,
         stats: None,
         per_level_tiles,
+        // libvips writes through `dzsave` into a directory this crate does not
+        // own, so nothing here walked one.
+        artefact: None,
         equivalence_psnr_db: None,
         tiles_produced,
         levels_processed,
@@ -1536,6 +1619,8 @@ pub fn bench_libvips_inprocess(
         peak_rss_bytes,
         stats: None,
         per_level_tiles,
+        // Same as the CLI path: no sink of ours to walk.
+        artefact: None,
         equivalence_psnr_db: None,
         tiles_produced,
         levels_processed,

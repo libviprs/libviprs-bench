@@ -47,6 +47,7 @@ fn run(label: &str, engine: &str, wall_ms: f64, tiles: u64, rss_mb: f64) -> RunM
             rss_mb_ci95: 1.0,
         }),
         per_level_tiles: vec![256, 64, 16, 4, 1],
+        artefact: None,
         equivalence_psnr_db: Some(48.0),
         tiles_produced: tiles,
         levels_processed: 5,

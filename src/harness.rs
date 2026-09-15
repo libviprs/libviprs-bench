@@ -1061,6 +1061,7 @@ mod tests {
             peak_rss_bytes: 1024 * 1024,
             stats: None,
             per_level_tiles: vec![1],
+            artefact: None,
             equivalence_psnr_db: None,
             tiles_produced: 1,
             levels_processed: 1,
