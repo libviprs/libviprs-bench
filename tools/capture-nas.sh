@@ -185,9 +185,12 @@ settle() {
     fi
     sleep 20; waited=$(( waited + 20 ))
   done
-  # Not fatal. The harness records the load and the publish gate refuses a run
-  # whose typical cell was not quiet, so a slow machine produces a refused
-  # document rather than a quiet lie.
+  # Not fatal. The runner samples the machine before it measures anything and the
+  # publish gate refuses a run that started on a busy box (#100), so a machine
+  # that never settles produces a refused document rather than a quiet lie. The
+  # two thresholds are deliberately different: this waits for half the cores, the
+  # gate refuses at one runnable thread per core, so settling leaves headroom
+  # rather than landing on the line.
   echo "  still above $half after ${waited}s; capturing anyway, and the load is recorded"
 }
 

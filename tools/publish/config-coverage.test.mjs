@@ -32,7 +32,7 @@ const INTENTIONAL_DEFAULTS = new Map([
   ['archiveBucketFrom', 'the default field list is causl\'s and libviprs has no reason to differ yet'],
   ['archiveDirByFamily', 'only needed when one family archives somewhere the prefix rule cannot derive'],
   ['declaredSuffix', 'the default `_declared` is the producer\'s own spelling'],
-  ['refuse', 'the majorityNoisyCells check runs unless a config switches it off, and none does'],
+  ['refuse', 'busyBeforeTheSweep and majorityNoisyCells both run unless a config switches them off, and none does'],
   ['runnerToSeries', 'defined but empty, because seriesFrom already resolves every series this producer emits'],
 ]);
 

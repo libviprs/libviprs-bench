@@ -206,7 +206,16 @@
     ],
 
     "refuse": {
+      "busyBeforeTheSweep": true,
       "majorityNoisyCells": true,
+      "_theTwoLoadRules": [
+        "One rule each for the two shapes of document in the archive, never both on one run.",
+        "busyBeforeTheSweep reads `startingLoad`, which the runner samples before it measures",
+        "anything, so none of that load is ours. majorityNoisyCells counts cells recording",
+        "`machineLoad.quiet: false`, which is what every document written before #100 has",
+        "instead; it is kept because the site re-verifies its whole published history on every",
+        "ingest and those runs must not be judged by a field they could not carry."
+      ],
       "perturbingRustflags": ["-C instrument-coverage", "-Z"]
     }
   }

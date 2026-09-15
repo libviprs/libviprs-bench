@@ -73,6 +73,24 @@ fn the_sweep_writes_a_document_its_own_aggregator_accepts() {
         "the sweep must fill its own provenance; `Document::new` leaves it null and the \
          aggregator refuses that, which it earned on every run until this was wired up"
     );
+    // The reading the publish gate turns on (#100). `Document::new` leaves this
+    // null too, and the importer refuses a null: a runner that skipped its own
+    // first act has not looked at the machine, and a sweep that did not look
+    // cannot say it had the box to itself. The core count is asserted because
+    // `available_parallelism` answers on every platform this crate builds for,
+    // so a zero there is a read that failed rather than a platform excuse.
+    assert!(
+        parsed["startingLoad"].is_object(),
+        "the sweep must sample the machine before it measures anything, got {}",
+        parsed["startingLoad"]
+    );
+    assert!(
+        parsed["startingLoad"]["cores"]
+            .as_u64()
+            .is_some_and(|n| n > 0),
+        "the starting load must carry a core count, got {}",
+        parsed["startingLoad"]["cores"]
+    );
     assert!(
         !parsed["cells"]
             .as_array()

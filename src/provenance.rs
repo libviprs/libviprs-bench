@@ -509,12 +509,11 @@ fn cpu_model() -> String {
         if let Ok(out) = std::process::Command::new("sysctl")
             .args(["-n", "machdep.cpu.brand_string"])
             .output()
+            && out.status.success()
         {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !s.is_empty() {
-                    return s;
-                }
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s;
             }
         }
     }
@@ -575,7 +574,15 @@ fn cpu_model() -> String {
 /// per-platform split [`cpu_model`] uses. `None` on any other platform or when
 /// the source is unreadable, so a missing sample is honestly absent rather than
 /// a fabricated zero.
-fn load_average() -> Option<LoadAverage> {
+///
+/// `pub(crate)` because [`crate::storage::document::MachineLoad`] needs the same
+/// number and used to read `/proc/loadavg` itself. Two readers of one quantity
+/// in one crate is how they end up disagreeing, and this pair did: the private
+/// copy had no macOS arm, so a document captured on this Mac published
+/// `loadAvg1m: null` while the provenance block beside it carried a perfectly
+/// good reading, and the publish gate then refused the run for a load it could
+/// not read (#100).
+pub(crate) fn load_average() -> Option<LoadAverage> {
     // Exactly one cfg block compiles; each is the function's tail expression.
     #[cfg(target_os = "linux")]
     {
