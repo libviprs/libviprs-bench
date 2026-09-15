@@ -1014,8 +1014,17 @@ fn parse_direction(s: &str) -> scenarios::Direction {
 /// scenario, which is the finest grain that isolation allows.
 pub fn run_sweep(profile: Profile) -> Document {
     let exe = crate::harness::current_exe();
+    // Before anything else, and it has to stay before anything else. This is
+    // the only reading in the whole document that is other people's work by
+    // construction: this process has measured nothing and spawned nothing yet,
+    // so whatever the machine is carrying at this instant, it is not carrying
+    // it for us. Move this line below the loop and it becomes a reading of our
+    // own sweep, which is exactly the thing the per-cell loads already are and
+    // exactly why they cannot gate a publish (#100).
+    let starting_load = MachineLoad::sample();
     let started = now_iso();
     let mut doc = Document::new(profile, started);
+    doc.starting_load = Some(starting_load);
     let timer = Some(stats::probe_timer());
 
     for cell in profile.cells() {

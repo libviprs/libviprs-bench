@@ -666,26 +666,102 @@ if (unexplained.length > 0) {
   refuse(`${unexplained.length} non-ok cell(s) carry no reason`);
 }
 
-// The contamination check, kept from causl and kept on the cause rather than the
-// consequence. `machineLoad.quiet` is an observation the runner took while it
-// measured the cell; "how many cells stayed high-confidence" is a consequence,
-// and picking a cut-off on a consequence means inventing a number. A simple
-// majority is the line: past it, the typical cell of the run was measured while
-// other work was on the CPU, and no number of repetitions removes competing work.
-if (producer.refuse?.majorityNoisyCells !== false) {
-  const withLoad = okCells.filter((c) => typeof c.machineLoad?.quiet === 'boolean');
-  const noisy = withLoad.filter((c) => c.machineLoad.quiet === false);
-  if (withLoad.length > 0 && noisy.length > withLoad.length / 2) {
-    const loads = noisy
-      .map((c) => c.machineLoad.loadAvg1m)
-      .filter(Number.isFinite)
-      .sort((a, b) => a - b);
-    const median = loads.length ? loads[Math.floor(loads.length / 2)] : null;
+// The contamination check, on the one reading in the document that is not ours.
+//
+// It used to count cells: more than half of them recording `machineLoad.quiet:
+// false` refused the run. That rule was measuring the sweep as much as the
+// machine. A one-minute load average has a one-minute memory and a sweep spends
+// every second of it working, so by the second cell the number is mostly our own
+// recent work, and the busier the family the louder it reads. The 2026-09-15
+// capture said it plainly: back to back on one six-core box, `engines` flagged
+// 108 of 558 cells and `storage` flagged 0 of 539, and the difference between
+// them is how many threads each family asks for, not who else was on the CPU.
+// A gate that tightens as the measurement gets more demanding is backwards
+// (#100).
+//
+// `startingLoad` is sampled by the runner before it measures anything, so at
+// that instant none of the load is ours. That is a cause, and the line on it is
+// the same line `MachineLoad` has always drawn: one runnable thread per core.
+// No new number was invented, it just moved to a place where it means what it
+// says.
+//
+// The per-cell loads stay in the document and stay a low-confidence reason on
+// the cell. They are honest about what they are, a load average while this cell
+// ran, and a reader should have them. They are simply not a thing to refuse a
+// publish over.
+// `in`, not `?? null`. serde writes `None` as an explicit `null` rather than
+// dropping the key, so the two absences are different documents: a key that is
+// not there was written before the field existed, and a key that is there and
+// null was written by a producer that knows about the field and did not fill
+// it. The first keeps the old rule. The second is a runner that skipped its own
+// first act, and reading it as "no rule applies" would make deleting one line
+// of the producer a way to turn the gate off.
+const hasStartingLoad = Object.hasOwn(doc, 'startingLoad');
+const startingLoad = doc.startingLoad;
+
+if (!hasStartingLoad) {
+  // Every document archived before #100 has no such key, and the archive keeps
+  // documents forever: the site re-verifies its whole published history against
+  // these rules on every ingest. Judging those runs by a field they could not
+  // have carried would refuse runs that are already on the page, so they keep
+  // the rule they were published under.
+  if (producer.refuse?.majorityNoisyCells !== false) {
+    const withLoad = okCells.filter((c) => typeof c.machineLoad?.quiet === 'boolean');
+    const noisy = withLoad.filter((c) => c.machineLoad.quiet === false);
+    if (withLoad.length > 0 && noisy.length > withLoad.length / 2) {
+      const loads = noisy
+        .map((c) => c.machineLoad.loadAvg1m)
+        .filter(Number.isFinite)
+        .sort((a, b) => a - b);
+      const median = loads.length ? loads[Math.floor(loads.length / 2)] : null;
+      refuse(
+        `${noisy.length} of ${withLoad.length} measured cells record \`machineLoad.quiet: false\`, ` +
+          'so the typical cell of this run was measured while other work was on the CPU' +
+          (median === null ? '' : ` (median load average ${median})`) +
+          '. This document carries no `startingLoad`, so it predates the rule that reads one ' +
+          'and is judged by the rule it was published under.',
+      );
+    }
+  }
+} else if (producer.refuse?.busyBeforeTheSweep !== false) {
+  // One `else if` chain, because `refuse` collects rather than throws and every
+  // branch below is the same fact seen at a different depth. Without the chain an
+  // unfilled block earns three refusals: no object, no number in it, and a
+  // verdict that does not follow from the number. Three sentences about one
+  // missing reading is a report nobody can act on.
+  const contention = startingLoad?.contentionPerCore;
+  const cores = startingLoad?.cores;
+  const load = startingLoad?.loadAvg1m;
+  if (startingLoad === null || typeof startingLoad !== 'object') {
     refuse(
-      `${noisy.length} of ${withLoad.length} measured cells record \`machineLoad.quiet: false\`, ` +
-        'so the typical cell of this run was measured while other work was on the CPU' +
-        (median === null ? '' : ` (median load average ${median})`) +
-        '. Re-measure on an idle machine; repetitions do not remove competing work.',
+      `this document carries \`startingLoad: ${JSON.stringify(startingLoad ?? null)}\`, which is ` +
+        'the field a runner that knows about it left unfilled, not the absence of a run that ' +
+        'predates it. The machine was never looked at, and a sweep that did not look cannot ' +
+        'say it had the box to itself.',
+    );
+  } else if (!Number.isFinite(contention)) {
+    refuse(
+      'the document carries a `startingLoad` whose `contentionPerCore` is ' +
+        `${JSON.stringify(contention ?? null)}, so the machine was looked at and could not be ` +
+        'read. An empty reading is a refusal, not a result: nothing here says whether this ' +
+        'sweep had the box to itself.',
+    );
+  } else if (startingLoad.quiet !== contention < 1) {
+    // The producer computes `quiet` from its own numbers, so the two agreeing is
+    // a property of the document rather than a thing to hope for. A document
+    // where they disagree is one whose numbers and whose verdict came from
+    // different places, and reading either of them would be guessing which.
+    refuse(
+      `the document's \`startingLoad\` says \`quiet: ${JSON.stringify(startingLoad.quiet)}\` and ` +
+        `carries \`contentionPerCore: ${contention}\`, which do not agree. A verdict that does ` +
+        'not follow from the numbers beside it is not an observation.',
+    );
+  } else if (contention >= 1) {
+    refuse(
+      `\`startingLoad\` records a load average of ${load} on ${cores} core(s), ` +
+        `${contention.toFixed(2)} runnable per core, before this sweep started. None of that ` +
+        'is ours: the runner samples it before it measures anything. Wait for the machine to ' +
+        'go quiet and re-measure; repetitions do not remove competing work.',
     );
   }
 }

@@ -563,6 +563,14 @@ def settle(ex: Executor, family: str, timeout_s: int = SETTLE_TIMEOUT_S) -> dict
     on six cores, and the importer refused 284 of 526 measured cells for
     `machineLoad.quiet: false`. The capture was contending with itself.
 
+    That count is history now: the gate reads `startingLoad`, which the runner
+    samples before it measures anything, rather than counting cells whose load
+    average is mostly the sweep's own (#100). Settling still matters and matters
+    for the same reason, it is just no longer the per-cell numbers that decide.
+    The two lines differ on purpose: this waits for half the cores, the gate
+    refuses at one runnable thread per core, so a settled machine has headroom
+    instead of sitting on the line.
+
     Two things changed after that. The threshold is relative to core count, not
     absolute, because this machine's floor is 1.4 to 2.2 with every resident
     container at 0% CPU and an absolute 1.2 can never be met. And running out of
@@ -630,7 +638,7 @@ def settle(ex: Executor, family: str, timeout_s: int = SETTLE_TIMEOUT_S) -> dict
             f"{readings[-1] if readings else 'unread'} on {cores} cores and this driver waits for "
             f"under {threshold}. Readings: {', '.join(str(r) for r in readings[-10:])}. Nothing "
             "was captured, because a sweep taken at this load produces a document whose cells "
-            "are not quiet, and the importer refuses a run whose typical cell was not quiet. "
+            "are not quiet, and the importer refuses a run that started on a busy machine. "
             "Measuring anyway would cost ten minutes of this machine and produce a file to throw "
             "away. Wait for whatever else is running to finish, or raise --settle-timeout."
         ]

@@ -326,12 +326,134 @@ test('a run with no ok cells is refused', () => {
   refused(r, /none of them is `ok`/);
 });
 
-test('a run measured mostly under contention is refused', () => {
-  // Repetitions do not remove competing work. RED against an importer that
-  // reads `confidence` and never `machineLoad`.
+/** Every cell in `doc` measured at `load` on `cores`, quiet or not. */
+function loadEveryCell(doc, { load, cores = 6 }) {
+  for (const c of doc.cells) {
+    if (!c.machineLoad) continue;
+    c.machineLoad.cores = cores;
+    c.machineLoad.loadAvg1m = load;
+    c.machineLoad.contentionPerCore = load / cores;
+    c.machineLoad.quiet = load / cores < 1;
+  }
+}
+
+/** The starting-load block, the shape the producer samples before the first cell. */
+function startingLoad({ load, cores = 6 }) {
+  return {
+    cores,
+    loadAvg1m: load,
+    contentionPerCore: load / cores,
+    quiet: load / cores < 1,
+  };
+}
+
+test('a run that loaded the machine itself, from a quiet start, is published', () => {
+  // The acceptance criterion this rule exists for (#100). The engines sweep
+  // saturates the cores it was given, so its own cells read a load average at or
+  // above one per core while nobody else is on the box. That is a benchmark
+  // working, and the run has to publish.
+  //
+  // RED against the majority-of-noisy-cells rule this replaces, which refuses
+  // exactly this document.
+  const history = emptyHistory();
   const r = runImport(
     mutate({
       edit(doc) {
+        doc.startingLoad = startingLoad({ load: 2.17 });
+        loadEveryCell(doc, { load: 6.3 });
+      },
+    }),
+    history,
+  );
+  assert.equal(r.code, EXIT.OK, `expected the run to publish:\n${r.err}`);
+  assert.equal(readHistory(history).length, 1);
+});
+
+test('a run measured on a machine that was already busy is refused', () => {
+  // The other half: a starting load at or above one runnable thread per core is work
+  // that was not ours, because none of ours had started when it was read.
+  //
+  // RED against an importer that reads the starting load and never gates on it.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        doc.startingLoad = startingLoad({ load: 9.4 });
+        // Quiet cells, so nothing but the starting load can be what refuses this.
+        loadEveryCell(doc, { load: 1.1 });
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /startingLoad/, /before this sweep started/);
+});
+
+test('a starting load that could not be read is refused rather than read as quiet', () => {
+  // An empty reading is a refusal, not a result. A document that carries the
+  // block and no numbers in it says nothing about the machine, and "nothing"
+  // must not import as "quiet".
+  //
+  // RED against `quiet !== false`, which admits null.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        doc.startingLoad = { cores: null, loadAvg1m: null, contentionPerCore: null, quiet: null };
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /startingLoad/, /could not be read/);
+});
+
+test('a starting load whose verdict does not follow from its numbers is refused', () => {
+  // The producer computes `quiet` from `contentionPerCore`, so a document where
+  // the two disagree had its numbers and its verdict from different places.
+  //
+  // RED against an importer that reads `quiet` and never looks at the number it
+  // is supposed to have come from, which would publish this run on the strength
+  // of a boolean somebody typed.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        doc.startingLoad = { cores: 6, loadAvg1m: 9.4, contentionPerCore: 9.4 / 6, quiet: true };
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /startingLoad/, /do not agree/);
+});
+
+test('a runner that knows about the starting load and left it null is refused', () => {
+  // serde writes `None` as an explicit null rather than dropping the key, so a
+  // present-but-null block is a runner that skipped its own first act. It must
+  // not read as "this run predates the field", or deleting one line of the
+  // producer becomes a way to turn the gate off.
+  //
+  // RED against `doc.startingLoad ?? null`, which folds the two absences into
+  // one and sends this document down the legacy path.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        doc.startingLoad = null;
+        // Quiet cells, so the legacy rule would have published this happily.
+        loadEveryCell(doc, { load: 1.1 });
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /startingLoad: null/, /never looked at/);
+});
+
+test('a document from before the starting load existed is judged by the rule it was published under', () => {
+  // The archive keeps documents forever and every one of them predates this
+  // field. Judging them by a rule they could not have satisfied would refuse
+  // runs that are already on the page, so a document with no starting load keeps the
+  // majority rule.
+  //
+  // RED against deleting the old rule outright.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        assert.equal(doc.startingLoad, undefined, 'the archived document already carries a starting load, so this test is testing nothing');
         for (const c of doc.cells.slice(0, Math.ceil(doc.cells.length * 0.8))) {
           if (c.machineLoad) {
             c.machineLoad.quiet = false;
@@ -343,6 +465,14 @@ test('a run measured mostly under contention is refused', () => {
     emptyHistory(),
   );
   refused(r, /machineLoad\.quiet: false/);
+});
+
+test('an archived document with no starting load still imports', () => {
+  // The control on the test above. Every run in the archive today has no
+  // starting load and a minority of noisy cells, and all of them must keep importing
+  // or the org side stops verifying its own published history.
+  const entry = importedEntry();
+  assert.equal(entry.runId, ARCHIVED_RUN_ID);
 });
 
 test('an unattested ok cell is refused', () => {

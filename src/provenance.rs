@@ -509,12 +509,11 @@ fn cpu_model() -> String {
         if let Ok(out) = std::process::Command::new("sysctl")
             .args(["-n", "machdep.cpu.brand_string"])
             .output()
+            && out.status.success()
         {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !s.is_empty() {
-                    return s;
-                }
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s;
             }
         }
     }
