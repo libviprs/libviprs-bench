@@ -69,6 +69,10 @@ say() { printf '\n== %s\n' "$*"; }
 cleanup() {
   local code=$?
   say "cleaning up $NAS"
+  # `nas-driver:latest` is deliberately NOT removed. Other jobs on this machine
+  # use it, tearing down something shared because we happened to (re)build it
+  # would be rude, and it is a 332 MB cached layer that the next run reuses. The
+  # images this run built are ours alone and do go.
   "${SSH[@]}" "
     docker rm -f \$(docker ps -aq --filter ancestor=viprs-nas-storage:$NAME) 2>/dev/null || true
     docker rm -f \$(docker ps -aq --filter ancestor=viprs-nas-engines:$NAME) 2>/dev/null || true
@@ -109,6 +113,33 @@ say "pushing to $NAS:~/workspace/nas-work/$NAME"
 tar -cf - -C "$STAGE" --exclude='target' . | "${SSH[@]}" "docker run --rm -i --platform linux/amd64 \
   -v \$HOME/workspace/nas-work/$NAME:/dest alpine:3.20 tar -xf - -C /dest"
 
+say "building the driver image"
+# Not assumed. The driver is a local image, on no registry, so a missing one
+# sends docker to a pull that cannot succeed and tells the reader to
+# `docker login`, which is the wrong trail entirely. It went unnoticed because
+# I built it by hand, then removed it in cleanup, then wrote this against a
+# machine that still had it: the script's own teardown is what exposes its own
+# prerequisite. The daemon caches it, so rebuilding each run costs nothing after
+# the first.
+#
+# docker-buildx-plugin is not optional. On Docker 29 `docker build` IS
+# `docker buildx build`, so a CLI-only image dies the moment a BuildKit flag is
+# passed, with exit 125 and no message worth reading.
+"${SSH[@]}" "docker build -q -t nas-driver:latest - >/dev/null <<'DOCKEREOF'
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+        python3 git ca-certificates curl gnupg \\
+    && install -m 0755 -d /etc/apt/keyrings \\
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \\
+        -o /etc/apt/keyrings/docker.asc \\
+    && chmod a+r /etc/apt/keyrings/docker.asc \\
+    && echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable' \\
+        > /etc/apt/sources.list.d/docker.list \\
+    && apt-get update && apt-get install -y --no-install-recommends \\
+        docker-ce-cli docker-buildx-plugin \\
+    && rm -rf /var/lib/apt/lists/*
+DOCKEREOF"
+
 say "building both images through the socket-mounted driver"
 for target in storage engines; do
   "${SSH[@]}" "docker run --rm --platform linux/amd64 \
@@ -119,9 +150,44 @@ for target in storage engines; do
   echo "built viprs-nas-$target:$NAME"
 done
 
+# Wait for the machine to shed the load the previous phase put on it.
+#
+# The first end-to-end run failed its own publish gate for this: the image
+# builds left the box hot, storage opened at 1-minute load 7.77 on six cores,
+# engines opened at 6.39, and the importer refused both with "284 of 526
+# measured cells record machineLoad.quiet: false ... repetitions do not remove
+# competing work". The script was contending with itself.
+#
+# The threshold is relative to core count, not absolute. An earlier version
+# waited for load below 1.2 and spun the full four minutes every time, because
+# this NAS carries resident backupd and postgres containers and its floor is 1.4
+# to 2.2 with all of them at 0% CPU. Half the core count is reachable here and
+# still well under the ncpu ceiling the harness refuses at.
+settle() {
+  local cores half waited=0
+  cores=$("${SSH[@]}" "docker run --rm --platform linux/amd64 alpine:3.20 nproc" 2>/dev/null | tr -d '[:space:]')
+  cores=${cores:-6}
+  half=$(( cores / 2 ))
+  while [ "$waited" -lt 300 ]; do
+    local load
+    load=$("${SSH[@]}" "docker run --rm --platform linux/amd64 alpine:3.20 \
+      sh -c 'cut -d\" \" -f1 /proc/loadavg'" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$load" ] && awk "BEGIN{exit !($load < $half)}"; then
+      echo "  settled at load $load (under $half, ${cores} cores) after ${waited}s"
+      return
+    fi
+    sleep 20; waited=$(( waited + 20 ))
+  done
+  # Not fatal. The harness records the load and the publish gate refuses a run
+  # whose typical cell was not quiet, so a slow machine produces a refused
+  # document rather than a quiet lie.
+  echo "  still above $half after ${waited}s; capturing anyway, and the load is recorded"
+}
+
 mkdir -p "$OUT"
 for fam in storage engines; do
   say "capturing $fam, profile $PROFILE, native x86_64"
+  settle
   # The harness records the load it ran at; this line is only so the transcript
   # shows it too, and it reads /proc from inside a container like everything else.
   "${SSH[@]}" "docker run --rm --platform linux/amd64 alpine:3.20 \
