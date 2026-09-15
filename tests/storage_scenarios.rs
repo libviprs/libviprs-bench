@@ -1225,12 +1225,7 @@ fn the_replicate_cell_is_measured_throughout_and_publishes_its_dispersion() {
         (7.9, 5.90),
     ]
     .iter()
-    .map(|(p50, p99)| {
-        BTreeMap::from([
-            ("p50_us".to_string(), *p50),
-            ("p99_us".to_string(), *p99),
-        ])
-    })
+    .map(|(p50, p99)| BTreeMap::from([("p50_us".to_string(), *p50), ("p99_us".to_string(), *p99)]))
     .collect();
     let block = replicate::block(&control, &measurements).expect("five placements make a block");
 

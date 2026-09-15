@@ -148,7 +148,8 @@ fn a_directory_that_is_not_there_yet_names_the_filesystem_it_will_be_created_on(
         absent.fs_type
     );
     assert_eq!(
-        absent.fs_type, ancestor.fs_type,
+        absent.fs_type,
+        ancestor.fs_type,
         "{} will be created under {}, so it can only land on that filesystem",
         missing.display(),
         root.display()
