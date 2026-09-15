@@ -29,6 +29,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use libviprs_bench::family::Family;
 use libviprs_bench::provenance::Provenance;
 use libviprs_bench::storage::archive::{self, ArchiveError};
 use libviprs_bench::storage::integrity;
@@ -61,7 +62,15 @@ fn run(args: &[String]) -> Result<u8, String> {
     // second against the same commit would collide with it on a run id neither
     // is wrong about.
     let mut root: Option<PathBuf> = None;
-    let mut scratch = std::env::temp_dir();
+    // The storage family's own scratch root, not bare `$TMPDIR`. This mode
+    // exists to tell an operator what a sweep will record before they spend
+    // forty minutes measuring, and it was telling them about a different
+    // directory: the sweep writes under `$TMPDIR/libviprs-storage` and this
+    // probed `$TMPDIR` itself. On any host where those two are on different
+    // mounts (a bind mount under `/scratch` is the ordinary case here) the
+    // preflight answered confidently about the wrong filesystem, for the one
+    // field it exists to preview. `--scratch` still overrides it.
+    let mut scratch = Family::Storage.scratch_root();
 
     let mut i = 0;
     while i < args.len() {
@@ -128,7 +137,13 @@ fn print_usage() {
          storage-aggregate --verify <document.json>\n\
          storage-aggregate --provenance [--scratch <dir>]\n\
          \n\
-         Exit 0 admissible or verified, 1 refused, 2 bad invocation."
+         --scratch defaults to the storage family's own scratch root, {}, which\n\
+         is where a sweep writes. Naming a different directory previews a\n\
+         different filesystem, which is the whole point of the flag and also the\n\
+         way to get an answer about a run nobody is going to make.\n\
+         \n\
+         Exit 0 admissible or verified, 1 refused, 2 bad invocation.",
+        Family::Storage.scratch_root_path().display()
     );
 }
 

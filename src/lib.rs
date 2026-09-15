@@ -1797,13 +1797,12 @@ pub fn comparison_suite(
             #[cfg_attr(not(feature = "libvips"), allow(unused_mut))]
             let mut vips_done = !family.measures_libvips();
             #[cfg(feature = "libvips")]
-            if family.measures_libvips() {
-                if let Some(vips) =
+            if family.measures_libvips()
+                && let Some(vips) =
                     bench_libvips_inprocess(&src, tile_size, conc, &format!("{label}_vips"))
-                {
-                    results.push(vips);
-                    vips_done = true;
-                }
+            {
+                results.push(vips);
+                vips_done = true;
             }
             if !vips_done
                 && let Some(ref png) = png_path
