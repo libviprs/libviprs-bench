@@ -27,19 +27,32 @@ import {
 const EXIT = { OK: 0, REFUSED: 1, USAGE: 2 };
 
 function runImport({ dir, runId }, history, extra = []) {
-  const result = spawnSync(
-    process.execPath,
-    [
-      IMPORTER,
-      '--document', join(dir, `${runId}.json`),
-      '--archive', dir,
-      '--history', history,
-      '--config', CONFIG,
-      ...extra,
-    ],
-    { encoding: 'utf8' },
-  );
-  return { code: result.status, out: result.stdout ?? '', err: result.stderr ?? '' };
+  const args = [
+    IMPORTER,
+    '--document', join(dir, `${runId}.json`),
+    '--archive', dir,
+    '--history', history,
+    '--config', CONFIG,
+    ...extra,
+  ];
+  // A process that could not be started is not a verdict. Under load this
+  // returns `status: null` with an `error`, which reads downstream as "the
+  // importer did not exit 0" and is indistinguishable from a refusal: that is
+  // how a flaky container turns into a mutation the table believes it killed.
+  // One retry, and then a failure that says what actually happened.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const result = spawnSync(process.execPath, args, { encoding: 'utf8' });
+    if (!result.error && result.status !== null) {
+      return { code: result.status, out: result.stdout ?? '', err: result.stderr ?? '' };
+    }
+    if (attempt === 1) {
+      throw new Error(
+        `the importer could not be run (${result.error?.message ?? 'no exit status'}); ` +
+          'this is the harness failing, not the importer refusing',
+      );
+    }
+  }
+  throw new Error('unreachable');
 }
 
 function readHistory(path) {
