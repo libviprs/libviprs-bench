@@ -63,7 +63,8 @@ THE TRAPS, CARRIED FORWARD FROM tools/capture-nas.sh RATHER THAN REDISCOVERED
     entry's ownership onto the destination, the tar is made on a Mac at uid 501
     and the NAS account is uid 1001. So the second `mkdir -p` dies with
     "Permission denied" on a directory that plainly exists. The first end-to-end
-    run failed there, after fifty minutes of building.
+    run failed there, nine minutes in, with both images already built and the
+    whole capture still ahead of it.
 
 -----------------------------------------------------------------------------
 WHY NOTHING IS WRITTEN UNTIL EVERYTHING HAS PASSED
@@ -413,7 +414,7 @@ def push_tree(ex: Executor, name: str, tarball: Path, dest: str) -> None:
     So the first push silently hands the directory to a uid nobody on that
     machine is, and the second `mkdir -p` dies with "Permission denied" on a
     directory that plainly exists. The first end-to-end run failed exactly there,
-    after fifty minutes of building.
+    nine minutes in, with both images built and the whole capture still ahead.
 
     Doing it in a container removes the special case as well as the failure:
     every command this driver sends to the NAS is now a `docker` command, with no
@@ -469,8 +470,9 @@ def build_container(name: str, family: str) -> str:
     This is not tidiness. Interrupting the driver on this machine does not stop
     the build: SIGINT reaches the Python process, `subprocess.run` raises, and
     the ssh child and everything downstream of it keep going, so the NAS carries
-    on compiling for another half hour with nobody attached. Cleanup can remove a
-    container it can name, and it could not name this one.
+    on compiling with nobody attached until somebody removes the container by
+    hand. Cleanup can remove a container it can name, and it could not name this
+    one.
     """
     return f"viprs-build-{family}-{name}"
 
@@ -1041,7 +1043,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
         return 1
     except Exception as broke:
         # Not a refusal: something failed rather than answered. The summary is
-        # still written, because a capture that dies fifty minutes in is exactly
+        # still written, because a capture that dies after the builds is exactly
         # when the record of what it had already done is worth having, and a
         # traceback on its own says nothing about which families were captured or
         # whether the machine was left clean. The traceback goes to stderr after

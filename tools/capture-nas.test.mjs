@@ -121,8 +121,9 @@ test('the driver sends nothing to the NAS that runs outside a container', () => 
   // top entry is `.` restores that entry's ownership onto the destination, the
   // tar is made on a Mac at uid 501 and the NAS account is 1001, so a host-side
   // `mkdir -p` inside the tree dies with "Permission denied" on a directory that
-  // plainly exists. The first end-to-end run failed there after fifty minutes of
-  // building. Creating it in a container fixes the failure and removes the
+  // plainly exists. The first end-to-end run failed there nine minutes in, with
+  // both images already built. Creating it in a container fixes the failure and
+  // removes the
   // exception in the same move, so this asserts the stronger rule.
   const steps = plan().filter((s) => s.where === 'nas');
   assert.ok(steps.length >= 15, `expected a plan with the whole run in it, got ${steps.length} steps`);
