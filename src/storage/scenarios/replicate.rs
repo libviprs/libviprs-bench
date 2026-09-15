@@ -7,14 +7,15 @@
 //! quarters on an idle machine running identical code.
 //!
 //! It used to be two measurements, one at each end of the sweep, and the bare
-//! gap between them was published as the floor. Two captures of the same cell
-//! on the same host, eleven hours apart, then reported floors an order of
-//! magnitude apart (3.46% and 36.89%), and nothing in either document could say
-//! which was the outlier, because a gap between two points has no dispersion of
-//! its own. Simulated, two independent two-point gaps disagree by more than 2x
-//! on 58.9% of pairs and by more than 10x on 12.7% of them, so a 10x
-//! disagreement was not an accident waiting to happen, it was the estimator
-//! arriving on schedule (libviprs-bench #84).
+//! gap between them was published as the floor. Three captures of the same cell
+//! now exist and they report three different floors: 3.46% and 36.89% on the
+//! arm64 laptop eleven hours apart, and 21.31% on the native x86_64 box. None of
+//! them is wrong, and nothing in any of the three documents can say which is the
+//! outlier, because a gap between two points has no dispersion of its own.
+//! Simulated, two independent two-point gaps disagree by more than 2x on 58.9%
+//! of pairs and by more than 10x on 12.7% of them, so a 10x disagreement was not
+//! an accident waiting to happen, it was the estimator arriving on schedule
+//! (libviprs-bench #84).
 //!
 //! What replaces it is three numbers per metric, from every placement rather
 //! than from the two ends:
@@ -27,13 +28,18 @@
 //! * `driftPct`, the fitted first-to-last change across the sweep, signed.
 //! * `residualPct`, the floor again with that trend removed.
 //!
-//! The split is what the two captures needed. In the noisier one the opening
-//! placement and the closing placement of the control differ by more than ten
-//! sigma of their own sampling error on half the metrics, and the direction is
-//! uniform: reads more than doubled in throughput between the start of the
-//! sweep and the end of it, on a host whose fifteen-minute load average was
-//! 3.38 when the sweep began and 1.96 when it finished. That is a real trend in
-//! the machine, not scatter, and a single number could not say so.
+//! The split is what the two arm64 captures needed. In the noisier one the
+//! opening placement and the closing placement of the control differ by more
+//! than ten sigma of their own sampling error on half the metrics, and the
+//! direction is uniform: reads more than doubled in throughput between the start
+//! of the sweep and the end of it, on a host whose fifteen-minute load average
+//! was 3.38 when the sweep began and 1.96 when it finished. That is a real trend
+//! in the machine, not scatter, and a single number could not say so. It also
+//! settles what those two captures looked like they were saying about the
+//! harness: at the closing placement, which is the quiet end of both sweeps,
+//! they agree to a median of 1.73% across the 48 metrics, while at the opening
+//! placement they differ by a median of 31.62%. The measurement path did not
+//! move between the two commits; the machine did.
 //!
 //! The control is still placed through the sweep rather than twice in a row:
 //! once before the first cell and once after every non-control cell. Back to
@@ -315,6 +321,22 @@ pub fn block(
         ));
     }
     let reps = measurements.len();
+    // Symmetric, on purpose. Checking only that every key of the first
+    // measurement is in the others would miss a placement that grew a key, and
+    // a placement measuring something the others did not is the same disagreement
+    // read from the other end.
+    for (index, measurement) in measurements.iter().enumerate() {
+        if measurement.len() != measurements[0].len() {
+            return Err(format!(
+                "measurement 1 of {} reports {} metrics and measurement {} reports {}, so the \
+                 placements are not the same measurement",
+                cell.spec(),
+                measurements[0].len(),
+                index + 1,
+                measurement.len()
+            ));
+        }
+    }
 
     let mut spread = BTreeMap::new();
     let mut drift = BTreeMap::new();
