@@ -216,11 +216,13 @@ impl Profile {
 
     /// The cells this profile walks, in facet order.
     ///
-    /// The full profile opens and closes on its replicate control, carries the
-    /// brink cell at **16369** entries (measured by opening the archive, not
-    /// derived: an earlier draft of this comment said 16263, which was
-    /// arithmetic over a planner), and walks the `noise` source on the two
-    /// 64-pixel cells so compressibility is an axis.
+    /// The full profile walks its replicate control before the first measured
+    /// cell and after every one of them, so it opens and closes on the control
+    /// and holds four more placements in between. It carries the brink cell at
+    /// **16369** entries (measured by opening the archive, not derived: an
+    /// earlier draft of this comment said 16263, which was arithmetic over a
+    /// planner), and walks the `noise` source on the two 64-pixel cells so
+    /// compressibility is an axis.
     pub fn cells(self) -> Vec<Cell> {
         match self {
             // The ci profile proves the harness runs. One cell, one source,
@@ -228,37 +230,51 @@ impl Profile {
             // noise floor to publish either.
             Profile::Ci => vec![Cell::new(2048, 2048, 256, Source::Gradient, 93)],
             Profile::Full => {
-                let control = Cell::new(2048, 2048, 256, Source::Gradient, 93);
-                vec![
-                    // Measured first and last, which is what makes it the
-                    // drift control rather than a cell measured twice in a
-                    // row. Two measurements back to back would see none of the
-                    // thermal, neighbour and page-cache drift the spread is
-                    // there to catch, and would publish a flatteringly small
-                    // one.
-                    control,
-                    Cell::new(8192, 8192, 256, Source::Gradient, 1373),
-                    // The brink cell: the peak of the open-cost ramp, four
-                    // pixels of tile under the writer's own cutoff. Without it
-                    // the sweep brackets the worst case instead of measuring
-                    // it, which is the whole of libviprs#1021.
-                    brink_cell(Source::Gradient),
-                    Cell::new(8192, 8192, 64, Source::Gradient, 21851),
-                    // Compressibility, the axis the old sweep never had. Both
-                    // 64-pixel cells, because that is where the tile payload is
-                    // small enough for the codec to be most of the difference.
-                    Cell::new(8192, 8192, 64, Source::Noise, 21851),
-                    brink_cell(Source::Noise),
-                    control,
-                ]
+                // The control goes before the first cell and after every other
+                // one, so the floor rests on six placements rather than on the
+                // gap between two. Never two in a row: a pair taken back to
+                // back sees none of the thermal, neighbour and page-cache drift
+                // the control is there to catch, so it would raise the count
+                // without widening the window (#84).
+                crate::storage::scenarios::replicate::schedule(
+                    Cell::new(2048, 2048, 256, Source::Gradient, 93),
+                    &Profile::Full.measured_cells(),
+                )
             }
+            Profile::Xl => crate::storage::scenarios::replicate::schedule(
+                Cell::new(2048, 2048, 256, Source::Gradient, 93),
+                &Profile::Xl.measured_cells(),
+            ),
+        }
+    }
+
+    /// The cells a profile walks that are NOT the control, in facet order.
+    ///
+    /// Split out because the control's placements are derived from this list
+    /// rather than typed alongside it: the schedule puts one before the first
+    /// of these and one after each of them, so the placement count is
+    /// `measured_cells().len() + 1` and cannot drift out of step with the cells
+    /// by an edit to one and not the other.
+    pub fn measured_cells(self) -> Vec<Cell> {
+        match self {
+            Profile::Ci => Vec::new(),
+            Profile::Full => vec![
+                Cell::new(8192, 8192, 256, Source::Gradient, 1373),
+                // The brink cell: the peak of the open-cost ramp, four pixels
+                // of tile under the writer's own cutoff. Without it the sweep
+                // brackets the worst case instead of measuring it, which is the
+                // whole of libviprs#1021.
+                brink_cell(Source::Gradient),
+                Cell::new(8192, 8192, 64, Source::Gradient, 21851),
+                // Compressibility, the axis the old sweep never had. Both
+                // 64-pixel cells, because that is where the tile payload is
+                // small enough for the codec to be most of the difference.
+                Cell::new(8192, 8192, 64, Source::Noise, 21851),
+                brink_cell(Source::Noise),
+            ],
             Profile::Xl => {
-                let mut cells = Profile::Full.cells();
-                // Insert before the closing control, so the sweep still ends on
-                // the cell it opened with.
-                let last = cells.pop();
+                let mut cells = Profile::Full.measured_cells();
                 cells.push(Cell::new(16384, 16384, 256, Source::Gradient, 5469));
-                cells.extend(last);
                 cells
             }
         }
@@ -427,7 +443,7 @@ pub fn leaf_cell(source: Source) -> Cell {
     at(LEAF_CANVAS, source)
 }
 
-/// The smoke cell, measured first and last in every sweep as the drift control.
+/// The smoke cell, measured throughout every sweep as the drift control.
 pub fn smoke_cell(source: Source) -> Cell {
     at(SMOKE_CANVAS, source)
 }
@@ -513,12 +529,12 @@ pub const SOURCES: [Source; 4] = [
     Source::PeriodicGradient,
 ];
 
-/// The cell a sweep measures first and last, as its own noise floor.
+/// The cell a sweep measures through its whole length, as its own noise floor.
 ///
 /// `None` on `ci`, which proves the harness runs and is never published, so it
-/// has no noise floor to publish. The spread between the two measurements is
-/// the only in-run dispersion figure a host with no calibrated baseline has,
-/// and it is a floor rather than a calibration.
+/// has no noise floor to publish. The dispersion across its placements is the
+/// only in-run figure a host with no calibrated baseline has, and it is a floor
+/// rather than a calibration.
 pub fn replicate_cell(profile: Profile) -> Option<Cell> {
     match profile {
         Profile::Ci => None,

@@ -42,10 +42,18 @@ use super::stats::{self, Summary};
 
 /// The shape of this document. Bump it when a field changes meaning.
 ///
-/// Numbered per document family: this is version 1 of `libviprs-storage`,
-/// unrelated to causl's version 1 of its own family, which is why the family
+/// Numbered per document family: this is version 2 of `libviprs-storage`,
+/// unrelated to causl's version of its own family, which is why the family
 /// name travels next to it and the importer checks both.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// Version 2 is the replicate floor. In version 1 `replicate.spreadPct` was the
+/// gap between two measurements of the control cell; here it is a 95%
+/// prediction half-width over every placement of it, which is a different
+/// statistic wearing the same name. The importer refuses a version it does not
+/// read rather than parsing it under assumptions that no longer hold, and that
+/// refusal is the era break: a floor from two points and a floor from six never
+/// reach one axis (libviprs-bench #84).
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// The family name an importer matches on before it reads anything else.
 pub const FAMILY: &str = "libviprs-storage";
@@ -666,15 +674,47 @@ pub struct ModelledEntry {
     pub model: serde_json::Value,
 }
 
-/// The replicate control: the cell measured first and last in a sweep, and how
-/// far its metrics moved between the two.
+/// The estimator a published noise floor came from.
+///
+/// Beside the numbers rather than in a release note, because a floor from six
+/// placements and a floor from two are different statistics and a reader
+/// holding one document has no other way to tell which they have. `multiplier`
+/// is what a sample standard deviation was multiplied by, so the arithmetic is
+/// reproducible from the block alone.
+///
+/// `Option` on the document, because the archive holds runs from the era when
+/// the floor was a gap between two points and `--verify` still has to read them
+/// back. A run this harness writes always fills it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReplicateEstimator {
+    pub method: String,
+    pub reps: u32,
+    pub coverage: f64,
+    pub multiplier: f64,
+    #[serde(rename = "droppedMetrics")]
+    pub dropped_metrics: u32,
+}
+
+/// The replicate control: the cell measured through the sweep, the floor its
+/// metrics carry, and how much of that floor is a trend rather than scatter.
+///
+/// `spreadPct` is the floor the page compares a delta against. It was once the
+/// bare gap between a first and a last measurement; since `schemaVersion` 2 it
+/// is a 95% prediction half-width over every placement, and `estimator` says
+/// so in the document (libviprs-bench #84).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Replicate {
     pub cell: String,
     #[serde(rename = "replicateReps")]
     pub replicate_reps: u32,
+    #[serde(default)]
+    pub estimator: Option<ReplicateEstimator>,
     #[serde(rename = "spreadPct")]
     pub spread_pct: serde_json::Value,
+    #[serde(rename = "driftPct", default)]
+    pub drift_pct: serde_json::Value,
+    #[serde(rename = "residualPct", default)]
+    pub residual_pct: serde_json::Value,
 }
 
 // ---------------------------------------------------------------------------
