@@ -432,3 +432,46 @@ fn the_facet_key_is_the_planned_tile_count_not_the_canvas() {
     assert_eq!(parsed.spec(), "8192x8192@64+gradient");
     assert_eq!(SEED, 0x5EED_1234_ABCD_0001);
 }
+
+/// A document that never ran a sweep says so, and says it in the one way the
+/// importer can tell apart from a document that predates the field.
+///
+/// The three states are the point. Absent is a run from before #100 and keeps
+/// the majority-of-noisy-cells rule. Null is a runner that knows about the field
+/// and skipped its own first act, and the importer refuses it. A `MachineLoad`
+/// with nothing readable in it is "I looked and this platform would not say",
+/// which is an empty reading and refused as one.
+///
+/// Goes red against: a constructor that calls `MachineLoad::sample()` itself, so
+/// every hand-built document claims a reading it never took. And against
+/// `skip_serializing_if`, which would drop the key and make an unsampled
+/// document indistinguishable from a 2026-09-14 one.
+#[test]
+fn a_document_that_never_ran_claims_no_starting_load() {
+    let doc = Document::new(Profile::Full, "2026-09-15T00:00:00.000Z".to_string());
+    assert!(
+        doc.starting_load.is_none(),
+        "the constructor filled a reading nothing took"
+    );
+
+    let parsed = parse(&doc.to_json());
+    assert!(
+        keys(&parsed).iter().any(|k| k == "startingLoad"),
+        "the key must be emitted even when empty: dropping it makes an unsampled document \
+         look like one written before the field existed, and those two are judged by \
+         different rules"
+    );
+    assert!(
+        parsed["startingLoad"].is_null(),
+        "an unfilled starting load is null, got {}",
+        parsed["startingLoad"]
+    );
+
+    // And it sits where the envelope says it sits: after the run's identity,
+    // before how the run measured. A reader meets what the machine was doing
+    // before they meet the protocol.
+    let at = |k: &str| DOCUMENT_FIELDS.iter().position(|f| *f == k).unwrap();
+    assert!(at("runId") < at("startingLoad"));
+    assert!(at("startingLoad") < at("measurement"));
+    assert!(at("startingLoad") < at("cells"));
+}
