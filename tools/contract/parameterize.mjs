@@ -382,7 +382,7 @@ function countOf(hay, needle) {
 /** Span of the bracketed literal starting at `from`, skipping strings, template
  *  literals, regexes-by-proxy and comments. Returns the index one past its
  *  closing bracket. */
-function balancedEnd(src, from) {
+export function balancedEnd(src, from) {
   const open = src[from];
   const close = { '{': '}', '[': ']', '(': ')' }[open];
   if (!close) throw new AnchorMoved(`expected a bracketed literal at offset ${from}, found ${JSON.stringify(open)}`);
