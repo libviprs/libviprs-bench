@@ -274,3 +274,55 @@ test('a measured cell with no cell name is refused, not treated as every other r
   assert.doesNotMatch(r.err, /^\s+at .*:\d+:\d+/m, 'a stack trace is a crash, not a refusal');
   assert.match(r.err, /carry no `cell`/);
 });
+
+// --- and the two things the identity's shape is doing --------------------------
+
+test('two rows whose fields spell the same joined string are still two rows', () => {
+  // A joined identity can be spelled by more than one set of fields: `a` and
+  // `b · c` joins to exactly what `a · b` and `c` joins to, and the two rows
+  // then collide. Nothing in the archive contains the separator today, which is
+  // why this is a constructed pair and why it is worth having: the mutation
+  // table found that joining with a separator instead of encoding the fields
+  // passed every other test in this file.
+  //
+  // RED against an identity built by joining its fields into one string.
+  let index = 0;
+  const pair = engineRows(
+    rowsFor('streaming', 'pyramid.wall', ['2048x1440@256+c1', '2048x1440@256+c8']),
+    (c) => {
+      if (index++ === 0) {
+        c.cell = '2048x1440@256+c1';
+        c.source = 'gradient · noise';
+      } else {
+        c.cell = '2048x1440@256+c1 · gradient';
+        c.source = 'noise';
+      }
+    },
+  );
+  const entry = imported(pair);
+  assert.equal(entry.samples.length, 2);
+  assert.equal(entry.replicates.length, 0);
+});
+
+test('two runners renamed onto one series stay two rows', () => {
+  // `runnerToSeries` renames a runner into the series the page draws it as, and
+  // a rename is a display decision. Identity reads the producer's `backend`, so
+  // two runners drawn as one line are still two measurements; reading the
+  // renamed series instead would file the second engine's whole sweep as
+  // replicates of the first, which is this issue again with a different field
+  // doing the colliding.
+  //
+  // RED against an identity keyed on the series id rather than the backend.
+  const merged = configWith((config) => {
+    config.producer.runnerToSeries = { streaming: 'monolithic' };
+  });
+  const entry = imported(pristine('engines'), merged);
+
+  assert.equal(entry.replicates.length, 18);
+  assert.equal(entry.samples.length, 288);
+  // The rename did reach the page, or this test proves nothing about identity
+  // surviving one: two backends now draw as one series.
+  assert.equal(entry.samples.filter((s) => s.library === 'monolithic').length, 192);
+  assert.equal(entry.samples.filter((s) => s.library === 'streaming').length, 0);
+  assert.equal(new Set(entry.samples.map((s) => s.backend)).size, 3);
+});
