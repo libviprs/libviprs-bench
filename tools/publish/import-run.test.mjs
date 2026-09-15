@@ -412,6 +412,25 @@ test('an invariant name the config does not classify is refused', () => {
   refused(r, /not in the config's list/, /inode_count/);
 });
 
+test('a measured cell missing a field the config names is refused', () => {
+  // Two families feed this page and the second one is being built in another
+  // lane. Its document could arrive with a cell shape this reader does not have,
+  // and `scenarioOf` would quietly shorten the section name while `direction`
+  // came out null, which is a page that is wrong rather than a page that is
+  // missing. RED against reading whatever is there and publishing the result.
+  for (const field of ['backend', 'key', 'source', 'scale', 'unit', 'direction']) {
+    const r = runImport(
+      mutate({
+        edit(doc) {
+          delete doc.cells.find((c) => c.outcome === 'ok')[field];
+        },
+      }),
+      emptyHistory(),
+    );
+    refused(r, new RegExp(`\\b${field}\\b`), /measured cell/);
+  }
+});
+
 test('a runner that disagrees with its family is refused', () => {
   // Both are constants the producer stamps, so they say the same thing twice and
   // a disagreement means the document was assembled rather than measured.
