@@ -93,6 +93,48 @@ advantage";
 pub const DEFAULT_SIZES: &[(u32, u32)] = &[(512, 512), (1024, 1024), (2048, 2048), (4096, 4096)];
 /// Concurrency levels swept per size (`0` = serial).
 pub const DEFAULT_CONCURRENCY: &[usize] = &[0, 4];
+/// Parse a `--sizes` value: `WxH,WxH`. Dies with a message naming the bad
+/// token, because a sweep that silently drops a size measures something other
+/// than what it was asked for.
+///
+/// Lives here rather than in a binary because both engine sweeps take the flag.
+/// `report` has had it since the family lane; `scalability` grew one for #74,
+/// where the fact that nothing could drive the publishing binary over a single
+/// cell is a large part of why a wrong memory column survived a release.
+pub fn parse_sizes(raw: &str) -> Vec<(u32, u32)> {
+    raw.split(',')
+        .map(|token| {
+            let token = token.trim();
+            let bad = || {
+                eprintln!("--sizes wants WxH pairs, comma separated; got {token:?}");
+                std::process::exit(2);
+            };
+            let Some((w, h)) = token.split_once('x') else {
+                bad()
+            };
+            match (w.trim().parse::<u32>(), h.trim().parse::<u32>()) {
+                (Ok(w), Ok(h)) if w > 0 && h > 0 => (w, h),
+                _ => bad(),
+            }
+        })
+        .collect()
+}
+
+/// Parse a `--concurrency` value: comma-separated thread budgets (`0` =
+/// serial). The [`parse_sizes`] sibling, and here for the same reason.
+pub fn parse_concurrency(raw: &str) -> Vec<usize> {
+    raw.split(',')
+        .map(|token| {
+            token.trim().parse::<usize>().unwrap_or_else(|_| {
+                eprintln!(
+                    "--concurrency wants non-negative integers, comma separated; got {token:?}"
+                );
+                std::process::exit(2);
+            })
+        })
+        .collect()
+}
+
 /// Tile edge in pixels for the measured pyramids.
 pub const BENCH_TILE_SIZE: u32 = 256;
 /// Streaming engine memory budget, in bytes (1 MB).
@@ -345,13 +387,15 @@ impl RunMetrics {
     /// directly comparable across engines and drives the cross-engine
     /// efficiency and resource-cost metrics below.
     ///
-    /// Caveat: for the in-process engines several runs share a single
-    /// process and `ru_maxrss` is a monotonic high-water mark, so an
-    /// in-process RSS figure reflects the largest allocation seen in the
-    /// process up to that point rather than a freshly-reset per-run peak.
-    /// The libvips CLI path spawns a child per run and therefore reports a
-    /// strict per-run peak; isolate a single libviprs engine per process for
-    /// the same guarantee.
+    /// Every driver that publishes gets there the same way: one cell per
+    /// child process, `ru_maxrss` read off that child with `wait4`. `report`
+    /// has done it since #157 and the `scalability` sweep since #74. The
+    /// caveat is what happens if something measures a cell WITHOUT that
+    /// isolation: `ru_maxrss` is a monotonic, process-wide high-water mark, so
+    /// the figure is then the largest allocation the process has ever made
+    /// rather than this run's peak, and every engine sharing the process
+    /// reports the same number. That is how #74 published one figure for three
+    /// engines in twenty of twenty groups.
     pub fn peak_rss_mb(&self) -> f64 {
         self.peak_rss_bytes as f64 / (1024.0 * 1024.0)
     }
