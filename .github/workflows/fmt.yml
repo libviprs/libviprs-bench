@@ -1,0 +1,35 @@
+# Formatting, in its own workflow file on purpose.
+#
+# Adding a job to `ci.yml` reddens the `Hook Mirror` job in libviprs-tests
+# unless it is mirrored into `tools/install-hooks.sh` or deferred there with a
+# reason in the same wave. A whole new workflow *file* is exempt, which is why
+# `storage-measured.yml` lives beside this one rather than inside `ci.yml`.
+#
+# The toolchain is pinned rather than floating. rustfmt's handling of let-chains
+# is recent enough that a moving toolchain would make this gate red on days
+# nobody changed anything, and a gate people learn to ignore is worse than no
+# gate. It is pinned to the same version the Dockerfile builds with.
+name: fmt
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.97.1'
+          components: rustfmt
+      # `--check` rather than a write, so the failure names the file and the
+      # line instead of leaving a dirty tree for someone to discover later.
+      - run: cargo fmt --check
