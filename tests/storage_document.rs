@@ -6,8 +6,8 @@
 
 use libviprs_bench::storage::cells::{Backend, Cell, Profile, SEED, Source};
 use libviprs_bench::storage::document::{
-    CELL_FIELDS, CellReport, DOCUMENT_FIELDS, Document, DocumentCell, FAMILY, InvariantBlock,
-    MachineLoad, SCHEMA_VERSION,
+    CELL_FIELDS, CellLabels, CellReport, DOCUMENT_FIELDS, Document, DocumentCell, FAMILY,
+    InvariantBlock, MachineLoad, SCHEMA_VERSION,
 };
 use libviprs_bench::storage::scenarios::{
     Direction, Invariants, Isolation, MetricSpec, Outcome, RepFacts, Unit, Warmup,
@@ -29,8 +29,7 @@ const P50: MetricSpec = MetricSpec {
 fn row(samples: Vec<f64>, invariants: InvariantBlock) -> DocumentCell {
     let reps = samples.len().max(1) as u32;
     DocumentCell::from_report(CellReport {
-        backend: Backend::PmTiles,
-        cell: cell(),
+        labels: CellLabels::storage(Backend::PmTiles, cell()),
         scenario: "read_random",
         metric: P50,
         isolation: Isolation::ProcessPerScenario,

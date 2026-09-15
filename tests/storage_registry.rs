@@ -29,8 +29,20 @@ use libviprs_bench::storage::{registry, scenario_named};
 const STORAGE: &str = env!("CARGO_BIN_EXE_storage");
 
 /// Run a `ci` sweep and read the document back.
+///
+/// A directory per CALL, not per process. libtest runs the tests in this binary
+/// on parallel threads, so a path keyed only on the pid is one path shared by
+/// every test that wants a sweep: the first one to finish removes the directory
+/// while the second one's `storage` child is still writing into it, the child
+/// exits 1, and the failure reads as "the storage binary exited exit status: 1"
+/// with nothing to say why. It only shows up under load, which is where I found
+/// it (#75).
 fn ci_document() -> Document {
-    let dir = std::env::temp_dir().join(format!("k14-registry-{}", std::process::id()));
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("k14-registry-{}-{nonce}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("a scratch directory");
     let out = dir.join("storage-results.json");
     let status = std::process::Command::new(STORAGE)
@@ -641,9 +653,15 @@ fn the_replicate_block_is_computed_from_the_two_ends_of_the_sweep() {
     };
     doc.push(row(8.0));
     // A cell from somewhere else in the sweep, which must not be mistaken for
-    // the closing control.
+    // the closing control. Its own `cell` spec moves with its scale, because a
+    // real row's spec is what names it and the block now matches on that: two
+    // `engines` cells can share a tile count and a source and differ only in
+    // their thread budget, and a filter that could not tell those apart would
+    // compute a spread across two different measurements and call it drift
+    // (#75).
     let mut other = row(999.0);
     other.scale = 1373;
+    other.cell = "8192x8192@256+gradient".to_string();
     doc.push(other);
     doc.push(row(9.6));
 

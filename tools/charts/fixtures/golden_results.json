@@ -22,7 +22,18 @@
       "rss_mb_iqr": 2.0,
       "rss_mb_ci95": 1.1
     },
-    "per_level_tiles": [64, 16, 4, 1],
+    "per_level_tiles": [
+      64,
+      16,
+      4,
+      1
+    ],
+    "artefact": {
+      "output_bytes": 1234567,
+      "filesystem_entries": 90,
+      "directories": 5,
+      "allocated_bytes": 1310720
+    },
     "equivalence_psnr_db": 48.5,
     "tiles_produced": 85,
     "levels_processed": 4,
@@ -56,7 +67,18 @@
       "rss_mb_iqr": 1.5,
       "rss_mb_ci95": 0.9
     },
-    "per_level_tiles": [64, 16, 4, 1],
+    "per_level_tiles": [
+      64,
+      16,
+      4,
+      1
+    ],
+    "artefact": {
+      "output_bytes": 1234567,
+      "filesystem_entries": 90,
+      "directories": 5,
+      "allocated_bytes": 1310720
+    },
     "equivalence_psnr_db": 47.9,
     "tiles_produced": 85,
     "levels_processed": 4,
@@ -90,7 +112,18 @@
       "rss_mb_iqr": 1.8,
       "rss_mb_ci95": 1.0
     },
-    "per_level_tiles": [64, 16, 4, 1],
+    "per_level_tiles": [
+      64,
+      16,
+      4,
+      1
+    ],
+    "artefact": {
+      "output_bytes": 1234567,
+      "filesystem_entries": 90,
+      "directories": 5,
+      "allocated_bytes": 1310720
+    },
     "equivalence_psnr_db": 47.8,
     "tiles_produced": 85,
     "levels_processed": 4,
@@ -124,7 +157,18 @@
       "rss_mb_iqr": 3.0,
       "rss_mb_ci95": 1.6
     },
-    "per_level_tiles": [64, 16, 4, 1],
+    "per_level_tiles": [
+      64,
+      16,
+      4,
+      1
+    ],
+    "artefact": {
+      "output_bytes": 1234567,
+      "filesystem_entries": 90,
+      "directories": 5,
+      "allocated_bytes": 1310720
+    },
     "equivalence_psnr_db": null,
     "tiles_produced": 85,
     "levels_processed": 4,

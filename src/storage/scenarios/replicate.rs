@@ -24,7 +24,11 @@ pub const REPLICATE_REPS: usize = 2;
 /// The rest keeps its order. A sweep with no other cells still gets two
 /// measurements of the replicate cell, because a spread over one measurement is
 /// not a spread.
-pub fn schedule(replicate: Cell, rest: &[Cell]) -> Vec<Cell> {
+///
+/// Generic over the cell type because both families schedule one, and a control
+/// is a control whether the thing being repeated is a storage cell or an engine
+/// cell (#75).
+pub fn schedule<T: Copy>(replicate: T, rest: &[T]) -> Vec<T> {
     let mut out = Vec::with_capacity(rest.len() + 2);
     out.push(replicate);
     out.extend_from_slice(rest);
@@ -33,7 +37,7 @@ pub fn schedule(replicate: Cell, rest: &[Cell]) -> Vec<Cell> {
 }
 
 /// Whether a schedule really measures `replicate` at both ends.
-pub fn measured_first_and_last(schedule: &[Cell], replicate: Cell) -> bool {
+pub fn measured_first_and_last<T: Copy + PartialEq>(schedule: &[T], replicate: T) -> bool {
     schedule.len() >= 2
         && schedule.first() == Some(&replicate)
         && schedule.last() == Some(&replicate)
@@ -137,14 +141,24 @@ use super::super::document::{Document, Replicate};
 /// a given `(scenario, backend, scale)` the control's first and last rows are
 /// the two ends of the sweep, which is the drift the spread is there to see.
 pub fn block_for(doc: &Document, profile: Profile) -> Option<Replicate> {
-    let control = replicate_cell(profile)?;
-    let scale = control.declared_tiles;
-    let source = control.source.as_str();
+    block_for_cell(doc, &replicate_cell(profile)?.spec())
+}
 
+/// The same block for a control cell named by its own spec.
+///
+/// Family-independent: it needs the control's name in the document and nothing
+/// else, so the `engines` family gets its noise floor from this rather than from
+/// a second copy of the arithmetic (#75).
+///
+/// Matched on the cell's own spec rather than on `(scale, source)`. Two
+/// `engines` cells can share a tile count and a source and differ only in their
+/// thread budget, and a filter that could not tell them apart would compute a
+/// spread across two different measurements and call it drift.
+pub fn block_for_cell(doc: &Document, spec: &str) -> Option<Replicate> {
     let mut firsts: BTreeMap<String, f64> = BTreeMap::new();
     let mut lasts: BTreeMap<String, f64> = BTreeMap::new();
     for cell in &doc.cells {
-        if cell.scale != scale || cell.source != source {
+        if cell.cell != spec {
             continue;
         }
         let Some(median) = cell.median else { continue };
@@ -175,7 +189,7 @@ pub fn block_for(doc: &Document, profile: Profile) -> Option<Replicate> {
     }
 
     Some(Replicate {
-        cell: control.spec(),
+        cell: spec.to_string(),
         replicate_reps: REPLICATE_REPS as u32,
         spread_pct: serde_json::Value::Object(spread),
     })

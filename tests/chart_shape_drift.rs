@@ -78,6 +78,12 @@ fn sample_run_metrics() -> RunMetrics {
             rss_mb_ci95: 1.1,
         }),
         per_level_tiles: vec![64, 16, 4, 1],
+        artefact: Some(libviprs_bench::ArtefactFacts {
+            output_bytes: 1_234_567,
+            filesystem_entries: 90,
+            directories: 5,
+            allocated_bytes: 1_310_720,
+        }),
         equivalence_psnr_db: Some(48.5),
         tiles_produced: 85,
         levels_processed: 4,
