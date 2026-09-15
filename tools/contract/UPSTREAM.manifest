@@ -1,0 +1,18 @@
+# The frozen contract: what tools/contract/upstream/ is a copy of.
+#
+# One line per frozen file: <git blob sha1>  <name>. The sha1 is exactly what
+# `git ls-tree` reports for that path at the pinned revision, so the same number
+# proves the copy offline (`git hash-object`) and against the clone (`git show`).
+repo   causl-org
+path   pages/benchmarks
+rev    cd65c76
+---
+72cdaf568cf881ae18a0c9f851661eab9d1c2248  comparable-era.test.mjs
+b5a45369e15fef5f942a55d19d8281872f6fdd23  dashboard.css
+2f3203769e3c49f64fc0747d8ef114ea31cee412  dashboard.js
+e1b82917a2d788dcf1975e1cf88ab08a80b6ab95  history.json
+46bca7033b29d05c4c1cba51f787102ea8784284  history.sample.json
+a3c7e9e1bed1e2243385bbd4689a03da62cc971b  import-run.mjs
+40337c48db9bf3f302011187de1e9631852188d1  import-run.test.mjs
+424f486bd99d09bdd9f547ed9728d8ba99f03bb6  regen-history-sample.mjs
+4bb85e06d22e9273da19451d204f79ad04238f56  render-latest.mjs

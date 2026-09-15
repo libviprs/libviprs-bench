@@ -1,0 +1,54 @@
+name: Contract
+
+# The frozen copy of causl's dashboard, import and render stack, and the config
+# that carries every libviprs difference.
+#
+# A separate workflow file rather than another job in ci.yml on purpose: adding
+# a job to an existing org workflow reds libviprs-tests' Hook Mirror until it is
+# mirrored, and a new workflow file does not.
+#
+# The gate needs node and nothing else. The manifest mode of sync-contract.sh
+# hashes the frozen files the way git hashes a blob, so it checks them against
+# the pin without a causl-org clone, which matters here: the causl repositories
+# are private Gitea and this runner cannot reach them. Clone mode is skipped and
+# the run says so in its own output rather than passing quietly.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'tools/contract/**'
+      - '.github/workflows/contract.yml'
+  pull_request:
+    paths:
+      - 'tools/contract/**'
+      - '.github/workflows/contract.yml'
+  workflow_dispatch:
+
+jobs:
+  contract:
+    name: Frozen contract gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # Four checks, and the whole point is that none of them can be skipped
+      # into a pass. `npm run gate` chains them, but they run separately here so
+      # a red tells you which one without reading a log.
+      - name: sync gate (the frozen copy is causl-org cd65c76)
+        working-directory: tools/contract
+        run: ./sync-contract.sh --check
+      - name: the generated dashboard is not stale
+        working-directory: tools/contract
+        run: node parameterize.mjs --check
+      - name: contract tests
+        working-directory: tools/contract
+        run: npm test
+      # causl's own two suites, run against the vendored copy. If the copy is
+      # byte-identical then these pass, and if they ever stop passing the copy
+      # is not what it says it is even when the hashes agree.
+      - name: causl's own tests against the vendored copy
+        working-directory: tools/contract
+        run: npm run test:upstream

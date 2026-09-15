@@ -1,0 +1,337 @@
+[
+  {
+    "source": "libviprs-bench",
+    "host": {
+      "os": "linux",
+      "arch": "aarch64",
+      "cpuModel": "aarch64 CPU implementer=0x61 CPU architecture=8 CPU part=0x000 CPU variant=0x0",
+      "ncpu": 8,
+      "inContainer": true,
+      "emulated": false,
+      "fingerprint": "linux|aarch64|aarch64 CPU implementer=0x61 CPU architecture=8 CPU part=0x000 CPU variant=0x0|8|true|false",
+      "fsType": "unknown"
+    },
+    "libraries": {
+      "pmtiles": {
+        "package": "libviprs",
+        "version": "0.5.0"
+      },
+      "directory": {
+        "package": "libviprs",
+        "version": "0.5.0"
+      }
+    },
+    "capturedAt": "2026-09-14T14:57:07.877Z",
+    "version": "sha256:6a712af369d3229bb359a13bc3b6ece1bd3bff02257f540f85c0e0f1b0cf49d3",
+    "runId": "sha256:6a712af369d3229bb359a13bc3b6ece1bd3bff02257f540f85c0e0f1b0cf49d3",
+    "constructed": false,
+    "derivedFrom": {
+      "file": "20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939.json",
+      "documentDigest": "sha256:6a712af369d3229bb359a13bc3b6ece1bd3bff02257f540f85c0e0f1b0cf49d3",
+      "sha256OfFile": "sha256:081ef1ef26d445ae9662bcbb2fd6971876642aaa5823ee3cef0bd8330c446850"
+    },
+    "samples": [
+      {
+        "library": "directory",
+        "scenario": "read_concurrent@4.lookups_per_s · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_concurrent@4.lookups_per_s",
+        "source": "gradient",
+        "unit": "1/s",
+        "direction": "higher-is-better",
+        "medianMs": 362662.329865,
+        "p95Ms": 399346.647197,
+        "reps": 20,
+        "cov": 0.07135196562200159,
+        "confidence": "high",
+        "lowConfidenceReasons": [],
+        "timerSaturated": null,
+        "replicateSpreadPct": 53.346575108075356,
+        "gated": null,
+        "expectedVerdict": null
+      },
+      {
+        "library": "pmtiles",
+        "scenario": "read_concurrent@4.lookups_per_s · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_concurrent@4.lookups_per_s",
+        "source": "gradient",
+        "unit": "1/s",
+        "direction": "higher-is-better",
+        "medianMs": 379011.475863,
+        "p95Ms": 557436.077079,
+        "reps": 20,
+        "cov": 0.1605847116038995,
+        "confidence": "low",
+        "lowConfidenceReasons": [
+          "cov 0.161 above 0.15"
+        ],
+        "timerSaturated": null,
+        "replicateSpreadPct": 0.19462416984580957,
+        "gated": null,
+        "expectedVerdict": null
+      },
+      {
+        "library": "pmtiles",
+        "scenario": "read_random.p50 · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_random.p50",
+        "source": "gradient",
+        "unit": "us",
+        "direction": "lower-is-better",
+        "medianMs": 4.042,
+        "p95Ms": 4.3917,
+        "reps": 20,
+        "cov": 0.0429942170697284,
+        "confidence": "low",
+        "lowConfidenceReasons": [
+          "timer saturated"
+        ],
+        "timerSaturated": true,
+        "replicateSpreadPct": 5.452648056352716,
+        "gated": null,
+        "expectedVerdict": null
+      },
+      {
+        "library": "directory",
+        "scenario": "read_random.p50 · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_random.p50",
+        "source": "gradient",
+        "unit": "us",
+        "direction": "lower-is-better",
+        "medianMs": 3.75,
+        "p95Ms": 3.7982,
+        "reps": 20,
+        "cov": 0.010343758514121915,
+        "confidence": "low",
+        "lowConfidenceReasons": [
+          "timer saturated"
+        ],
+        "timerSaturated": true,
+        "replicateSpreadPct": 3.4482758620689653,
+        "gated": null,
+        "expectedVerdict": null
+      },
+      {
+        "library": "pmtiles",
+        "scenario": "generate.wall · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "generate.wall",
+        "source": "gradient",
+        "unit": "ms",
+        "direction": "lower-is-better",
+        "medianMs": 65.411,
+        "p95Ms": 66.149304,
+        "reps": 7,
+        "cov": 0.022450254361465614,
+        "confidence": "high",
+        "lowConfidenceReasons": [],
+        "timerSaturated": false,
+        "replicateSpreadPct": 2.1481612612620546,
+        "gated": null,
+        "expectedVerdict": null
+      },
+      {
+        "library": "directory",
+        "scenario": "generate.wall · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "generate.wall",
+        "source": "gradient",
+        "unit": "ms",
+        "direction": "lower-is-better",
+        "medianMs": 46.422917,
+        "p95Ms": 50.382633,
+        "reps": 7,
+        "cov": 0.04514884072521985,
+        "confidence": "high",
+        "lowConfidenceReasons": [],
+        "timerSaturated": false,
+        "replicateSpreadPct": null,
+        "gated": null,
+        "expectedVerdict": null
+      }
+    ],
+    "skipped": [
+      {
+        "library": "directory",
+        "scenario": "decode_root.p50 · gradient",
+        "scale": 93,
+        "status": "SKIP",
+        "outcome": "failed",
+        "reason": "a directory tree has no root directory to decode; its index work happens in the kernel one path resolution at a time"
+      },
+      {
+        "library": "directory",
+        "scenario": "decode_root.p50 · gradient",
+        "scale": 93,
+        "status": "SKIP",
+        "outcome": "failed",
+        "reason": "a directory tree has no root directory to decode; its index work happens in the kernel one path resolution at a time"
+      }
+    ]
+  },
+  {
+    "source": "libviprs-bench",
+    "host": {
+      "os": "linux",
+      "arch": "aarch64",
+      "cpuModel": "aarch64 CPU implementer=0x61 CPU architecture=8 CPU part=0x000 CPU variant=0x0",
+      "ncpu": 8,
+      "inContainer": true,
+      "emulated": false,
+      "fingerprint": "linux|aarch64|aarch64 CPU implementer=0x61 CPU architecture=8 CPU part=0x000 CPU variant=0x0|8|true|false",
+      "fsType": "unknown"
+    },
+    "libraries": {
+      "pmtiles": {
+        "package": "libviprs",
+        "version": "0.5.0"
+      },
+      "directory": {
+        "package": "libviprs",
+        "version": "0.5.0"
+      }
+    },
+    "capturedAt": "2026-09-15T14:57:07.877Z",
+    "version": "CONSTRUCTED-FIXTURE-RUN-2",
+    "runId": "CONSTRUCTED-FIXTURE-RUN-2",
+    "constructed": true,
+    "constructedWhy": "Renderer fixture. The medians here were moved by hand from run 1 by the percentages in fixtures/make-libviprs-history.mjs so that each verdict kind is reachable. These are not measurements and must never be imported into a published history.",
+    "samples": [
+      {
+        "library": "directory",
+        "scenario": "read_concurrent@4.lookups_per_s · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_concurrent@4.lookups_per_s",
+        "source": "gradient",
+        "unit": "1/s",
+        "direction": "higher-is-better",
+        "medianMs": 435194.795838,
+        "p95Ms": 479215.976636,
+        "reps": 20,
+        "cov": 0.07135196562200159,
+        "confidence": "high",
+        "lowConfidenceReasons": [],
+        "timerSaturated": null,
+        "replicateSpreadPct": 53.346575108075356,
+        "gated": null,
+        "expectedVerdict": "noise"
+      },
+      {
+        "library": "pmtiles",
+        "scenario": "read_concurrent@4.lookups_per_s · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_concurrent@4.lookups_per_s",
+        "source": "gradient",
+        "unit": "1/s",
+        "direction": "higher-is-better",
+        "medianMs": 682220.656554,
+        "p95Ms": 1003384.938743,
+        "reps": 20,
+        "cov": 0.1605847116038995,
+        "confidence": "low",
+        "lowConfidenceReasons": [
+          "cov 0.161 above 0.15"
+        ],
+        "timerSaturated": null,
+        "replicateSpreadPct": 0.19462416984580957,
+        "gated": null,
+        "expectedVerdict": "regressed"
+      },
+      {
+        "library": "pmtiles",
+        "scenario": "read_random.p50 · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_random.p50",
+        "source": "gradient",
+        "unit": "us",
+        "direction": "lower-is-better",
+        "medianMs": 4.08242,
+        "p95Ms": 4.435617,
+        "reps": 20,
+        "cov": 0.0429942170697284,
+        "confidence": "low",
+        "lowConfidenceReasons": [
+          "timer saturated"
+        ],
+        "timerSaturated": true,
+        "replicateSpreadPct": 5.452648056352716,
+        "gated": null,
+        "expectedVerdict": "noise"
+      },
+      {
+        "library": "directory",
+        "scenario": "read_random.p50 · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "read_random.p50",
+        "source": "gradient",
+        "unit": "us",
+        "direction": "lower-is-better",
+        "medianMs": 4.6875,
+        "p95Ms": 4.74775,
+        "reps": 20,
+        "cov": 0.010343758514121915,
+        "confidence": "low",
+        "lowConfidenceReasons": [
+          "timer saturated"
+        ],
+        "timerSaturated": true,
+        "replicateSpreadPct": 3.4482758620689653,
+        "gated": null,
+        "expectedVerdict": "regressed"
+      },
+      {
+        "library": "pmtiles",
+        "scenario": "generate.wall · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "generate.wall",
+        "source": "gradient",
+        "unit": "ms",
+        "direction": "lower-is-better",
+        "medianMs": 91.5754,
+        "p95Ms": 92.609026,
+        "reps": 7,
+        "cov": 0.022450254361465614,
+        "confidence": "high",
+        "lowConfidenceReasons": [],
+        "timerSaturated": false,
+        "replicateSpreadPct": 2.1481612612620546,
+        "gated": false,
+        "expectedVerdict": "ungated"
+      },
+      {
+        "library": "directory",
+        "scenario": "generate.wall · gradient",
+        "scale": 93,
+        "cell": "2048x2048@256+gradient",
+        "key": "generate.wall",
+        "source": "gradient",
+        "unit": "ms",
+        "direction": "lower-is-better",
+        "medianMs": 64.992084,
+        "p95Ms": 70.535687,
+        "reps": 7,
+        "cov": 0.04514884072521985,
+        "confidence": "high",
+        "lowConfidenceReasons": [],
+        "timerSaturated": false,
+        "replicateSpreadPct": null,
+        "gated": null,
+        "expectedVerdict": "unknown"
+      }
+    ],
+    "skipped": []
+  }
+]
