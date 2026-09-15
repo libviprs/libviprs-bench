@@ -1,0 +1,46 @@
+name: Publication tools
+
+# The importer's tests, which are Node and not cargo, so `ci.yml`'s two jobs
+# never reach them.
+#
+# A new workflow **file** rather than a step added to `ci.yml`'s `check` job,
+# deliberately and for the same reason `storage-measured.yml` is one:
+# libviprs-tests' Hook Mirror guard compares `ci.yml` against
+# `tools/install-hooks.sh`, so a change there reddens another repository until it
+# is mirrored in the same wave, and a new file does not. When K2.3 lands its own
+# `node --test` step for `tools/contract/`, the two collapse into one step and
+# the mirror change happens once instead of twice.
+#
+# Node is on the runner image already, and the suite needs nothing else: no
+# dependencies, no package.json, no lockfile. The material it runs against is
+# `archive/storage/`, which is in the repository, so there is no capability here
+# that can be missing and turn a skip into something the same colour as a pass.
+
+on:
+  push:
+    branches: ['**']
+  schedule:
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+
+jobs:
+  publish-tools:
+    name: Importer (node --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: node --test tools/publish
+        run: |
+          node --version
+          node --test 'tools/publish/*.test.mjs'
+      # A positive control on the control. The suite's first assertion is that
+      # the real archived run imports; if the archive ever stops being in the
+      # repository, every refusal test still passes and proves nothing, so the
+      # file is asserted to be here rather than assumed.
+      - name: the archived run is in the repository
+        run: |
+          test -f archive/storage/20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939.json
+          grep -q '20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939' archive/storage/index.json
