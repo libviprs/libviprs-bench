@@ -4,6 +4,12 @@
 #
 #   tools/capture-nas.sh [--profile full|xl|ci] [--out <dir>] [--keep]
 #
+# This is the capture half only: it brings two documents back and stops. The
+# publishing path is `tools/capture.py`, which does this and then checks,
+# archives, verifies and imports, and writes nothing into the repository unless
+# every one of those passes. The traps below are the same six, and the driver
+# carries them rather than restating them.
+#
 # The NAS (rom@192.168.0.10, HIGARA) is the only native x86_64 host available.
 # Everything this suite publishes otherwise is arm64, and an amd64 container on
 # an Apple Silicon Mac is Rosetta, which the emulation probe refuses. So a run
@@ -56,7 +62,7 @@ while [ $# -gt 0 ]; do
     --profile) PROFILE=$2; shift 2 ;;
     --out)     OUT=$2; shift 2 ;;
     --keep)    KEEP=true; shift ;;     # leave the scratch tree for debugging
-    -h|--help) sed -n '2,40p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
