@@ -367,6 +367,7 @@ def nas_container(
     interactive: bool = False,
     env: tuple[tuple[str, str], ...] = (),
     workdir: str | None = None,
+    container: str | None = None,
 ) -> str:
     """One container invocation on the NAS, spelled out.
 
@@ -376,6 +377,11 @@ def nas_container(
     somewhere the guard is looking.
     """
     parts = ["docker run --rm"]
+    if container:
+        # A name, so cleanup can reach it. Without one the build driver is a
+        # random two-word container and the only way to find it is to read what
+        # it is running, which cleanup cannot do reliably and a person has to.
+        parts.append(f"--name {container}")
     if interactive:
         parts.append("-i")
     parts.append(f"--platform {NAS_PLATFORM}")
@@ -457,6 +463,18 @@ def build_driver_image(ex: Executor) -> None:
     )
 
 
+def build_container(name: str, family: str) -> str:
+    """The name the build driver's container carries, so cleanup can find it.
+
+    This is not tidiness. Interrupting the driver on this machine does not stop
+    the build: SIGINT reaches the Python process, `subprocess.run` raises, and
+    the ssh child and everything downstream of it keep going, so the NAS carries
+    on compiling for another half hour with nobody attached. Cleanup can remove a
+    container it can name, and it could not name this one.
+    """
+    return f"viprs-build-{family}-{name}"
+
+
 def build_family_image(ex: Executor, name: str, family: str) -> str:
     tag = f"viprs-nas-{family}:{name}"
     root = scratch_root(name)
@@ -469,6 +487,7 @@ def build_family_image(ex: Executor, name: str, family: str) -> str:
             f"--target {family} -t {tag} . >/dev/null'",
             mounts=(("/var/run/docker.sock", "/var/run/docker.sock"), (root, "/work")),
             workdir="/work",
+            container=build_container(name, family),
         ),
     )
     return tag
@@ -526,6 +545,15 @@ def cleanup(ex: Executor, name: str) -> dict:
         "cleanup.images",
         " ; ".join(
             [
+                # The build driver first, by name. It outlives an interrupted
+                # driver otherwise, because SIGINT stops the Python process and
+                # not the ssh child, and the machine keeps compiling for half an
+                # hour with nobody attached. Removing the CLI container drops
+                # BuildKit's session, which cancels the build.
+                f"docker rm -f {build_container(name, fam)} 2>/dev/null || true"
+                for fam in FAMILIES
+            ]
+            + [
                 f"docker rm -f $(docker ps -aq --filter ancestor=viprs-nas-{fam}:{name}) 2>/dev/null || true"
                 for fam in FAMILIES
             ]
