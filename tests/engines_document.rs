@@ -346,30 +346,55 @@ fn a_derived_column_with_no_denominator_publishes_no_sample_rather_than_a_zero()
     // self-report was zero, which is what `peak_rss_bytes: 0` means.
     runs[1].peak_rss_bytes = 0;
     let built = rows(&runs);
-    let tps_mb = built
-        .iter()
-        .find(|c| c.metric == "tiles_per_second_per_mb")
-        .expect("a derived row");
-    assert_eq!(
-        tps_mb.samples.len(),
-        2,
-        "the repetition with no RSS contributes no sample: {:?}",
-        tps_mb.samples
-    );
-    assert!(
-        !tps_mb.samples.contains(&0.0),
-        "a zero here reads as a measurement of no efficiency at all"
-    );
-    assert_eq!(tps_mb.reps, 3, "the cell still declares three repetitions");
-    assert_eq!(tps_mb.confidence, "low");
-    assert!(
-        tps_mb
-            .low_confidence_reasons
+
+    // BOTH derived columns, because both divide by the peak RSS and a test that
+    // checked one of them let a mutation through: publishing `resource_cost` as
+    // `0.0` where there is no denominator survived this test until the mutation
+    // row caught it. Lower is better on resource cost, so a hole written as a
+    // zero there is the BEST possible score.
+    for metric in ["tiles_per_second_per_mb", "resource_cost"] {
+        let row = built
             .iter()
-            .any(|r| r.contains("minReps")),
-        "and it says why: {:?}",
-        tps_mb.low_confidence_reasons
-    );
+            .find(|c| c.metric == metric)
+            .unwrap_or_else(|| panic!("a {metric} row"));
+        assert_eq!(
+            row.samples.len(),
+            2,
+            "{metric}: the repetition with no RSS contributes no sample: {:?}",
+            row.samples
+        );
+        assert!(
+            !row.samples.contains(&0.0),
+            "{metric}: a zero here reads as a measurement rather than as a hole"
+        );
+        assert_eq!(
+            row.reps, 3,
+            "{metric}: the cell still declares three repetitions"
+        );
+        assert_eq!(row.confidence, "low", "{metric}");
+        assert!(
+            row.low_confidence_reasons
+                .iter()
+                .any(|r| r.contains("minReps")),
+            "{metric} says why: {:?}",
+            row.low_confidence_reasons
+        );
+    }
+
+    // And the control: the columns that do not divide by the RSS keep all three
+    // samples, so the assertion above is about the denominator rather than about
+    // the repetition being dropped everywhere.
+    for metric in ["wall", "tracked_memory_mb", "tiles_per_second"] {
+        let row = built
+            .iter()
+            .find(|c| c.metric == metric)
+            .unwrap_or_else(|| panic!("a {metric} row"));
+        assert_eq!(
+            row.samples.len(),
+            3,
+            "{metric} needs no RSS to be computable"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
