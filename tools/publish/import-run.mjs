@@ -57,7 +57,7 @@
 //
 // Usage, where everything but the document defaults out of the config:
 //   node tools/publish/import-run.mjs --document archive/storage/<runId>.json
-//     [--archive  archive/storage]                  producer.archiveDir
+//     [--archive  archive/<family>]                 producer.archiveRoot
 //     [--history  tools/publish/history.json]       producer.historyPath
 //     [--config   tools/contract/config.json]       then tools/publish/config.json
 //     [--baseline archive/storage/baseline-<host8>.json]
