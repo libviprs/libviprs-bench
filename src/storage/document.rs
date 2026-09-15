@@ -306,8 +306,9 @@ impl From<Warmup> for WarmupBlock {
 
 /// The machine's load while a cell was measured.
 ///
-/// Every field is nullable because `/proc/loadavg` exists on Linux and nowhere
-/// else this crate builds for, and an unknown load is not a quiet one.
+/// Every field is nullable because a platform that will not say what it is
+/// carrying has to be recorded as silent rather than as idle, and an unknown
+/// load is not a quiet one.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MachineLoad {
     pub cores: Option<usize>,
@@ -321,11 +322,15 @@ pub struct MachineLoad {
 
 impl MachineLoad {
     /// Sample the load, where the platform has one to sample.
+    ///
+    /// Through `provenance::load_average` and never through `/proc/loadavg`
+    /// directly. This used to read the file itself, which meant Linux only, so
+    /// on macOS every cell published `loadAvg1m: null` while the provenance
+    /// block on the same document carried a real reading taken through
+    /// `getloadavg`. One number, one reader.
     pub fn sample() -> MachineLoad {
         let cores = std::thread::available_parallelism().map(|n| n.get()).ok();
-        let load = std::fs::read_to_string("/proc/loadavg")
-            .ok()
-            .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok());
+        let load = crate::provenance::load_average().map(|la| la.one_min);
         let contention = match (load, cores) {
             (Some(l), Some(c)) if c > 0 => Some(l / c as f64),
             _ => None,
