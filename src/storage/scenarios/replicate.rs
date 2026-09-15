@@ -250,8 +250,7 @@ pub fn dispersion(values: &[f64]) -> Option<Dispersion> {
     // is published for reading rather than for grading, and `spreadPct`, which
     // IS graded against, carries no such approximation.
     let residual_sd = (residual_ss / (count - 2.0)).sqrt();
-    let residual_pct =
-        t_975(n - 2)? * (1.0 + 1.0 / count).sqrt() * residual_sd / centre * 100.0;
+    let residual_pct = t_975(n - 2)? * (1.0 + 1.0 / count).sqrt() * residual_sd / centre * 100.0;
 
     Some(Dispersion {
         floor_pct,

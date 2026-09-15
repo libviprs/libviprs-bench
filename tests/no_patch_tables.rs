@@ -125,9 +125,7 @@ fn patch_declarations(text: &str) -> Vec<(usize, String)> {
             continue;
         }
 
-        if at_top_level
-            && let Some((key, _)) = line.split_once('=')
-        {
+        if at_top_level && let Some((key, _)) = line.split_once('=') {
             let key = normalised_key(key);
             if is_patch_key(&key) {
                 found.push((index + 1, format!("{key} = …")));

@@ -207,19 +207,19 @@ pub fn run_arm(
     // instead of unwinding the parent: `Scenario::run` turns it into a
     // `Skip::failed` and the rest of the sweep continues.
     let per_thread: Vec<ThreadOutcome> = std::thread::scope(|scope| {
-            let handles: Vec<_> = pieces
-                .iter()
-                .map(|piece| scope.spawn(|| walk(reader, piece)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|handle| {
-                    handle
-                        .join()
-                        .unwrap_or_else(|_| Err("a lookup thread panicked".to_string()))
-                })
-                .collect()
-        });
+        let handles: Vec<_> = pieces
+            .iter()
+            .map(|piece| scope.spawn(|| walk(reader, piece)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("a lookup thread panicked".to_string()))
+            })
+            .collect()
+    });
     let elapsed = started.elapsed();
 
     let mut latencies = Vec::with_capacity(coords.len());
