@@ -603,37 +603,29 @@ fn the_sweep_records_the_machine_before_it_measures_anything() {
         starting["cores"]
     );
 
-    // Both arms assert. A `#[cfg]` that asserts on one platform and returns on
-    // the other is a skip wearing a pass's colour, and the whole point of the
-    // field is that "I could not read it" is a refusal rather than a shrug.
-    if cfg!(target_os = "linux") {
-        let load = starting["loadAvg1m"]
-            .as_f64()
-            .expect("linux has /proc/loadavg, so the load is a number");
-        let contention = starting["contentionPerCore"]
-            .as_f64()
-            .expect("the contention is derived from the load and the cores");
-        let cores = starting["cores"].as_u64().expect("the cores are a number") as f64;
-        assert!(load >= 0.0 && load.is_finite(), "load {load}");
-        assert!(
-            (contention - load / cores).abs() < 1e-9,
-            "the contention must be the load over the cores: {contention} against {load}/{cores}"
-        );
-        assert_eq!(
-            starting["quiet"].as_bool(),
-            Some(contention < 1.0),
-            "the verdict has to follow from the number beside it, or the importer refuses the run"
-        );
-    } else {
-        assert!(
-            starting["loadAvg1m"].is_null(),
-            "this platform has no /proc/loadavg, so the load is null: an unknown load must not \
-             be published as a number the gate would then read as quiet"
-        );
-        assert!(
-            starting["quiet"].is_null(),
-            "unknown is not quiet, got {}",
-            starting["quiet"]
-        );
-    }
+    // No `#[cfg]` split. Both platforms this crate builds for can say what they
+    // are carrying, Linux through `/proc/loadavg` and macOS through
+    // `getloadavg`, and `MachineLoad` now goes through the one reader that knows
+    // both. A test that asserted on Linux and shrugged elsewhere would be a skip
+    // wearing a pass's colour, and it would have hidden exactly the bug this
+    // paragraph is about: the old reader was Linux-only, so a document captured
+    // on a Mac published a null load the publish gate then refused as
+    // unreadable.
+    let load = starting["loadAvg1m"]
+        .as_f64()
+        .expect("every platform this crate builds for reports a load average");
+    let contention = starting["contentionPerCore"]
+        .as_f64()
+        .expect("the contention is derived from the load and the cores");
+    let cores = starting["cores"].as_u64().expect("the cores are a number") as f64;
+    assert!(load >= 0.0 && load.is_finite(), "load {load}");
+    assert!(
+        (contention - load / cores).abs() < 1e-9,
+        "the contention must be the load over the cores: {contention} against {load}/{cores}"
+    );
+    assert_eq!(
+        starting["quiet"].as_bool(),
+        Some(contention < 1.0),
+        "the verdict has to follow from the number beside it, or the importer refuses the run"
+    );
 }
