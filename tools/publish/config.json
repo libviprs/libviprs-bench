@@ -64,6 +64,19 @@
     "familyIdPrefix": "libviprs-",
     "schemaVersion": 1,
 
+    "rowIdentityFrom": ["backend", "cell", "source", "key"],
+    "_rowIdentityFrom": [
+      "What makes two rows the same row, and therefore what makes the second one a",
+      "replicate. The producer names a cell and the run declares which cell it measured",
+      "twice, so identity is the producer's own fields and nothing the page decides. It",
+      "used to be the section key plus the tile count and neither names a cell: every",
+      "`+c8` cell in the engines family shares both with its `+c1` twin, which filed 144",
+      "rows of the concurrency arm as replicates, and 21851 is both",
+      "`8192x8192@64+gradient` and `8192x8192@64+noise`. `backend` and not the renamed",
+      "series, because a rename is a display decision; no scale, because `cell` already",
+      "determines it. Every field here is required on every measured cell, so a document",
+      "that cannot be identified is refused rather than read as one row repeated."
+    ],
     "seriesFrom": "backend",
     "runnerToSeries": {},
 

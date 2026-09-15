@@ -101,7 +101,10 @@ const rowsFor = (backend, key, names) => (cells) => {
       (c) => c.outcome === 'ok' && c.backend === backend && c.key === key && c.cell === name,
     ),
   );
-  assert.ok(found.every(Boolean), `the archived run has no ${backend}/${key} row for each of ${names}`);
+  assert.ok(
+    found.every(Boolean),
+    `the archived run has no ${backend}/${key} row for each of ${names}`,
+  );
   return found;
 };
 
