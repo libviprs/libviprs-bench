@@ -956,6 +956,9 @@ fn parse_unit(s: &str) -> Unit {
         "ms" => Unit::Milliseconds,
         "us" => Unit::Microseconds,
         "1/s" => Unit::PerSecond,
+        "MB" => Unit::Megabytes,
+        "1/s/MB" => Unit::PerSecondPerMegabyte,
+        "MB*s/tile" => Unit::MegabyteSecondsPerTile,
         "bytes" => Unit::Bytes,
         "ratio" => Unit::Ratio,
         _ => Unit::Count,
@@ -1102,6 +1105,9 @@ pub fn run_sweep(profile: Profile) -> Document {
     doc.replicate = scenarios::replicate::block_for(&doc, profile);
     doc.finished_at = Some(now_iso());
     doc.provenance = Some(sweep_provenance(profile, &doc));
+    // The dirt travels with every number or the run is refused for the rule
+    // `--allow-dirty` exists to satisfy. Nothing filled this until #75.
+    doc.stamp_dirty_from_provenance();
     // After the provenance, because the id is derived from it. The aggregator
     // derives the same id from the same fields when it files the run; the
     // document carrying it means a reader who never runs the aggregator can

@@ -141,6 +141,14 @@ pub enum Unit {
     Bytes,
     Count,
     Ratio,
+    /// Mebibytes. The `engines` family's two memory columns are in these and
+    /// have been since long before this document existed, so converting them to
+    /// bytes here would silently restate every published number.
+    Megabytes,
+    /// Throughput per mebibyte of peak RSS: the memory-efficiency column.
+    PerSecondPerMegabyte,
+    /// Mebibyte-seconds per tile: the resource-cost column.
+    MegabyteSecondsPerTile,
 }
 
 impl Unit {
@@ -152,6 +160,14 @@ impl Unit {
             Unit::Bytes => "bytes",
             Unit::Count => "count",
             Unit::Ratio => "ratio",
+            Unit::Megabytes => "MB",
+            Unit::PerSecondPerMegabyte => "1/s/MB",
+            // ASCII, deliberately. The human-facing tables write this with a
+            // middle dot and the canonicaliser only refuses a non-ASCII *key*,
+            // but a unit string is matched on by the page's config and a
+            // character that two editors disagree about encoding is a bad thing
+            // to match on.
+            Unit::MegabyteSecondsPerTile => "MB*s/tile",
         }
     }
 }

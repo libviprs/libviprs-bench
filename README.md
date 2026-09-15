@@ -257,6 +257,41 @@ The output is one JSON document per sweep rather than a chart set, because the
 family's claim is a comparison between two backends on identical work and the
 page draws it from an archived history rather than from the last run.
 
+## The `engines` document
+
+The same family the default build has always measured, emitting the same
+document the `storage` family does instead of a bare JSON array with no
+provenance on it.
+
+```bash
+cargo run --release --bin engines -- --profile ci     # proves the harness runs
+cargo run --release --bin engines -- --profile full   # the publishable sweep
+```
+
+Every `(engine, canvas, thread budget)` cell takes a discarded warm-up and then
+seven timed repetitions, **each in its own child process**. That is not
+tidiness. `scalability` runs all three engines in one process and reads
+`getrusage(RUSAGE_SELF).ru_maxrss`, a monotonic process-wide high-water mark, so
+whichever engine peaks highest sets the watermark and every engine measured
+after it reports that number as its own: the first full capture has
+byte-identical peak RSS for all three engines in twenty of twenty groups. A
+child per repetition makes it a per-run peak, taken by the parent through
+`wait4`, on one basis for every engine.
+
+A cell publishes `wall`, `peak_rss_mb`, `tracked_memory_mb`,
+`tiles_per_second` and the two derived columns, each as `samples[]` with a
+median, an IQR, a bootstrap interval and a `confidence`. `tiles_produced`,
+`output_bytes`, `filesystem_entries` and `directories` are not timings and are
+not published as any: they are invariants with an equality verdict, and a cell
+whose repetitions disagree about one of them is refused with the field named
+rather than averaged.
+
+| profile | what it is for |
+|---|---|
+| `ci` | proves the harness runs. One small canvas at one thread, seconds. **Never published**, and the binary says so on stderr. |
+| `full` | the publishable sweep: eight canvases, one thread and all cores, seven repetitions. |
+| `xl` | `full` plus the two largest canvases, whose monolithic peak needs a container with room for it. |
+
 ## The archive, and what refuses a run
 
 A benchmark number is worth keeping only if the document carrying it can say
@@ -266,12 +301,18 @@ what produced it. `storage-aggregate` is the door:
 cargo run --release --bin storage-aggregate -- --provenance          # before a sweep
 cargo run --release --bin storage-aggregate -- --check   run.json
 cargo run --release --bin storage-aggregate -- --archive run.json
-cargo run --release --bin storage-aggregate -- --verify  archive/storage/<runId>.json
+cargo run --release --bin storage-aggregate -- --verify  archive/<family>/<runId>.json
 ```
 
 Exit 0 means admissible or verified, 1 means refused, 2 means the invocation was
 wrong. A refusal is a 1 rather than a 2 because it is an answer, not a failure to
 run.
+
+It takes either family's document. `--archive` with no `--root` files a run
+under `archive/<family>/`, one directory and one index per family, because both
+families derive a run id from the same fields: two sweeps started in the same
+second against the same commit on the same host derive the *same* id, and in one
+directory the second would be reported as a collision with the first.
 
 `--provenance` is the one to run first: everything it warns about is also a
 refusal, and learning it after forty minutes of measuring is the expensive way to

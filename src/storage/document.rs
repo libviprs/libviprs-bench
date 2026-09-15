@@ -752,6 +752,41 @@ impl Document {
         )
     }
 
+    /// Stamp the dirt onto every cell when a tree was dirty.
+    ///
+    /// The aggregator refuses a document whose `provenance.allowDirty` is true
+    /// and whose cells do not each carry `dirty: true`, because the caveat has
+    /// to travel with every number rather than sit in a header nobody reads
+    /// when they quote one cell. Nothing filled it, so `--allow-dirty` produced
+    /// a document refused for the very rule that flag exists to satisfy: both
+    /// families earned `dirty-not-stamped` on every allowed run.
+    ///
+    /// Stamped from the provenance and never from a flag, so a run that
+    /// declares `allowDirty` on a clean tree does not acquire a caveat it has
+    /// not earned. A clean tree leaves the field `null`, which is what it has
+    /// always been.
+    pub fn stamp_dirty_from_provenance(&mut self) {
+        let Some(provenance) = self.provenance.as_ref() else {
+            return;
+        };
+        let flag = |path: &[&str]| -> bool {
+            let mut cursor = provenance;
+            for key in path {
+                match cursor.get(key) {
+                    Some(next) => cursor = next,
+                    None => return false,
+                }
+            }
+            cursor.as_bool() == Some(true)
+        };
+        if !(flag(&["dirty"]) || flag(&["library", "dirty"])) {
+            return;
+        }
+        for cell in &mut self.cells {
+            cell.dirty = Some(true);
+        }
+    }
+
     /// Stamp `runId` from the document's own evidence.
     ///
     /// Called after `provenance` is filled, because that is where the evidence

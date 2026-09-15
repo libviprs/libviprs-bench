@@ -176,3 +176,13 @@ required-features = ["polars"]
 [[bin]]
 name = "storage"
 path = "src/storage_main.rs"
+
+# The engines family's document runner (issue #75): the same envelope the
+# storage family emits, over monolithic vs streaming vs mapreduce. It is its own
+# binary for the same two reasons `storage` is: it builds with no cargo features
+# at all, and it re-executes ITSELF as the `--single` child that gives each
+# repetition a fresh process, so the peak RSS it publishes is a per-run peak
+# rather than a process-wide watermark three engines share.
+[[bin]]
+name = "engines"
+path = "src/engines_main.rs"
