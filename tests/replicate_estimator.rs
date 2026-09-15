@@ -355,8 +355,14 @@ fn the_floor_widens_when_it_rests_on_fewer_points() {
     let mut previous = two;
     for n in 3..=64 {
         let k = replicate::prediction_multiplier(n).expect("a multiplier");
-        assert!(k < previous, "the multiplier did not fall from {n} - 1 to {n}");
-        assert!(k > 1.959, "it must never fall below the normal quantile: {k}");
+        assert!(
+            k < previous,
+            "the multiplier did not fall from {n} - 1 to {n}"
+        );
+        assert!(
+            k > 1.959,
+            "it must never fall below the normal quantile: {k}"
+        );
         previous = k;
     }
     // The two counts this suite actually publishes.
@@ -482,8 +488,8 @@ fn the_document_floor_reads_every_placement_and_not_just_the_two_ends() {
     );
 
     let doc = doc_with_placements(&medians);
-    let block = replicate::block_for_cell(&doc, &control().spec())
-        .expect("six placements publish a floor");
+    let block =
+        replicate::block_for_cell(&doc, &control().spec()).expect("six placements publish a floor");
     let (floor, drift, residual) = published(&block);
 
     assert_eq!(block.replicate_reps, 6);
@@ -536,7 +542,14 @@ fn the_block_says_which_estimator_its_floor_came_from() {
         .collect();
     assert_eq!(
         keys,
-        ["cell", "replicateReps", "estimator", "spreadPct", "driftPct", "residualPct"]
+        [
+            "cell",
+            "replicateReps",
+            "estimator",
+            "spreadPct",
+            "driftPct",
+            "residualPct"
+        ]
     );
 
     let archived: Replicate = serde_json::from_str(
