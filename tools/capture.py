@@ -55,6 +55,15 @@ THE TRAPS, CARRIED FORWARD FROM tools/capture-nas.sh RATHER THAN REDISCOVERED
  7. Six cores decline every T=8 rung, so an x86_64 run carries fewer storage
     cells than an eight-core arm64 one. The summary says so rather than leaving
     a reader to wonder why two runs of one profile have different cell counts.
+ 8. Every directory in the scratch tree is created INSIDE a container, including
+    the scratch root. The shell script creates the root with a host-side
+    `mkdir -p` and gets away with it because it only ever creates the root. This
+    driver pushes a second tree beside the first, and by then the root is not the
+    host account's: `tar -xf` of an archive whose top entry is `.` restores that
+    entry's ownership onto the destination, the tar is made on a Mac at uid 501
+    and the NAS account is uid 1001. So the second `mkdir -p` dies with
+    "Permission denied" on a directory that plainly exists. The first end-to-end
+    run failed there, after fifty minutes of building.
 
 -----------------------------------------------------------------------------
 WHY NOTHING IS WRITTEN UNTIL EVERYTHING HAS PASSED
@@ -387,10 +396,42 @@ def push_tree(ex: Executor, name: str, tarball: Path, dest: str) -> None:
     The unpack is the trap the rule names explicitly, and it is the mistake the
     first version of the shell script made: a host-side `tar -xf` does not feel
     like work and executes on the machine all the same.
+
+    The mkdir runs in a container too, and that is a seventh trap rather than
+    tidiness. The shell script creates the scratch root with a host-side
+    `mkdir -p` and gets away with it because it only ever creates the root. This
+    driver pushes a second tree beside the first one, and by then the scratch
+    root is no longer the host account's: `tar -xf` extracting an archive whose
+    top entry is `.` restores that entry's ownership onto the destination, and
+    the tar is made on a Mac where the uid is 501 while the NAS account is 1001.
+    So the first push silently hands the directory to a uid nobody on that
+    machine is, and the second `mkdir -p` dies with "Permission denied" on a
+    directory that plainly exists. The first end-to-end run failed exactly there,
+    after fifty minutes of building.
+
+    Doing it in a container removes the special case as well as the failure:
+    every command this driver sends to the NAS is now a `docker` command, with no
+    exception at all, and `tools/capture-nas.test.mjs` holds the driver to that
+    stronger rule than the one it holds the script to. Root ownership is not a
+    problem here because nothing on the host ever writes into the tree: the
+    containers do, and cleanup removes it from inside a container.
     """
-    ex.nas_step(f"push.mkdir.{dest.rsplit('/', 1)[-1]}", f"mkdir -p {dest}")
+    leaf = dest.rsplit("/", 1)[-1]
+    # $HOME/workspace is the mount and the path inside is derived from `dest`,
+    # so the container creates it rather than docker creating a missing
+    # bind-mount source, which is the same thing with no record of who did it.
+    inside = dest.replace("$HOME/workspace", "/ws")
     ex.nas_step(
-        f"push.untar.{dest.rsplit('/', 1)[-1]}",
+        f"push.mkdir.{leaf}",
+        nas_container(
+            name,
+            UTIL_IMAGE,
+            f"mkdir -p {inside}",
+            mounts=(("$HOME/workspace", "/ws"),),
+        ),
+    )
+    ex.nas_step(
+        f"push.untar.{leaf}",
         nas_container(
             name,
             UTIL_IMAGE,
