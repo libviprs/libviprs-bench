@@ -603,16 +603,42 @@ fn only_a_repeated_profile_is_publishable() {
 /// two would be the same number arriving by two routes that can disagree.
 #[test]
 fn the_facet_key_is_asked_of_the_planner() {
-    let cell = EngineCell::new(1024, 720, 1);
-    let planned = cell.planned_tiles().expect("the cell plans");
-    assert!(planned > 0);
-    let plan = cell.plan().expect("the cell plans");
-    let counted: u64 = plan
-        .levels
+    // Several canvases, because one cannot catch a constant. A key hard-coded
+    // to this suite's smallest cell survived the equality check below: 1024x720
+    // really does plan 25 tiles, so the fixture sat on the mutation's fixed
+    // point and the assertion could not fail. The mutation table caught it.
+    let cells = [
+        EngineCell::new(512, 360, 1),
+        EngineCell::new(1024, 720, 1),
+        EngineCell::new(4096, 2880, 1),
+    ];
+    let keys: Vec<u32> = cells
         .iter()
-        .map(|l| u64::from(l.rows) * u64::from(l.cols))
-        .sum();
-    assert_eq!(u64::from(planned), counted);
+        .map(|cell| {
+            let planned = cell.planned_tiles().expect("the cell plans");
+            let plan = cell.plan().expect("the cell plans");
+            let counted: u64 = plan
+                .levels
+                .iter()
+                .map(|l| u64::from(l.rows) * u64::from(l.cols))
+                .sum();
+            assert_eq!(
+                u64::from(planned),
+                counted,
+                "{}'s key has to be what its own plan holds",
+                cell.spec()
+            );
+            planned
+        })
+        .collect();
+    assert!(keys[0] < keys[1] && keys[1] < keys[2]);
+    assert_eq!(
+        keys.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        3,
+        "three canvases, three keys: a constant here would file every cell under one facet"
+    );
+
+    let cell = EngineCell::new(1024, 720, 1);
     assert_eq!(cell.spec(), "1024x720@256+c1");
     assert_ne!(
         EngineCell::new(1024, 720, 1).spec(),
@@ -800,6 +826,36 @@ fn the_replicate_block_is_the_spread_between_the_two_ends_of_the_sweep() {
     assert!(
         (wall - 10.0).abs() < 1e-9,
         "the spread is between the two ends, not against the cell in the middle: {wall}"
+    );
+
+    // The same three cells with the decoy LAST. The block has to read the
+    // control's rows and no others, independently of what order the sweep
+    // happened to put them in: a version that took "the first row for this key
+    // and the last one" without checking WHICH cell each row belongs to gives
+    // the same answer as this one while the control closes the sweep, and a
+    // wildly different one the moment anything follows it. The mutation table
+    // caught that the earlier fixture could not tell the two apart.
+    let mut reordered = Document::new_for(
+        engines::FAMILY,
+        engines::RUNNER,
+        Profile::Full.label(),
+        "2026-09-14T12:00:00.000Z".to_string(),
+        engines::measurement(Profile::Full),
+    );
+    push(&mut reordered, control, 500);
+    push(&mut reordered, control, 550);
+    push(&mut reordered, decoy, 9_000);
+    let block = block_for_cell(&reordered, &control.spec()).expect("two ends make a block");
+    let wall = block
+        .spread_pct
+        .as_object()
+        .expect("a spread object")
+        .get("monolithic.pyramid.wall")
+        .and_then(|v| v.as_f64())
+        .expect("the wall column has a spread");
+    assert!(
+        (wall - 10.0).abs() < 1e-9,
+        "a row that is not the control's must not become one end of the spread: {wall}"
     );
 
     // And a control measured once has no spread, rather than a spread of zero,
