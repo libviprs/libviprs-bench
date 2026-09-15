@@ -6,7 +6,8 @@
   "description": "The frozen copy of causl's dashboard, import and render stack, its sync gate, and the libviprs config that drives every difference.",
   "scripts": {
     "test": "node --test '*.test.mjs'",
-    "gate": "./sync-contract.sh --check && node parameterize.mjs --check && node --test '*.test.mjs'",
+    "test:upstream": "node --test upstream/comparable-era.test.mjs upstream/import-run.test.mjs",
+    "gate": "./sync-contract.sh --check && node parameterize.mjs --check && npm test && npm run test:upstream",
     "regen": "node parameterize.mjs --write && REGEN_GOLDEN=1 node --test golden-render.test.mjs"
   }
 }
