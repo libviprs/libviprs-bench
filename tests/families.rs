@@ -250,6 +250,7 @@ fn sample_runs() -> Vec<RunMetrics> {
         peak_rss_bytes: 4096,
         stats: None,
         per_level_tiles: vec![1, 1],
+        artefact: None,
         equivalence_psnr_db: None,
         tiles_produced: 2,
         levels_processed: 2,

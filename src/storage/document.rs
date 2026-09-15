@@ -1,4 +1,13 @@
-//! The document a `storage` sweep writes, and the shape it cannot express.
+//! The document a sweep writes, and the shape it cannot express.
+//!
+//! One document type, two families. It lives under `storage` because that is
+//! the family that needed it first; `engines` emits the same envelope through
+//! the same structs, and the vocabulary differences (an engine instead of a
+//! storage backend, a thread budget in the cell key, six metric series instead
+//! of the storage scenarios) are all carried in the *values* rather than in a
+//! second copy of the shape. That is deliberate: this crate already carries one
+//! port of causl's chart code that diverged, and a forked document would put
+//! the same divergence inside the crate.
 //!
 //! Three things are load bearing here and none of them is the field list.
 //!
@@ -96,7 +105,7 @@ pub const CELL_FIELDS: [&str; 34] = [
     "lowConfidenceReasons",
     "machineLoad",
     "invariants",
-    "storageAttested",
+    "attested",
     "dirty",
 ];
 
@@ -105,10 +114,38 @@ pub const CELL_FIELDS: [&str; 34] = [
 // ---------------------------------------------------------------------------
 
 /// How many timed repetitions each kind of scenario takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RepsByKind {
-    pub generate: u32,
-    pub read: u32,
+///
+/// A map keyed by kind rather than two named fields, because two families
+/// declare different kinds and there is only one document type. `storage`
+/// splits `generate` from `read`, because a generate pass costs orders of
+/// magnitude more than a read and the plan gives them different counts;
+/// `engines` has one kind, `pyramid`. Widened rather than forked: the archive
+/// compares this block against `provenance.invocation.resolved.reps` by value,
+/// so any shape works as long as the two halves of one document agree, and a
+/// second `Measurement` would be a second place for that rule to rot.
+///
+/// A `BTreeMap`, so the keys serialise in sorted order and the storage block is
+/// still `{"generate": N, "read": M}` byte for byte, which is the shape the
+/// admission rule and the first full capture were both written against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Reps(pub std::collections::BTreeMap<String, u32>);
+
+impl Reps {
+    /// The counts for a family's scenario kinds.
+    pub fn of(pairs: &[(&str, u32)]) -> Reps {
+        Reps(
+            pairs
+                .iter()
+                .map(|(kind, n)| ((*kind).to_string(), *n))
+                .collect(),
+        )
+    }
+
+    /// The count declared for one kind.
+    pub fn get(&self, kind: &str) -> Option<u32> {
+        self.0.get(kind).copied()
+    }
 }
 
 /// How the interval under `median` was computed.
@@ -125,9 +162,9 @@ pub struct IntervalSpec {
 pub struct Measurement {
     pub unit: String,
     pub isolation: String,
-    pub reps: RepsByKind,
+    pub reps: Reps,
     #[serde(rename = "minReps")]
-    pub min_reps: RepsByKind,
+    pub min_reps: Reps,
     pub seed: String,
     pub clock: String,
     #[serde(rename = "timerTickNs")]
@@ -151,25 +188,41 @@ pub struct Measurement {
     pub page_cache: String,
 }
 
+/// The half of a measurement block a family decides, before the clock is
+/// probed.
+///
+/// Everything a family does *not* decide — the clock, the tick and call probe,
+/// the bootstrap, the tie band and the confidence threshold — is filled by
+/// [`Measurement::probed_from`] from the constants in [`stats`], so two
+/// families cannot end up publishing intervals computed different ways under
+/// the same field names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MeasurementSpec {
+    pub unit: &'static str,
+    pub isolation: &'static str,
+    pub reps: Reps,
+    pub min_reps: Reps,
+    pub seed: u64,
+    pub warmup: Option<Warmup>,
+    pub page_cache: &'static str,
+}
+
 impl Measurement {
-    /// The declared measurement block for a profile, with the clock probed.
-    pub fn probed(profile: Profile) -> Measurement {
+    /// The declared measurement block for a family's spec, with the clock
+    /// probed.
+    pub fn probed_from(spec: MeasurementSpec) -> Measurement {
         let probe = stats::probe_timer();
-        let reps = RepsByKind {
-            generate: generate_reps(profile),
-            read: read_reps(profile),
-        };
         Measurement {
-            unit: "fresh-process-per-cell".to_string(),
-            isolation: "subprocess-per-cell".to_string(),
-            reps,
-            min_reps: reps,
-            seed: format!("{SEED:#018x}"),
+            unit: spec.unit.to_string(),
+            isolation: spec.isolation.to_string(),
+            reps: spec.reps,
+            min_reps: spec.min_reps,
+            seed: format!("{:#018x}", spec.seed),
             clock: "std::time::Instant".to_string(),
             timer_tick_ns: Some(probe.tick_ns),
             timer_call_ns: Some(probe.call_ns),
             min_ticks_per_sample: stats::MIN_TICKS_PER_SAMPLE,
-            warmup: Some(WarmupBlock::from(Warmup::ONE_DISCARDED_PASS)),
+            warmup: spec.warmup.map(WarmupBlock::from),
             interval: IntervalSpec {
                 statistic: "median".to_string(),
                 method: "percentile-bootstrap".to_string(),
@@ -179,8 +232,25 @@ impl Measurement {
             tie_band_pct: 3.0,
             cov_low_confidence: stats::COV_LOW_CONFIDENCE,
             fresh_process_per_cell: true,
-            page_cache: "warm-unknown".to_string(),
+            page_cache: spec.page_cache.to_string(),
         }
+    }
+
+    /// The declared measurement block for a `storage` profile.
+    pub fn probed(profile: Profile) -> Measurement {
+        let reps = Reps::of(&[
+            ("generate", generate_reps(profile)),
+            ("read", read_reps(profile)),
+        ]);
+        Measurement::probed_from(MeasurementSpec {
+            unit: "fresh-process-per-cell",
+            isolation: "subprocess-per-cell",
+            min_reps: reps.clone(),
+            reps,
+            seed: SEED,
+            warmup: Some(Warmup::ONE_DISCARDED_PASS),
+            page_cache: "warm-unknown",
+        })
     }
 }
 
@@ -376,33 +446,68 @@ pub struct DocumentCell {
     #[serde(rename = "machineLoad")]
     pub machine_load: MachineLoad,
     pub invariants: InvariantBlock,
-    /// Whether the backend this cell names was OBSERVED to have produced the
-    /// archive it was measured against, and to agree with the other backend
-    /// about what a tile contains.
+    /// Whether the producer this cell names was OBSERVED to have produced the
+    /// artefact it was measured against, and to agree with its siblings about
+    /// what that artefact contains.
     ///
-    /// Filled by [`crate::storage::attest`] from a walk of the real artefact,
-    /// never from anything the cell says about itself. `None` means nothing
-    /// looked, which the aggregator refuses on an `ok` cell exactly as it
-    /// refuses `false`: an unobserved cell is a label, not a measurement
-    /// (libviprs-bench #66).
+    /// Filled from a walk of the real artefact, never from anything the cell
+    /// says about itself: [`crate::storage::attest`] for a `storage` row, where
+    /// the two backends have to agree byte for byte on a tile, and
+    /// [`crate::engines::attest`] for an `engines` row, where the three engines
+    /// have to agree on the per-level tile grid they wrote to disk. `None`
+    /// means nothing looked, which the aggregator refuses on an `ok` cell
+    /// exactly as it refuses `false`: an unobserved cell is a label, not a
+    /// measurement (libviprs-bench #66).
+    ///
+    /// Named `attested` and not `storageAttested`, because the second family
+    /// arriving is what turned a field name into a family name. The rule and
+    /// the refusal are the same for both, so the key is too (#75).
     ///
     /// No `skip_serializing_if`, here or anywhere else in this document. An
     /// absent key and an explicit `null` are different documents with different
     /// digests, and a field Rust drops where JavaScript writes `null` is the
-    /// divergence K2.2's cross-language test would find long after both sides
-    /// had shipped archives. `storage::integrity`'s header has the rule.
-    #[serde(rename = "storageAttested")]
-    pub storage_attested: Option<bool>,
+    /// divergence a cross-language test would find long after both sides had
+    /// shipped archives. `storage::integrity`'s header has the rule.
+    pub attested: Option<bool>,
     /// Stamped `true` when the run was archived from a dirty tree under
     /// `--allow-dirty`, so the caveat travels with every number rather than
     /// sitting in a header nobody reads when they quote one cell.
     pub dirty: Option<bool>,
 }
 
+/// The four facet labels a row is filed under.
+///
+/// Strings and a number rather than the `storage` family's own [`Backend`] and
+/// [`Cell`], because the second family's vocabulary is a different one: an
+/// `engines` row's `backend` is an engine and its `cell` carries a thread
+/// budget. What the two families share is the *shape* — which producer, at
+/// which scale, over which source, in which cell — and that is what this type
+/// pins. [`CellLabels::storage`] is the storage family's spelling of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellLabels {
+    pub backend: String,
+    /// The facet key: the cell's tile count. Never megapixels, never canvas
+    /// size.
+    pub scale: u32,
+    pub source: String,
+    pub cell: String,
+}
+
+impl CellLabels {
+    /// The labels a `storage` cell is filed under.
+    pub fn storage(backend: Backend, cell: Cell) -> CellLabels {
+        CellLabels {
+            backend: backend.as_str().to_string(),
+            scale: cell.declared_tiles,
+            source: cell.source.as_str().to_string(),
+            cell: cell.spec(),
+        }
+    }
+}
+
 /// What a cell needs to become a row.
 pub struct CellReport<'a> {
-    pub backend: Backend,
-    pub cell: Cell,
+    pub labels: CellLabels,
     pub scenario: &'a str,
     pub metric: MetricSpec,
     pub isolation: Isolation,
@@ -460,10 +565,10 @@ impl DocumentCell {
         let confidence = if reasons.is_empty() { "high" } else { "low" };
 
         DocumentCell {
-            backend: report.backend.as_str().to_string(),
-            scale: report.cell.declared_tiles,
-            source: report.cell.source.as_str().to_string(),
-            cell: report.cell.spec(),
+            backend: report.labels.backend,
+            scale: report.labels.scale,
+            source: report.labels.source,
+            cell: report.labels.cell,
             scenario: report.scenario.to_string(),
             metric: report.metric.name.to_string(),
             key: format!("{}.{}", report.scenario, report.metric.name),
@@ -495,11 +600,11 @@ impl DocumentCell {
             machine_load: report.machine_load,
             invariants: report.invariants,
             samples: report.samples,
-            // Nothing is attested at construction. `run_sweep` stamps this from
-            // `attest_artefacts`, which walks the real archive; leaving it
-            // `None` here is what makes an unobserved cell refuse rather than
-            // quietly pass.
-            storage_attested: None,
+            // Nothing is attested at construction. Each family's sweep stamps
+            // this from its own walk of the real artefact; leaving it `None`
+            // here is what makes an unobserved cell refuse rather than quietly
+            // pass.
+            attested: None,
             dirty: None,
         }
     }
@@ -605,16 +710,28 @@ pub struct Document {
 }
 
 impl Document {
-    pub fn new(profile: Profile, started_at: String) -> Document {
+    /// An empty document for any family.
+    ///
+    /// The envelope is the family-independent part and this is where that is
+    /// enforced rather than asserted: there is one constructor, so an `engines`
+    /// document cannot acquire a field a `storage` one lacks, or lose one it
+    /// has, without the other moving with it (#75).
+    pub fn new_for(
+        family: &str,
+        runner: &str,
+        profile: &str,
+        started_at: String,
+        measurement: Measurement,
+    ) -> Document {
         Document {
             schema_version: SCHEMA_VERSION,
-            family: FAMILY.to_string(),
-            runner: RUNNER.to_string(),
-            profile: profile.label().to_string(),
+            family: family.to_string(),
+            runner: runner.to_string(),
+            profile: profile.to_string(),
             started_at,
             finished_at: None,
             run_id: None,
-            measurement: Measurement::probed(profile),
+            measurement,
             provenance: None,
             cells: Vec::new(),
             invariants: Vec::new(),
@@ -622,6 +739,39 @@ impl Document {
             replicate: None,
             integrity: None,
         }
+    }
+
+    /// An empty `storage` document.
+    pub fn new(profile: Profile, started_at: String) -> Document {
+        Document::new_for(
+            FAMILY,
+            RUNNER,
+            profile.label(),
+            started_at,
+            Measurement::probed(profile),
+        )
+    }
+
+    /// Stamp `runId` from the document's own evidence.
+    ///
+    /// Called after `provenance` is filled, because that is where the evidence
+    /// is: `<startedAt>-<library commit>-<host8>`, and nothing in it reads the
+    /// clock. A `runId` with `SystemTime::now()` in it would make archiving the
+    /// same document twice produce two entries, so an idempotent re-archive
+    /// would silently double a series and the page would draw one flat line as
+    /// two points. `archive::run_id` owns the derivation, so the id the
+    /// producer writes down and the id the archive files it under are the same
+    /// function of the same bytes rather than two implementations that agree
+    /// today.
+    ///
+    /// Leaves `run_id` as `None` when the evidence is not there, which is the
+    /// honest answer and is refused downstream for the missing evidence rather
+    /// than for the missing id.
+    pub fn stamp_run_id(&mut self) {
+        let Ok(value) = serde_json::to_value(&*self) else {
+            return;
+        };
+        self.run_id = crate::storage::archive::run_id(&value).ok();
     }
 
     pub fn push(&mut self, cell: DocumentCell) {
