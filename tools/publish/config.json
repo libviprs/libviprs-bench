@@ -62,7 +62,18 @@
 
     "families": ["libviprs-storage", "libviprs-engines", "libviprs-vips"],
     "familyIdPrefix": "libviprs-",
-    "schemaVersion": 1,
+    "schemaVersion": [1, 2],
+    "_schemaVersion": [
+      "The versions this importer reads, not the one it prefers. Version 2 is the replicate",
+      "floor: in version 1 `replicate.spreadPct` was the gap between two measurements of the",
+      "control cell, one at each end of the sweep, and in version 2 it is a 95% prediction",
+      "half-width over every placement of it. Same key, different statistic. Both are read",
+      "because the archive keeps documents forever and a version-1 run is still a real",
+      "measurement; what stops them being compared is the `documentSchema` era axis, which puts",
+      "them on separate x-axes. Two captures of one cell on one host reported 3.46% and 36.89%",
+      "under the old estimator, and there is no line to draw between those and a floor from six",
+      "placements (libviprs-bench #84). A version not in this list is refused outright."
+    ],
 
     "rowIdentityFrom": ["backend", "cell", "source", "key"],
     "_rowIdentityFrom": [
@@ -131,6 +142,15 @@
     "fsTypeFrom": "provenance.filesystem.fsType",
     "replicateSpreadFrom": "replicate.spreadPct",
 
+    "oversubscribedFrom": "oversubscribed",
+    "_oversubscribedFrom": [
+      "The cell field naming a rung that asked for more threads than the host has cores. A",
+      "cell where it is true is published and never gated: the number is a real",
+      "oversubscription measurement, and on the one machine that can measure x86_64 natively",
+      "it is the only way to reach the rung the x86_64 knee sits on, but it is not comparable",
+      "with the same rung on a host that had the cores for it. Null turns the rule off",
+      "(libviprs-bench #84)."
+    ],
     "gatedFrom": null,
     "gatedWhenUncalibrated": false,
     "_gatedWhenUncalibrated": [

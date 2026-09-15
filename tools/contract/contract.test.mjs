@@ -408,6 +408,36 @@ test('a run on a different host or filesystem starts a new era', () => {
   assert.equal(upstreamSig(base), upstreamSig(otherFs));
 });
 
+// Goes red against: era axes that ignore which estimator produced the noise
+// floor. Document version 1 published `replicate.spreadPct` as the gap between
+// two measurements of the control cell; version 2 publishes a dispersion over
+// every placement under the same key. Both are real, neither is wrong, and one
+// line drawn through the two is a trend in an estimator rather than in the code
+// (libviprs-bench #84).
+test('a run whose replicate floor came from a different estimator starts a new era', () => {
+  const sig = liftEraSignature(CONFIG);
+  const host = { fingerprint: 'linux|aarch64|m1|8', fsType: 'ext4' };
+  const twoPoint = entry(['pmtiles', 'directory'], { host, schemaVersion: 1 });
+  const dispersion = entry(['pmtiles', 'directory'], { host, schemaVersion: 2 });
+  const alsoDispersion = entry(['pmtiles', 'directory'], { host, schemaVersion: 2 });
+
+  assert.equal(sig(dispersion), sig(alsoDispersion));
+  assert.notEqual(
+    sig(twoPoint),
+    sig(dispersion),
+    'a two-point floor and a six-placement floor landed on one x-axis',
+  );
+  // And the axis is declared, so this is not an accident of the fingerprint.
+  assert.ok(
+    CONFIG.era.axes.some((axis) => axis.from === 'schemaVersion'),
+    'nothing in the era axes reads the document schema version',
+  );
+  // The control: upstream's single axis cannot tell the two eras apart, which
+  // is exactly the gap this axis closes.
+  const upstreamSig = liftEraSignature(null);
+  assert.equal(upstreamSig(twoPoint), upstreamSig(dispersion));
+});
+
 // Goes red against: a fingerprint whose inputs are not on the document. The
 // era axis reads `host.fingerprint`, and the importer builds that from the
 // paths in `producer.hostFingerprintFrom`.
