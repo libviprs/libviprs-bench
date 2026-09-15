@@ -202,6 +202,21 @@ pub fn raster(source: Source, width: u32, height: u32) -> Raster {
 
 static SCRATCH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The directory under `$TMPDIR` every storage scenario's scratch sits in.
+///
+/// Public and named for the same reason [`crate::engine_sink_root`] is: the
+/// document has to record which filesystem the pyramids were written to, and a
+/// provenance block that probed some other directory describes a run nobody
+/// made. Until this existed there was no such directory to probe. [`Scratch`]
+/// based straight at `$TMPDIR` and the provenance block probed
+/// `$TMPDIR/libviprs-storage-provenance`, a name nothing in this crate ever
+/// creates, so `statfs` answered ENOENT and the document recorded
+/// `fsType: "unknown"` for a mount the `engines` family named `ext4` two
+/// minutes later.
+pub fn storage_scratch_root() -> PathBuf {
+    std::env::temp_dir().join("libviprs-storage")
+}
+
 /// A directory this process made and this process removes.
 ///
 /// Every name is unique within the process and is never reused, so two
@@ -214,9 +229,13 @@ pub struct Scratch {
 
 impl Scratch {
     pub fn new(root: Option<&Path>) -> std::io::Result<Scratch> {
+        // `storage_scratch_root()` and not `$TMPDIR` directly, so the
+        // directory the provenance block probes is an ancestor of every
+        // directory the sweep actually writes into rather than a sibling of
+        // them in name only.
         let base = match root {
             Some(root) => root.to_path_buf(),
-            None => std::env::temp_dir(),
+            None => storage_scratch_root(),
         };
         let n = SCRATCH_COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = base.join(format!("libviprs-storage-{}-{n}", std::process::id()));
@@ -800,10 +819,10 @@ pub fn spawn_scenario(
     let rss = wait4_maxrss(pid);
     let mut wire: WireRun = serde_json::from_str(out.trim())
         .map_err(|e| format!("the child's output does not parse: {e}"))?;
-    if let Some(rss) = rss {
-        if rss > 0 {
-            wire.peak_rss_bytes = Some(rss);
-        }
+    if let Some(rss) = rss
+        && rss > 0
+    {
+        wire.peak_rss_bytes = Some(rss);
     }
     Ok(wire)
 }
@@ -1144,7 +1163,11 @@ pub fn run_sweep(profile: Profile) -> Document {
 /// expanded to. The aggregator refuses a document whose `resolved.scenarios`
 /// still says `"all"`, so the names are written out.
 fn sweep_provenance(profile: Profile, doc: &Document) -> serde_json::Value {
-    let scratch = std::env::temp_dir().join("libviprs-storage-provenance");
+    // `Family::scratch_root` rather than a path spelled out here: it is the one
+    // place that maps a family to the directory that family writes into, and it
+    // makes the directory before anything asks what it is on. Both halves are
+    // load-bearing, and the second one is what was missing.
+    let scratch = crate::family::Family::Storage.scratch_root();
     let provenance = crate::provenance::Provenance::capture_for_document(&scratch);
     for warning in provenance.document_provenance_warnings() {
         eprintln!("{warning}");

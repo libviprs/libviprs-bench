@@ -235,9 +235,11 @@ impl Scenario for Requests {
         let total_requests: u64 = counts.iter().map(|c| c.requests).sum();
         let total_bytes: u64 = counts.iter().map(|c| c.bytes).sum();
 
-        let mut invariants = Invariants::default();
-        invariants.requests = Some(total_requests);
-        invariants.request_bytes = Some(total_bytes);
+        let invariants = Invariants {
+            requests: Some(total_requests),
+            request_bytes: Some(total_bytes),
+            ..Invariants::default()
+        };
 
         Ok(ScenarioRun {
             series: vec![

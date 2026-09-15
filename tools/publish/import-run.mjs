@@ -142,6 +142,64 @@ if (!existsSync(documentPath)) {
 const refusals = [];
 const refuse = (why) => refusals.push(why);
 
+// --- a rule the config defines, and what happens when it defines nothing ------
+//
+// #82 was ten config keys the importer read and the config never defined. Every
+// one of them fell back to a default that refused, so the failure did not look
+// like a broken lookup, it looked like the gate doing its job. The only tell was
+// in the message:
+//
+//     profile "ci" is not publishable ()
+//
+// An enumeration of the allowed values with nothing in it. Read as a verdict
+// that sentence is nonsense, because with an empty allowed set no profile could
+// ever have passed, and read as what it was it says the rule was never written
+// down. The keys are defined now; the shape that let ten of them hide is not.
+//
+// So an allowed set arrives through `ruleSet`, which records a CONFIGURATION
+// FAULT rather than a refusal when the set is empty, and a configuration fault
+// short-circuits the report below before a single document verdict is printed.
+// That is the structural half: a refusal quoting an empty enumeration cannot be
+// reached, rather than being merely unlikely. `enumerate` is the belt to that
+// pair of braces, and it is what a test can hold directly.
+const configFaults = [];
+
+/** An empty allowed set is a fault in the importer's config, never a verdict. */
+const refuseConfig = (key, consequence) =>
+  configFaults.push(
+    `producer.${key} is ${
+      producer[key] === undefined ? 'undefined' : JSON.stringify(producer[key])
+    }, so ${consequence}. Nothing about the document reached this: with nothing in that ` +
+      'set no value could have passed, so this is a fault in the config and not a verdict ' +
+      'on the run.',
+  );
+
+/**
+ * The allowed values of `key`, as an array, or a recorded configuration fault.
+ *
+ * `consequence` completes "so ...": say what the empty set does to the check
+ * that reads it, because that is the sentence whoever hits this needs.
+ */
+function ruleSet(key, fallback, consequence) {
+  const raw = producer[key] ?? fallback;
+  const values = Array.isArray(raw) ? [...raw] : [...(raw ?? [])];
+  if (values.length === 0) refuseConfig(key, consequence);
+  return values;
+}
+
+/**
+ * Format an allowed set for a refusal. Never returns an empty enumeration.
+ *
+ * Reachable only if a rule got past `ruleSet`, so the string it returns names
+ * that as the bug rather than printing `()` and letting a reader conclude
+ * something about their document.
+ */
+function enumerate(values) {
+  const list = [...values];
+  if (list.length === 0) return '<nothing: this rule was never configured>';
+  return list.join(', ');
+}
+
 let doc;
 try {
   doc = JSON.parse(readFileSync(documentPath, 'utf8'));
@@ -157,7 +215,11 @@ try {
 // stops an `engines` document being read with the `storage` reader's
 // assumptions about what a cell holds.
 
-const families = producer.families ?? [];
+const families = ruleSet(
+  'families',
+  [],
+  'every document is of an unknown family and the schemaVersion check below it never runs',
+);
 const familyPrefix = producer.familyIdPrefix ?? '';
 const knownFamily = families.includes(doc.family);
 // `libviprs-storage` names the document family and `storage` names the page's
@@ -168,7 +230,7 @@ const family = knownFamily
 if (!family) {
   refuse(
     `family ${JSON.stringify(doc.family ?? null)} is not one this config knows: ` +
-      `${families.join(', ') || 'none configured'}`,
+      `${enumerate(families)}`,
   );
 } else {
   // One version or a list of them. A list is not laxity: version 2 redefined
@@ -380,10 +442,15 @@ if (prov.emulated !== false) {
 }
 
 const profile = doc.profile;
-const publishable = producer.publishableProfiles ?? [];
+const publishable = ruleSet(
+  'publishableProfiles',
+  [],
+  'every profile is unpublishable and a calibrated `full` sweep is turned away by the sentence ' +
+    'explaining why `ci` sweeps are',
+);
 if (!publishable.includes(profile)) {
   refuse(
-    `profile ${JSON.stringify(profile ?? null)} is not publishable (${publishable.join(', ')}). ` +
+    `profile ${JSON.stringify(profile ?? null)} is not publishable (${enumerate(publishable)}). ` +
       'A `ci` sweep proves the harness runs, takes three reps of a cut-down cell list, and ' +
       'archives indistinguishably from a calibrated one, so it is refused here rather than ' +
       'left to sit in the same era as a real sweep.',
@@ -449,8 +516,18 @@ const cells = Array.isArray(doc.cells) ? doc.cells : [];
 // least one cell must have been measured.
 const OUTCOMES = producer.outcomes ?? {};
 const MEASURED = new Set(OUTCOMES.measured ?? ['ok']);
+// `refusing` is legitimately empty in both shipped configs: no outcome is
+// refused on its name alone today. So the rule that has to be non-empty is the
+// classification as a whole, not each of its three parts.
 const REFUSING = new Set(OUTCOMES.refusing ?? []);
 const STRUCTURAL = new Set(OUTCOMES.structural ?? []);
+if (MEASURED.size + REFUSING.size + STRUCTURAL.size === 0) {
+  refuseConfig(
+    'outcomes',
+    'no cell outcome is classified as anything, so every cell in every document is ' +
+      'unclassified and the refusal below reads as a producer that invented an outcome',
+  );
+}
 
 const okCells = cells.filter((c) => MEASURED.has(c.outcome));
 
@@ -461,7 +538,7 @@ if (unclassified.length > 0) {
   const kinds = [...new Set(unclassified.map((c) => JSON.stringify(c.outcome ?? null)))];
   refuse(
     `${unclassified.length} cell(s) carry an outcome this config does not classify ` +
-      `(${kinds.join(', ')}). A new outcome the importer has never seen must be a refusal ` +
+      `(${enumerate(kinds)}). A new outcome the importer has never seen must be a refusal ` +
       'rather than a silent skip, or the day the producer adds one the page quietly loses ' +
       'every cell that has it.',
   );
@@ -505,7 +582,12 @@ if (dirtyCells.length > 0) {
 // read only the old one and every new document does the same. Either way the
 // importer looks like a gate doing its job while it is really answering a
 // question nobody asked.
-const ATTESTED_FROM = producer.attestedFrom ?? ['attested', 'storageAttested'];
+const ATTESTED_FROM = ruleSet(
+  'attestedFrom',
+  ['attested', 'storageAttested'],
+  'no cell carries an attestation field this importer looks at, so every measured cell is ' +
+    'refused as a shape nobody taught it',
+);
 const attestationOf = (cell) => {
   for (const field of ATTESTED_FROM) {
     if (cell[field] !== undefined) return { field, value: cell[field] };
@@ -517,7 +599,7 @@ const unnamed = okCells.filter((c) => attestationOf(c).field === null);
 if (unnamed.length > 0) {
   refuse(
     `${unnamed.length} measured cell(s) carry none of the attestation fields this config ` +
-      `names (${ATTESTED_FROM.join(', ')}), so nothing here has looked at whether they were ` +
+      `names (${enumerate(ATTESTED_FROM)}), so nothing here has looked at whether they were ` +
       'observed. This is a document of a shape the importer has not been taught, not a run ' +
       'that failed attestation.',
   );
@@ -617,8 +699,22 @@ if (producer.refuse?.majorityNoisyCells !== false) {
  *  rows with an `exact` flag and never folded into `samples`, because a page
  *  that charts them draws a flat line with a band it never had.
  */
-const EXACT = new Set(producer.invariantsExactWithinCommit ?? []);
-const KNOWN_INVARIANTS = new Set(producer.invariantNames ?? []);
+const EXACT = new Set(
+  ruleSet(
+    'invariantsExactWithinCommit',
+    [],
+    'the invariant-moved-within-a-commit check compares nothing and passes every document, ' +
+      'which is the silent half of #82 rather than the noisy one',
+  ),
+);
+const KNOWN_INVARIANTS = new Set(
+  ruleSet(
+    'invariantNames',
+    [],
+    'every invariant a document carries is a stray, and the refusal below names the ' +
+      "producer's invariants as if the config had classified some and missed these",
+  ),
+);
 const strayInvariants = [
   ...new Set((doc.invariants ?? []).map((r) => r.name).filter((n) => !KNOWN_INVARIANTS.has(n))),
 ];
@@ -627,7 +723,7 @@ if (strayInvariants.length > 0) {
   // so it would be carried and never compared: a claim on the page that no
   // refusal can ever contradict.
   refuse(
-    `invariant(s) ${strayInvariants.join(', ')} are not in the config's list, so nothing ` +
+    `invariant(s) ${enumerate(strayInvariants)} are not in the config's list, so nothing ` +
       'here knows whether they are exact within a commit',
   );
 }
@@ -714,6 +810,26 @@ if (moved.length > 0) {
 // prints a stack trace where the list of reasons should be: the run is refused
 // either way, and the operator loses the one thing that tells them how many
 // re-runs this is going to take.
+
+// The configuration faults first, and on their own. A rule with nothing in it
+// refuses every document that reaches it, so printing the document verdicts
+// underneath would bury the one line that matters in a page of consequences,
+// and each of those consequences is written as a verdict about the run. This is
+// the structural reason a refusal in this file cannot present an empty
+// enumeration as if it were the rule: the path to printing one exits here.
+if (configFaults.length > 0) {
+  console.error(
+    `REFUSED, and not because of this run: ${configPath} does not define ` +
+      `${configFaults.length === 1 ? 'a rule' : 'rules'} the importer reads.\n`,
+  );
+  for (const f of configFaults) console.error(`  · ${f}\n`);
+  console.error(
+    'Fix the config and run this again. Nothing below this point was evaluated, because a ' +
+      'gate with no rule in it refuses everything and none of those refusals would be about ' +
+      'the document.\n',
+  );
+  process.exit(EXIT.REFUSED);
+}
 
 if (refusals.length > 0) {
   console.error('REFUSED. This run may not be published:\n');

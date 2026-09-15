@@ -251,10 +251,10 @@ pub fn spawn_single_cell(exe: &Path, spec: CellSpec) -> Option<RunMetrics> {
     // child's fresh address space, so it is a true per-run peak. Prefer it
     // over the child's own self-report; fall back to the self-report if
     // wait4 gave nothing.
-    if let Some(rss) = child_rss {
-        if rss > 0 {
-            metrics.peak_rss_bytes = rss;
-        }
+    if let Some(rss) = child_rss
+        && rss > 0
+    {
+        metrics.peak_rss_bytes = rss;
     }
     Some(metrics)
 }
@@ -697,11 +697,10 @@ fn read_level_grids(files_dir: &Path) -> Vec<LevelGrid> {
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .and_then(|s| s.split_once('_'))
+                    && let (Ok(c), Ok(r)) = (c.parse::<u32>(), r.parse::<u32>())
                 {
-                    if let (Ok(c), Ok(r)) = (c.parse::<u32>(), r.parse::<u32>()) {
-                        cols = cols.max(c + 1);
-                        rows = rows.max(r + 1);
-                    }
+                    cols = cols.max(c + 1);
+                    rows = rows.max(r + 1);
                 }
             }
         }
@@ -801,7 +800,7 @@ pub fn spot_check_tile_psnr(
     let mut idx = 0u64;
     for row in 0..rows {
         for col in 0..cols {
-            let take = idx % stride == 0;
+            let take = idx.is_multiple_of(stride);
             idx += 1;
             if !take {
                 continue;
