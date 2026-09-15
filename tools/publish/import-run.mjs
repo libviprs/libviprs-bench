@@ -461,6 +461,31 @@ if (unattested.length > 0) {
   );
 }
 
+// The fields this reader needs from a measured cell, named by the config rather
+// than assumed. The `engines` family is being built in another lane and its
+// document may not have this cell shape; without this check `scenarioOf` would
+// quietly shorten a section name and `direction` would come out null, which is a
+// page that is wrong rather than a page that is missing.
+const REQUIRED_CELL_FIELDS = [
+  ...new Set([
+    producer.seriesFrom ?? 'backend',
+    ...(sections.scenarioFrom ?? ['key']),
+    sections.scaleFrom ?? 'scale',
+    sections.unitFrom ?? 'unit',
+    sections.directionFrom ?? 'direction',
+  ]),
+];
+for (const field of REQUIRED_CELL_FIELDS) {
+  const missing = okCells.filter((c) => c[field] === undefined || c[field] === null);
+  if (missing.length > 0) {
+    refuse(
+      `${missing.length} measured cell(s) carry no \`${field}\`, which this config names as ` +
+        'part of the series, the section or its axis. A document of another shape must be ' +
+        'refused rather than read with this one\'s assumptions.',
+    );
+  }
+}
+
 const unexplained = cells.filter(
   (c) => !MEASURED.has(c.outcome) && (typeof c.reason !== 'string' || c.reason.length === 0),
 );
@@ -492,7 +517,120 @@ if (producer.refuse?.majorityNoisyCells !== false) {
   }
 }
 
-// --- 6. the entry -------------------------------------------------------------
+// --- 6. the invariants, and one that moved inside a commit ---------------------
+
+/** The invariants, as an equality table.
+ *
+ *  These are the epic's actual claim and they are exact: one archive entry
+ *  against 22127 filesystem entries for the same pyramid. They are carried as
+ *  rows with an `exact` flag and never folded into `samples`, because a page
+ *  that charts them draws a flat line with a band it never had.
+ */
+const EXACT = new Set(producer.invariantsExactWithinCommit ?? []);
+const KNOWN_INVARIANTS = new Set(producer.invariantNames ?? []);
+const strayInvariants = [
+  ...new Set((doc.invariants ?? []).map((r) => r.name).filter((n) => !KNOWN_INVARIANTS.has(n))),
+];
+if (strayInvariants.length > 0) {
+  // A new invariant nobody classified is neither exact nor filesystem-dependent,
+  // so it would be carried and never compared: a claim on the page that no
+  // refusal can ever contradict.
+  refuse(
+    `invariant(s) ${strayInvariants.join(', ')} are not in the config's list, so nothing ` +
+      'here knows whether they are exact within a commit',
+  );
+}
+const invariants = (doc.invariants ?? []).map((row) => ({
+  library: row.library,
+  scale: row.scale,
+  source: row.source,
+  name: row.name,
+  value: row.value,
+  unit: row.unit,
+  exact: EXACT.has(row.name),
+}));
+
+const modelled = (doc.modelled ?? []).map((row) => ({ ...row }));
+
+let history = [];
+if (!existsSync(historyPath)) {
+  refuse(`no history at ${historyPath}`);
+} else {
+  try {
+    history = JSON.parse(readFileSync(historyPath, 'utf8'));
+  } catch (e) {
+    refuse(`${historyPath} is not JSON (${e.message})`);
+  }
+  if (!Array.isArray(history)) {
+    refuse(`${historyPath} is not a JSON array`);
+    history = [];
+  }
+}
+
+const libraryCommit = prov.library?.commit ?? null;
+const harnessCommit = prov.commit ?? null;
+const fsType = prov.filesystem?.fsType ?? null;
+const mountSource = prov.filesystem?.mountSource ?? null;
+const FS_DEPENDENT = new Set(producer.invariantsFilesystemDependent ?? []);
+
+const invariantKey = (row) => `${row.library}/${row.source}@${row.scale}.${row.name}`;
+
+/** Invariants that moved against a run of the same commit already in history.
+ *
+ *  Same commit means both trees: the harness generates the source image, so a
+ *  harness-only change can move `output_bytes` honestly and refusing it would
+ *  block publication with no way to clear it. Across commits the same difference
+ *  is a finding the page renders as a step with the commit that moved it, which
+ *  is why this is a comparison and not a rule against change.
+ */
+const moved = [];
+for (const prior of history) {
+  if (prior.runId === derivedRunId) continue;
+  if (prior.commit !== libraryCommit || prior.harnessCommit !== harnessCommit) continue;
+  const before = new Map((prior.invariants ?? []).map((r) => [invariantKey(r), r]));
+  for (const row of invariants) {
+    const was = before.get(invariantKey(row));
+    if (!was) continue;
+    const comparable = EXACT.has(row.name)
+      ? true
+      : FS_DEPENDENT.has(row.name) &&
+        prior.filesystem?.fsType === fsType &&
+        prior.filesystem?.mountSource === mountSource;
+    if (!comparable) continue;
+    if (was.value !== row.value) {
+      moved.push(
+        `${invariantKey(row)} was ${JSON.stringify(was.value)} in ${prior.runId} and is ` +
+          `${JSON.stringify(row.value)} here`,
+      );
+    }
+  }
+}
+if (moved.length > 0) {
+  refuse(
+    `${moved.length} invariant(s) moved within one commit, which is a defect rather than a ` +
+      'delta: these reproduce byte for byte across every export this epic has seen, and a ' +
+      'change at a fixed commit means something is wrong rather than something is slower. ' +
+      moved.slice(0, 5).join('; ') +
+      (moved.length > 5 ? `; and ${moved.length - 5} more` : ''),
+  );
+}
+
+
+// --- the refusal gate ---------------------------------------------------------
+//
+// Before the entry is built, not after. A document that has already been refused
+// can be malformed in ways the reader below does not survive, and a crash there
+// prints a stack trace where the list of reasons should be: the run is refused
+// either way, and the operator loses the one thing that tells them how many
+// re-runs this is going to take.
+
+if (refusals.length > 0) {
+  console.error('REFUSED. This run may not be published:\n');
+  for (const r of refusals) console.error(`  · ${r}\n`);
+  process.exit(EXIT.REFUSED);
+}
+
+// --- 7. the entry -------------------------------------------------------------
 
 const TO_MS = { ns: 1e-6, us: 0.001, ms: 1, s: 1000 };
 const THROUGHPUT_UNITS = new Set(['1/s']);
@@ -732,111 +870,7 @@ for (const cell of cells) {
   }
 }
 
-/** The invariants, as an equality table.
- *
- *  These are the epic's actual claim and they are exact: one archive entry
- *  against 22127 filesystem entries for the same pyramid. They are carried as
- *  rows with an `exact` flag and never folded into `samples`, because a page
- *  that charts them draws a flat line with a band it never had.
- */
-const EXACT = new Set(producer.invariantsExactWithinCommit ?? []);
-const KNOWN_INVARIANTS = new Set(producer.invariantNames ?? []);
-const strayInvariants = [
-  ...new Set((doc.invariants ?? []).map((r) => r.name).filter((n) => !KNOWN_INVARIANTS.has(n))),
-];
-if (strayInvariants.length > 0) {
-  // A new invariant nobody classified is neither exact nor filesystem-dependent,
-  // so it would be carried and never compared: a claim on the page that no
-  // refusal can ever contradict.
-  refuse(
-    `invariant(s) ${strayInvariants.join(', ')} are not in the config's list, so nothing ` +
-      'here knows whether they are exact within a commit',
-  );
-}
-const invariants = (doc.invariants ?? []).map((row) => ({
-  library: row.library,
-  scale: row.scale,
-  source: row.source,
-  name: row.name,
-  value: row.value,
-  unit: row.unit,
-  exact: EXACT.has(row.name),
-}));
-
-const modelled = (doc.modelled ?? []).map((row) => ({ ...row }));
-
-// --- 7. an invariant that moved within one commit -----------------------------
-
-let history = [];
-if (!existsSync(historyPath)) {
-  refuse(`no history at ${historyPath}`);
-} else {
-  try {
-    history = JSON.parse(readFileSync(historyPath, 'utf8'));
-  } catch (e) {
-    refuse(`${historyPath} is not JSON (${e.message})`);
-  }
-  if (!Array.isArray(history)) {
-    refuse(`${historyPath} is not a JSON array`);
-    history = [];
-  }
-}
-
-const libraryCommit = prov.library?.commit ?? null;
-const harnessCommit = prov.commit ?? null;
-const fsType = prov.filesystem?.fsType ?? null;
-const mountSource = prov.filesystem?.mountSource ?? null;
-const FS_DEPENDENT = new Set(producer.invariantsFilesystemDependent ?? []);
-
-const invariantKey = (row) => `${row.library}/${row.source}@${row.scale}.${row.name}`;
-
-/** Invariants that moved against a run of the same commit already in history.
- *
- *  Same commit means both trees: the harness generates the source image, so a
- *  harness-only change can move `output_bytes` honestly and refusing it would
- *  block publication with no way to clear it. Across commits the same difference
- *  is a finding the page renders as a step with the commit that moved it, which
- *  is why this is a comparison and not a rule against change.
- */
-const moved = [];
-for (const prior of history) {
-  if (prior.runId === derivedRunId) continue;
-  if (prior.commit !== libraryCommit || prior.harnessCommit !== harnessCommit) continue;
-  const before = new Map((prior.invariants ?? []).map((r) => [invariantKey(r), r]));
-  for (const row of invariants) {
-    const was = before.get(invariantKey(row));
-    if (!was) continue;
-    const comparable = EXACT.has(row.name)
-      ? true
-      : FS_DEPENDENT.has(row.name) &&
-        prior.filesystem?.fsType === fsType &&
-        prior.filesystem?.mountSource === mountSource;
-    if (!comparable) continue;
-    if (was.value !== row.value) {
-      moved.push(
-        `${invariantKey(row)} was ${JSON.stringify(was.value)} in ${prior.runId} and is ` +
-          `${JSON.stringify(row.value)} here`,
-      );
-    }
-  }
-}
-if (moved.length > 0) {
-  refuse(
-    `${moved.length} invariant(s) moved within one commit, which is a defect rather than a ` +
-      'delta: these reproduce byte for byte across every export this epic has seen, and a ' +
-      'change at a fixed commit means something is wrong rather than something is slower. ' +
-      moved.slice(0, 5).join('; ') +
-      (moved.length > 5 ? `; and ${moved.length - 5} more` : ''),
-  );
-}
-
 // --- the answer ---------------------------------------------------------------
-
-if (refusals.length > 0) {
-  console.error('REFUSED. This run may not be published:\n');
-  for (const r of refusals) console.error(`  · ${r}\n`);
-  process.exit(EXIT.REFUSED);
-}
 
 const libraries = {};
 for (const sample of samples) {
