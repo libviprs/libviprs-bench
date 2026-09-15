@@ -55,7 +55,12 @@ class SettleBudget(unittest.TestCase):
         # family at 10.62 on six cores with 0 of 539 cells quiet, while the
         # second family settled at 2.69 after 100 seconds because the first
         # sweep's ten minutes had done the waiting for it.
-        self.assertGreaterEqual(capture.SETTLE_TIMEOUT_S, 900)
+        # Five minutes, and two consecutive readings under the line rather than
+        # one. A single sample crossed at 2.69 while the load was still falling
+        # steeply from the sweep before it, and the family then measured at a
+        # median of 6.45 against a threshold of 6.0 and was refused.
+        self.assertGreaterEqual(capture.SETTLE_TIMEOUT_S, 300)
+        self.assertGreaterEqual(capture.SETTLE_CONSECUTIVE, 2)
 
 
 class PublishableProfiles(unittest.TestCase):
@@ -186,7 +191,7 @@ class Recorder(capture.Executor):
     """
 
     def __init__(self, *, import_code=0, check_code=0, families=("storage", "engines")):
-        super().__init__(nas="test@nowhere", plan=False, echo=False)
+        super().__init__(nas="test@nowhere", plan=False, echo=False, sleeps=False)
         self.import_code = import_code
         self.check_code = check_code
         self.run_ids = {f: f"20260101T00000{i}Z-abc-0bc00939" for i, f in enumerate(families)}

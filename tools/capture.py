@@ -39,10 +39,9 @@ THE TRAPS, CARRIED FORWARD FROM tools/capture-nas.sh RATHER THAN REDISCOVERED
     carries resident backupd and postgres containers and its load floor is 1.4 to
     2.2 on six cores with all of them at 0% CPU, so an absolute 1.2 can never be
     met and the wait becomes a fixed delay. Half the core count is reachable and
-    still well under the ncpu ceiling the harness refuses at. The budget is
-    twenty minutes rather than the script's five, because two image builds leave
-    the box at a load five minutes does not shed, and running out of it REFUSES
-    rather than measuring anyway: see the note on `settle`.
+    still well under the ncpu ceiling the harness refuses at. Running out of the
+    budget REFUSES rather than measuring anyway, and it takes two consecutive
+    readings under the line rather than one: see the note on `settle`.
  3. Retrieval is `ssh cat` through a container, never scp. scp fails there with
     "No such file or directory" on a file that plainly exists, because the SFTP
     subsystem is not available.
@@ -167,14 +166,21 @@ REPOS = {
 # was worthless and the ten minutes that produced it were spent knowing it would
 # be refused.
 #
-# So the budget is twenty minutes, which covers the decay from a build, and
-# running out of it is fatal. "Capture anyway and record the load" is the right
+# So running out of the budget is fatal, and the budget is five minutes, which is
+# twice what either family needed once the wait existed at all. "Capture anyway and record the load" is the right
 # call for a tool a person runs and watches, because the load is in the document
 # and the publish gate refuses it. It is the wrong call for an automated
 # publishing path: the run costs real NAS time and its output cannot be
 # published either way, so the useful outcome is "the machine did not go quiet,
 # nothing was captured" rather than a refused document.
-SETTLE_TIMEOUT_S = 1200
+SETTLE_TIMEOUT_S = 300
+# Two readings under the line, not one. My engines sweep crossed at 2.69 while
+# the load was still falling steeply, 4.58 to 3.57 to 2.69 across forty seconds,
+# so the one-minute average had not finished shedding the storage sweep that
+# ended moments before. It then measured at a median of 6.45 against a threshold
+# of 6.0 and was refused. One sample cannot tell a machine that is quiet from one
+# that is merely on its way there.
+SETTLE_CONSECUTIVE = 2
 SETTLE_POLL_S = 20
 
 
@@ -229,6 +235,10 @@ class Executor:
 
     nas: str
     plan: bool = False
+    # Whether the settle actually waits between readings. A recorder answers
+    # instantly and has nothing to wait for, and two consecutive readings would
+    # otherwise cost it a real twenty seconds per family.
+    sleeps: bool = True
     echo: bool = True
     steps: list[Step] = field(default_factory=list)
     # Canned stdout for plan mode, keyed by label prefix. Plan mode walks the
@@ -584,8 +594,13 @@ def settle(ex: Executor, family: str, timeout_s: int = SETTLE_TIMEOUT_S) -> dict
         except ValueError:
             load = float("inf")
         readings.append(load)
-        print(f"  settling {family}: load {load} after {waited}s, waiting for under {threshold}", flush=True)
-        if load < threshold:
+        under = sum(1 for r in readings[-SETTLE_CONSECUTIVE:] if r < threshold)
+        print(
+            f"  settling {family}: load {load} after {waited}s, waiting for "
+            f"{SETTLE_CONSECUTIVE} consecutive under {threshold} ({under} so far)",
+            flush=True,
+        )
+        if under >= SETTLE_CONSECUTIVE:
             print(
                 f"  {family} STARTS AT LOAD {load} on {cores} cores, under the {threshold} this "
                 f"driver waits for, after {waited}s",
@@ -600,9 +615,14 @@ def settle(ex: Executor, family: str, timeout_s: int = SETTLE_TIMEOUT_S) -> dict
             }
         # The wait goes AFTER the decision to keep waiting, so a budget that is
         # already spent does not buy one more sleep before it gives up.
-        if ex.plan or waited >= timeout_s:
+        # `plan` does not short-circuit here any more: it needs to go round often
+        # enough to reach SETTLE_CONSECUTIVE, or the plan it prints stops at the
+        # first settle and the guard that walks it is walking half a run. It does
+        # not wait, because its executor declines to.
+        if waited >= timeout_s:
             break
-        time.sleep(min(SETTLE_POLL_S, timeout_s - waited))
+        if ex.sleeps:
+            time.sleep(min(SETTLE_POLL_S, timeout_s - waited))
         waited += SETTLE_POLL_S
     raise Refused(
         [
@@ -1020,7 +1040,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
     name = args.name or f"viprs-capture-{os.getpid()}"
     # Injected by the tests, which drive the whole of this function against a
     # recorder. The control flow under test is this one and not a copy of it.
-    ex = executor or Executor(nas=args.nas, plan=args.plan)
+    ex = executor or Executor(nas=args.nas, plan=args.plan, sleeps=not args.plan)
 
     summary: dict = {
         "schemaVersion": 1,
