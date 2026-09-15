@@ -40,6 +40,22 @@ function sshBlocks(src) {
 /** The single documented exception: creating the scratch directory itself. */
 const SCRATCH_MKDIR = /mkdir -p \\?\$HOME\/workspace\/nas-work/;
 
+/** One docker invocation, with no host shell around it.
+ *
+ *  `remote.includes('docker')` was the old rule and it is not a rule: anything
+ *  chained after a docker command with `;`, `|` or `&&` runs on the machine and
+ *  the substring test never sees it, and a host command that merely mentions
+ *  `/var/run/docker.sock` passes outright. So this strips what is inside the
+ *  container's own single-quoted argument, where a pipe is the container's
+ *  business, and then requires the remainder to be one `docker <verb> ...` with
+ *  no shell operator left in it.
+ */
+function isOneDockerCommand(remote) {
+  const outside = String(remote).replace(/'[^']*'/g, "''");
+  if (!/^docker (run|build|images|ps|rm|rmi|pull|inspect) /.test(outside)) return false;
+  return !/[;|&><`]|\$\(/.test(outside);
+}
+
 test('every command sent to the NAS runs in a container', () => {
   const blocks = sshBlocks(script);
   // Positive control: if the walk finds nothing, a green result below means the
@@ -127,7 +143,7 @@ test('the driver sends nothing to the NAS that runs outside a container', () => 
   // exception in the same move, so this asserts the stronger rule.
   const steps = plan().filter((s) => s.where === 'nas');
   assert.ok(steps.length >= 15, `expected a plan with the whole run in it, got ${steps.length} steps`);
-  const offenders = steps.filter((s) => !s.remote.includes('docker'));
+  const offenders = steps.filter((s) => !isOneDockerCommand(s.remote));
   assert.deepEqual(
     offenders.map((s) => `${s.label}: ${s.remote}`),
     [],
@@ -135,10 +151,39 @@ test('the driver sends nothing to the NAS that runs outside a container', () => 
   );
 });
 
+test('the containment rule cannot be walked past by chaining onto a docker command', () => {
+  // The rule used to be `remote.includes('docker')`, a substring test over the
+  // whole string, and anything after a `;` or a `|` was invisible to it. That is
+  // not hypothetical: the cleanup listing piped `docker images` into a host-side
+  // `grep` and `sed` and the guard was green on it. These are the shapes that
+  // have to be red, and the last one is the real regression rather than the
+  // obvious one.
+  assert.ok(isOneDockerCommand("docker run --rm alpine:3.20 ls /ws"));
+  assert.ok(isOneDockerCommand("docker run --rm alpine:3.20 sh -c 'ls /ws | wc -l'"));
+  assert.ok(!isOneDockerCommand("tar -xf - -C /dest"));
+  assert.ok(!isOneDockerCommand("mkdir -p $HOME/workspace/nas-work/x"));
+  assert.ok(!isOneDockerCommand("docker images --format '{{.Tag}}' | grep viprs | sed 's/^/x/'"));
+  assert.ok(!isOneDockerCommand("docker rm -f a ; rm -rf /tmp/x"));
+  assert.ok(!isOneDockerCommand("docker ps -aq && rm -rf /tmp/x"));
+  assert.ok(!isOneDockerCommand("docker build -t x - > /tmp/log"));
+  assert.ok(!isOneDockerCommand("docker rm -f $(docker ps -aq)"));
+});
+
 test('the driver creates its scratch directories in a container, not as the host account', () => {
   // The specific half of the rule above, named so that a regression reads as
   // what it is rather than as "something is not containerised".
-  for (const step of plan().filter((s) => s.label.startsWith('push.mkdir.'))) {
+  const made = plan().filter(
+    (s) => s.label.startsWith('push.mkdir.') || s.label.startsWith('scratch.mkdir.'),
+  );
+  // `out` and `scratch` are in here because leaving them to docker's
+  // auto-creation of a missing bind-mount source is the same end state with no
+  // record of who did it, and a selector that only saw `push.mkdir.*` could
+  // only ever check the directories that already complied.
+  assert.ok(
+    made.some((s) => s.label === 'scratch.mkdir.out'),
+    `the sweep's own directories are made too; the plan has ${made.map((s) => s.label).join(', ')}`,
+  );
+  for (const step of made) {
     assert.match(step.remote, /^docker run /, `${step.label} runs on the machine itself`);
     assert.match(step.remote, /-v \$HOME\/workspace:\/ws/, `${step.label} mounts the parent`);
   }
@@ -159,9 +204,11 @@ test('the driver plans the whole run, so the walk above is not a walk of nothing
     'archive.storage',
     'verify.storage',
     'import.storage',
-    'cleanup.images',
+    'cleanup.builder.storage',
+    'cleanup.image.storage',
     'cleanup.scratch',
-    'cleanup.list',
+    'cleanup.list.images',
+    'cleanup.list.scratch',
   ]) {
     assert.ok(labels.includes(needed), `the plan has no ${needed} step; it holds ${labels.join(', ')}`);
   }
@@ -172,8 +219,13 @@ test('the driver builds the driver image rather than assuming it', () => {
   // cannot succeed and reports an authentication problem, which is the wrong
   // trail entirely; the script's own teardown is what exposed it.
   const build = plan().find((s) => s.label === 'driver.image');
-  assert.match(build.remote, /docker build .* -t nas-driver:latest/);
-  assert.match(build.remote, /docker-buildx-plugin/, 'on Docker 29 a CLI without buildx exits 125');
+  assert.match(build.remote, /^docker build .* -t nas-driver:latest -$/);
+  // The Dockerfile arrives over stdin rather than in a heredoc, so this remote
+  // command stays one docker invocation with no shell around it. The content is
+  // checked at its source instead.
+  assert.ok(build.stdin, 'the Dockerfile is fed in rather than written into the command');
+  assert.match(build.stdinHead, /docker-buildx-plugin/, 'on Docker 29 a CLI without buildx exits 125');
+  assert.match(build.stdinHead, /docker-ce-cli/);
 });
 
 test('the driver pushes the tree with .git and without target', () => {

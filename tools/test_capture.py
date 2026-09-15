@@ -210,10 +210,12 @@ class Recorder(capture.Executor):
         elif label.startswith("import."):
             code = self.import_code
             out = "run 20260101"
-        elif label.startswith("cleanup.list"):
+        elif label.startswith("cleanup.list.images"):
             # Somebody else's run is on the machine, which is the ordinary case
             # and the reason the listing names things instead of counting them.
-            out = "image left: viprs-nas-storage:someone-else\nscratch left: someone-else"
+            out = "viprs-nas-storage:someone-else\nalpine:3.20"
+        elif label.startswith("cleanup.list.scratch"):
+            out = "someone-else"
         result = capture.Result(step, code, out, out if code else "")
         return result
 
@@ -288,12 +290,80 @@ class DriverWiring(unittest.TestCase):
     def test_a_refusal_at_the_archive_door_never_reaches_the_importer(self):
         # Red against a driver that archives regardless and lets the importer be
         # the only gate. `--check` is exit 1 for a reason: it is an answer, and
-        # a document it turned away must not be filed.
-        code = self.drive(Recorder(check_code=1))
+        # a document it turned away must not be filed. The assertion is on the
+        # steps and on the repository, because "it exited 1" is also what a
+        # driver that filed the document and then refused would do.
+        before = self.repo_state()
+        recorder = Recorder(check_code=1)
+        code = self.drive(recorder)
         self.assertEqual(code, 1)
+        labels = [s.label for s in recorder.steps]
+        self.assertFalse([l for l in labels if l.startswith("archive.")], "nothing was archived")
+        self.assertFalse([l for l in labels if l.startswith("import.")], "nothing was imported")
+        self.assertEqual(self.repo_state(), before)
         summary = json.loads(self.summary_path.read_text())
         self.assertFalse(summary["published"])
         self.assertTrue(any("REFUSED" in r for r in summary["refusals"]))
+
+    def test_an_archived_document_that_does_not_verify_is_not_imported(self):
+        # The digests-do-not-verify door, which had no test at all. `--verify`
+        # recomputes the four digests over the file as it was written, so a
+        # failure here means the archive holds something other than what was
+        # measured, and nothing downstream may be told about it.
+        recorder = Recorder()
+        original = recorder.run
+
+        def fail_verify(step):
+            if step.label.startswith("verify."):
+                recorder.steps.append(step)
+                return capture.Result(step, 1, "", "the cells block moved")
+            return original(step)
+
+        recorder.run = fail_verify
+        before = self.repo_state()
+        code = self.drive(recorder)
+        self.assertEqual(code, 1)
+        self.assertFalse(
+            [s.label for s in recorder.steps if s.label.startswith("import.")],
+            "a document that does not verify never reaches the importer",
+        )
+        self.assertEqual(self.repo_state(), before)
+        summary = json.loads(self.summary_path.read_text())
+        self.assertTrue(any("does not verify" in r for r in summary["refusals"]))
+
+    def test_a_gate_that_fails_and_says_nothing_still_refuses_the_whole_run(self):
+        # Red against collecting reasons by iterating over a failed step's
+        # output and nothing else. A gate that exits non-zero with both streams
+        # empty then appends nothing, the family is skipped in silence, and
+        # because the publish rule used to be keyed on the refusal list being
+        # empty, the OTHER family reached the repository and the run reported
+        # success. An aggregator killed by the OOM killer exits 137 and says
+        # nothing, which on a six-core machine running a full sweep is not
+        # hypothetical.
+        recorder = Recorder()
+        original = recorder.run
+
+        def die_quietly(step):
+            if step.label == "check.engines":
+                recorder.steps.append(step)
+                return capture.Result(step, 137, "", "")
+            return original(step)
+
+        recorder.run = die_quietly
+        before = self.repo_state()
+        code = self.drive(recorder)
+        self.assertEqual(code, 1)
+        self.assertEqual(self.repo_state(), before, "the storage half is not published either")
+        summary = json.loads(self.summary_path.read_text())
+        self.assertFalse(summary["published"])
+        self.assertTrue(
+            any("printed nothing at all" in r for r in summary["refusals"]),
+            f"a silent failure is named as one: {summary['refusals']}",
+        )
+        self.assertTrue(
+            any("every family it was asked for or none" in r for r in summary["refusals"]),
+            "and the run says why nothing was published",
+        )
 
     def test_one_refused_family_does_not_publish_the_other(self):
         # Red against a per-family publish. A history that carries the storage
@@ -309,8 +379,14 @@ class DriverWiring(unittest.TestCase):
             return original(step)
 
         recorder.run = refuse_engines
+        before = self.repo_state()
         code = self.drive(recorder)
         self.assertEqual(code, 1)
+        # The whole repository, not just the history. The recorder's importer
+        # never writes the staging history, so `history.json` reads "[]" whether
+        # or not publish() ran: asserting on it alone is a fixed point, and this
+        # test was green against a driver that published the storage half.
+        self.assertEqual(self.repo_state(), before)
         self.assertEqual((self.repo / "tools" / "publish" / "history.json").read_text(), "[]\n")
 
     def test_the_cleanup_runs_even_when_the_capture_fails(self):
@@ -330,7 +406,13 @@ class DriverWiring(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.drive(recorder)
         labels = [s.label for s in recorder.steps]
-        for needed in ("cleanup.images", "cleanup.scratch", "cleanup.list"):
+        for needed in (
+            "cleanup.builder.storage",
+            "cleanup.image.storage",
+            "cleanup.scratch",
+            "cleanup.list.images",
+            "cleanup.list.scratch",
+        ):
             self.assertIn(needed, labels)
 
     def test_cleanup_can_name_the_build_container_it_has_to_stop(self):
@@ -346,8 +428,10 @@ class DriverWiring(unittest.TestCase):
         for family in ("storage", "engines"):
             expected = f"viprs-build-{family}-unit-test"
             self.assertIn(expected, sent[f"build.{family}"], "the build container is named")
-            self.assertIn(
-                f"docker rm -f {expected}", sent["cleanup.images"], "and cleanup removes it"
+            self.assertEqual(
+                sent[f"cleanup.builder.{family}"],
+                f"docker rm -f {expected}",
+                "and cleanup removes it",
             )
 
     def test_a_hard_failure_still_writes_the_summary(self):
@@ -396,6 +480,8 @@ class DriverWiring(unittest.TestCase):
         # count cannot give it: this machine carries other people's jobs, and a
         # run that reported "1 scratch tree remaining" would be reporting on
         # somebody else while saying nothing about itself.
+        # Only the viprs images, so the machine's own hundred unrelated ones do
+        # not drown the answer.
         self.assertEqual(left["images"], ["viprs-nas-storage:someone-else"])
         self.assertEqual(left["scratchTrees"], ["someone-else"])
         self.assertEqual(left["mine"], [])
@@ -409,16 +495,17 @@ class DriverWiring(unittest.TestCase):
         original = recorder.run
 
         def leave_something(step):
-            if step.label == "cleanup.list":
+            if step.label == "cleanup.list.images":
                 recorder.steps.append(step)
                 return capture.Result(
                     step,
                     0,
-                    "image left: viprs-nas-storage:unit-test\n"
-                    "image left: viprs-nas-storage:someone-else\n"
-                    "scratch left: unit-test\n",
+                    "viprs-nas-storage:unit-test\nviprs-nas-storage:someone-else\n",
                     "",
                 )
+            if step.label == "cleanup.list.scratch":
+                recorder.steps.append(step)
+                return capture.Result(step, 0, "unit-test\n", "")
             return original(step)
 
         recorder.run = leave_something

@@ -9,11 +9,11 @@ repository.
 One command: stage clean checkouts, push them to the NAS with their git
 history, build the images there through the socket-mounted driver, settle,
 capture, retrieve, check, archive, verify, import, and leave the machine as it
-was found. What it publishes is two files in this repository per family: the
-sealed document under `archive/<family>/` and the history entry
-`tools/publish/history.json` derives from it. libviprs-org reads both of those
-out of this repository at a pinned revision; nothing is pushed to the site from
-here.
+was found. What it publishes is the sealed document under `archive/<family>/`,
+that family's `archive/<family>/index.json`, and the one shared
+`tools/publish/history.json` the entry is derived into. libviprs-org reads all
+of those out of this repository at a pinned revision; nothing is pushed to the
+site from here.
 
 This driver runs on the Mac. It is an orchestrator, exactly as
 `tools/capture-nas.sh` is, and it does not reimplement anything the chain
@@ -55,8 +55,10 @@ THE TRAPS, CARRIED FORWARD FROM tools/capture-nas.sh RATHER THAN REDISCOVERED
  7. Six cores decline every T=8 rung, so an x86_64 run carries fewer storage
     cells than an eight-core arm64 one. The summary says so rather than leaving
     a reader to wonder why two runs of one profile have different cell counts.
- 8. Every directory in the scratch tree is created INSIDE a container, including
-    the scratch root. The shell script creates the root with a host-side
+ 8. Every directory in the scratch tree is created INSIDE a container: the root,
+    `out`, `scratch` and the archive staging. Leaving one to docker, which makes
+    a missing bind-mount source itself, reaches the same end state with no record
+    of who did it, and it is the mechanism this trap and trap 4 are both about. The shell script creates the root with a host-side
     `mkdir -p` and gets away with it because it only ever creates the root. This
     driver pushes a second tree beside the first, and by then the root is not the
     host account's: `tar -xf` of an archive whose top entry is `.` restores that
@@ -181,6 +183,11 @@ class Step:
     remote: str | None = None
     argv: list[str] | None = None
     stdin_path: str | None = None
+    # The head of what would be piped in, read when the step is recorded. The
+    # path alone is no use to a reader or to the guard, because it is in a
+    # temporary directory this process deletes on the way out, and a plan that
+    # names a file nobody can open cannot be checked.
+    stdin_head: str = ""
     # Steps whose non-zero exit is an answer rather than a failure: the
     # aggregator's refusal and the importer's are both exit 1 on purpose.
     allow_failure: bool = False
@@ -212,11 +219,13 @@ class Executor:
         default_factory=lambda: {
             "settle.cores": "6",
             "settle.load": "0.00",
-            "load.at-start": "  load at start: 0.00",
+            "load.at-start": "0.00 0.00 0.00",
             "archive": "archived /out/x.json as PLANNED-RUN-ID (sha256:planned)",
             "retrieve.document": "{}",
             "retrieve.index": "[]",
-            "cleanup.list": "images matching this run: 0\nscratch trees remaining: 0",
+            "cleanup.containers": "",
+            "cleanup.list.images": "viprs-nas-storage:someone-else",
+            "cleanup.list.scratch": "someone-else",
         }
     )
 
@@ -224,6 +233,8 @@ class Executor:
         return ["ssh", "-o", "BatchMode=yes", "-o", "LogLevel=ERROR", self.nas, remote]
 
     def run(self, step: Step) -> Result:
+        if step.stdin_path and Path(step.stdin_path).exists():
+            step.stdin_head = Path(step.stdin_path).read_text(errors="replace")[:4000]
         self.steps.append(step)
         if self.echo and not self.plan:
             print(f"== {step.label}", flush=True)
@@ -376,7 +387,6 @@ def scratch_root(name: str) -> str:
 
 
 def nas_container(
-    name: str,
     image: str,
     command: str,
     mounts: tuple[tuple[str, str], ...] = (),
@@ -419,8 +429,8 @@ def push_tree(ex: Executor, name: str, tarball: Path, dest: str) -> None:
     first version of the shell script made: a host-side `tar -xf` does not feel
     like work and executes on the machine all the same.
 
-    The mkdir runs in a container too, and that is a seventh trap rather than
-    tidiness. The shell script creates the scratch root with a host-side
+    The mkdir runs in a container too, and that is trap 8 in the header rather
+    than tidiness. The shell script creates the scratch root with a host-side
     `mkdir -p` and gets away with it because it only ever creates the root. This
     driver pushes a second tree beside the first one, and by then the scratch
     root is no longer the host account's: `tar -xf` extracting an archive whose
@@ -446,7 +456,6 @@ def push_tree(ex: Executor, name: str, tarball: Path, dest: str) -> None:
     ex.nas_step(
         f"push.mkdir.{leaf}",
         nas_container(
-            name,
             UTIL_IMAGE,
             f"mkdir -p {inside}",
             mounts=(("$HOME/workspace", "/ws"),),
@@ -455,7 +464,6 @@ def push_tree(ex: Executor, name: str, tarball: Path, dest: str) -> None:
     ex.nas_step(
         f"push.untar.{leaf}",
         nas_container(
-            name,
             UTIL_IMAGE,
             "tar -xf - -C /dest",
             mounts=((dest, "/dest"),),
@@ -465,17 +473,24 @@ def push_tree(ex: Executor, name: str, tarball: Path, dest: str) -> None:
     )
 
 
-def build_driver_image(ex: Executor) -> None:
+def build_driver_image(ex: Executor, dockerfile: Path) -> None:
     """Build the socket-mounted driver rather than assuming it.
 
     It is a local image on no registry. A missing one sends docker to a pull
     that cannot succeed and reports an authentication problem, which is the
     wrong trail entirely. The daemon caches it, so rebuilding each run costs
     nothing after the first.
+
+    The Dockerfile goes over stdin rather than in a heredoc. A heredoc would make
+    this remote command a shell script with a `>` redirect in it, and the rule
+    the guard holds is that every command this driver sends to the NAS is one
+    docker invocation and nothing else. Feeding `docker build -` its input the
+    way the tar push is fed keeps it to that.
     """
     ex.nas_step(
         "driver.image",
-        f"docker build -q -t {DRIVER_IMAGE} - >/dev/null <<'DOCKEREOF'\n{DRIVER_DOCKERFILE}DOCKEREOF",
+        f"docker build -q -t {DRIVER_IMAGE} -",
+        stdin_path=str(dockerfile),
     )
 
 
@@ -498,7 +513,6 @@ def build_family_image(ex: Executor, name: str, family: str) -> str:
     ex.nas_step(
         f"build.{family}",
         nas_container(
-            name,
             DRIVER_IMAGE,
             f"sh -c 'docker build --platform {NAS_PLATFORM} -f libviprs-bench/Dockerfile "
             f"--target {family} -t {tag} . >/dev/null'",
@@ -522,7 +536,7 @@ def settle(ex: Executor) -> dict:
     importer refuses a run whose typical cell was not quiet, so a slow machine
     produces a refused document rather than a quiet lie.
     """
-    cores_out = ex.nas_step("settle.cores", nas_container("", UTIL_IMAGE, "nproc")).stdout
+    cores_out = ex.nas_step("settle.cores", nas_container(UTIL_IMAGE, "nproc")).stdout
     try:
         cores = int(cores_out.strip() or "6")
     except ValueError:
@@ -532,7 +546,7 @@ def settle(ex: Executor) -> dict:
     while waited < SETTLE_TIMEOUT_S:
         raw = ex.nas_step(
             "settle.load",
-            nas_container("", UTIL_IMAGE, "sh -c 'cut -d\" \" -f1 /proc/loadavg'"),
+            nas_container(UTIL_IMAGE, "sh -c 'cut -d\" \" -f1 /proc/loadavg'"),
         ).stdout
         try:
             load = float(raw.strip())
@@ -555,74 +569,80 @@ def cleanup(ex: Executor, name: str) -> dict:
     `nas-driver:latest` is deliberately kept: other jobs on that machine use it,
     tearing down something shared because this run happened to rebuild it would
     be rude, and it is a cached layer the next run reuses. The two images this
-    run built are ours alone and do go.
+    run built are ours alone and do go, and so does the build driver's own
+    container, which outlives an interrupted run otherwise.
+
+    One docker invocation per step, with the filtering done here rather than in a
+    pipeline on the machine. The shell script pipes `docker images` into `grep`
+    and `grep -c`, which is two host binaries doing work, and it says so in a
+    comment drawing the boundary there. This draws it tighter: every command this
+    driver sends is one docker command, so the guard can hold a rule with no
+    exception in it and no substring test that a `;` can walk past.
     """
     root = scratch_root(name)
-    ex.nas_step(
-        "cleanup.images",
-        " ; ".join(
-            [
-                # The build driver first, by name. It outlives an interrupted
-                # driver otherwise, because SIGINT stops the Python process and
-                # not the ssh child, and the machine keeps compiling for half an
-                # hour with nobody attached. Removing the CLI container drops
-                # BuildKit's session, which cancels the build.
-                f"docker rm -f {build_container(name, fam)} 2>/dev/null || true"
-                for fam in FAMILIES
-            ]
-            + [
-                f"docker rm -f $(docker ps -aq --filter ancestor=viprs-nas-{fam}:{name}) 2>/dev/null || true"
-                for fam in FAMILIES
-            ]
-            + [
-                "docker rmi -f "
-                + " ".join(f"viprs-nas-{fam}:{name}" for fam in FAMILIES)
-                + " 2>/dev/null || true"
-            ]
-        ),
-        allow_failure=True,
-    )
+    for family in FAMILIES:
+        ex.nas_step(
+            f"cleanup.builder.{family}",
+            f"docker rm -f {build_container(name, family)}",
+            allow_failure=True,
+        )
+    for family in FAMILIES:
+        running = ex.nas_step(
+            f"cleanup.containers.{family}",
+            f"docker ps -aq --filter ancestor=viprs-nas-{family}:{name}",
+            allow_failure=True,
+        ).stdout.split()
+        for container_id in running:
+            ex.nas_step(
+                f"cleanup.container.{family}.{container_id}",
+                f"docker rm -f {container_id}",
+                allow_failure=True,
+            )
+        ex.nas_step(
+            f"cleanup.image.{family}",
+            f"docker rmi -f viprs-nas-{family}:{name}",
+            allow_failure=True,
+        )
     # The parent is mounted, never the scratch root: docker creates a missing
     # bind-mount source as root, and mounting the root itself is what leaves it
     # unwritable for the next run.
     ex.nas_step(
         "cleanup.scratch",
         nas_container(
-            name,
             UTIL_IMAGE,
-            f"sh -c 'rm -rf /ws/nas-work/{name}'",
+            f"rm -rf /ws/nas-work/{name}",
             mounts=(("$HOME/workspace", "/ws"),),
-        )
-        + " 2>/dev/null || true",
+        ),
         allow_failure=True,
     )
     # Report what is left by listing it, never by asserting the machine is
     # clean. Names and not counts: a count answers "is anything here", and the
     # question is "is anything of MINE here", which a count cannot answer on a
-    # machine other jobs also use. One name per line with its own prefix, so
-    # there is nothing to parse and no `grep -c` printing a 0 and exiting 1 while
-    # an `|| echo 0` prints a second one underneath it.
-    listing = ex.nas_step(
-        "cleanup.list",
-        "docker images --format '{{.Repository}}:{{.Tag}}' | grep viprs-nas "
-        "| sed 's/^/image left: /' ; "
-        + nas_container(
-            name,
-            UTIL_IMAGE,
-            "sh -c 'ls /ws/nas-work 2>/dev/null | sed \"s|^|scratch left: |\"'",
-            mounts=(("$HOME/workspace", "/ws"),),
-        ),
-        allow_failure=True,
-    ).stdout
-    left = {"images": [], "scratchTrees": []}
-    for line in listing.splitlines():
-        if line.startswith("image left: "):
-            left["images"].append(line.split(": ", 1)[1].strip())
-        if line.startswith("scratch left: "):
-            left["scratchTrees"].append(line.split(": ", 1)[1].strip())
-    left["mine"] = sorted(
-        item for item in left["images"] + left["scratchTrees"] if name in item
-    )
+    # machine other jobs also use.
+    images = [
+        line.strip()
+        for line in ex.nas_step(
+            "cleanup.list.images",
+            "docker images --format '{{.Repository}}:{{.Tag}}'",
+            allow_failure=True,
+        ).stdout.splitlines()
+        if "viprs-nas" in line
+    ]
+    trees = [
+        line.strip()
+        for line in ex.nas_step(
+            "cleanup.list.scratch",
+            nas_container(
+                UTIL_IMAGE,
+                "ls /ws/nas-work",
+                mounts=(("$HOME/workspace", "/ws"),),
+            ),
+            allow_failure=True,
+        ).stdout.splitlines()
+        if line.strip()
+    ]
+    left = {"images": images, "scratchTrees": trees}
+    left["mine"] = sorted(item for item in images + trees if name in item)
     for kind in ("images", "scratchTrees"):
         print(f"  {kind} left on the machine: {', '.join(left[kind]) or 'none'}")
     print(
@@ -685,19 +705,18 @@ def capture_family(ex: Executor, name: str, family: str, profile: str, out_dir: 
     """Measure one family and bring its document back."""
     root = scratch_root(name)
     tag = f"viprs-nas-{family}:{name}"
-    ex.nas_step(
+    # Printed, not just run. The shell script's equivalent line exists "only so
+    # the transcript shows it too", and here the Executor captures output, so a
+    # step whose result is never read is a container started for nothing.
+    at_start = ex.nas_step(
         f"load.at-start.{family}",
-        nas_container(
-            name,
-            UTIL_IMAGE,
-            "sh -c 'awk \"{print \\\"  load at start: \\\" \\$1}\" /proc/loadavg'",
-        ),
+        nas_container(UTIL_IMAGE, "cut -d' ' -f1-3 /proc/loadavg"),
         allow_failure=True,
-    )
+    ).stdout.strip()
+    print(f"  load at start: {at_start or 'unread'}")
     ex.nas_step(
         f"capture.{family}",
         nas_container(
-            name,
             tag,
             f"/src/libviprs-bench/target/release/{family} "
             f"--family {family} --profile {profile} --out /out/{family}-x86.json",
@@ -711,7 +730,6 @@ def capture_family(ex: Executor, name: str, family: str, profile: str, out_dir: 
     document = ex.nas_step(
         f"retrieve.document.{family}",
         nas_container(
-            name,
             UTIL_IMAGE,
             f"cat /out/{family}-x86.json",
             mounts=((f"{root}/out", "/out"),),
@@ -721,6 +739,34 @@ def capture_family(ex: Executor, name: str, family: str, profile: str, out_dir: 
     path.write_text(document)
     print(f"  retrieved {path} ({len(document)} bytes)")
     return path
+
+
+def gate_refused(result: Result, family: str, what: str, refusals: list[str]) -> None:
+    """Record every reason a gate gave, and one of our own when it gave none.
+
+    A gate that exits non-zero with both streams empty used to append nothing.
+    The family was then skipped with no sentence anywhere saying so, and because
+    the publish rule was keyed on the refusal list being empty, the OTHER family
+    went to the repository and the run reported success. An aggregator killed by
+    the OOM killer exits 137 and says nothing, which on a six-core machine
+    running a full sweep is not a hypothetical.
+
+    So a silent non-zero exit is itself a refusal, and it says that is what it
+    is, because "the gate failed and told me nothing" is a different problem from
+    "the run was refused" and the reader needs to know which one they have.
+    """
+    said = False
+    for line in (result.stderr or result.stdout).splitlines():
+        if line.strip():
+            refusals.append(f"{family}: {what} {line.strip()}")
+            said = True
+    if not said:
+        refusals.append(
+            f"{family}: {what} exited {result.code} and printed nothing at all, so there is no "
+            "reason to report. That is a failure of the gate rather than a verdict on the run, "
+            "and it is refused the same way: a step that cannot say why it said no is not "
+            "evidence that anything is fine."
+        )
 
 
 def archive_family(
@@ -744,7 +790,6 @@ def archive_family(
     check = ex.nas_step(
         f"check.{family}",
         nas_container(
-            name,
             tag,
             f"{aggregate} --check {document}",
             mounts=((f"{root}/out", "/out"),),
@@ -752,15 +797,12 @@ def archive_family(
         allow_failure=True,
     )
     if check.code != 0:
-        for line in (check.stderr or check.stdout).splitlines():
-            if line.strip():
-                refusals.append(f"{family}: {line.strip()}")
+        gate_refused(check, family, "`storage-aggregate --check`", refusals)
         return None
 
     archived = ex.nas_step(
         f"archive.{family}",
         nas_container(
-            name,
             tag,
             f"{aggregate} --archive {document} --root /archive/{family}",
             mounts=((f"{root}/out", "/out"), (f"{root}/archive", "/archive")),
@@ -768,16 +810,13 @@ def archive_family(
         allow_failure=True,
     )
     if archived.code != 0:
-        for line in (archived.stderr or archived.stdout).splitlines():
-            if line.strip():
-                refusals.append(f"{family}: {line.strip()}")
+        gate_refused(archived, family, "`storage-aggregate --archive`", refusals)
         return None
     run_id = parse_run_id(archived.stdout)
 
     verified = ex.nas_step(
         f"verify.{family}",
         nas_container(
-            name,
             tag,
             f"{aggregate} --verify /archive/{family}/{run_id}.json",
             mounts=((f"{root}/archive", "/archive"),),
@@ -785,15 +824,17 @@ def archive_family(
         allow_failure=True,
     )
     if verified.code != 0:
-        for line in (verified.stderr or verified.stdout).splitlines():
-            if line.strip():
-                refusals.append(f"{family}: the archived document does not verify: {line.strip()}")
+        gate_refused(
+            verified,
+            family,
+            "the archived document does not verify, and `storage-aggregate --verify` says",
+            refusals,
+        )
         return None
 
     sealed = ex.nas_step(
         f"retrieve.document.archived.{family}",
         nas_container(
-            name,
             UTIL_IMAGE,
             f"cat /archive/{family}/{run_id}.json",
             mounts=((f"{root}/archive", "/archive"),),
@@ -802,7 +843,6 @@ def archive_family(
     index = ex.nas_step(
         f"retrieve.index.{family}",
         nas_container(
-            name,
             UTIL_IMAGE,
             f"cat /archive/{family}/index.json",
             mounts=((f"{root}/archive", "/archive"),),
@@ -835,7 +875,11 @@ def import_family(
             "--platform",
             LOCAL_PLATFORM,
             "-v",
-            f"{repo}:/repo",
+            # Read-only, because this is the stage that decides whether anything
+            # may be written and it must not be able to write anything itself.
+            # `import-run.mjs` only writes the history, which is in /staging, so
+            # this costs nothing and turns a promise into a mount flag.
+            f"{repo}:/repo:ro",
             "-v",
             f"{staging}:/staging",
             "-w",
@@ -854,9 +898,7 @@ def import_family(
     )
     print(result.stdout)
     if result.code != 0:
-        for line in result.stderr.splitlines():
-            if line.strip():
-                refusals.append(f"{family}: {line.strip()}")
+        gate_refused(result, family, "`import-run.mjs`", refusals)
         return False
     return True
 
@@ -977,9 +1019,25 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
 
             try:
                 push_tree(ex, name, tree_tar, root)
-                build_driver_image(ex)
+                dockerfile = tmpdir / "nas-driver.Dockerfile"
+                dockerfile.write_text(DRIVER_DOCKERFILE)
+                build_driver_image(ex, dockerfile)
                 for family in families:
                     build_family_image(ex, name, family)
+                # `out` and `scratch` are made here rather than left to docker,
+                # which creates a missing bind-mount source itself and as root.
+                # That is the same end state and no record of who did it, and it
+                # is the mechanism traps 4 and 8 are both about, so the driver
+                # does it where the guard can see it.
+                for leaf in ("out", "scratch"):
+                    ex.nas_step(
+                        f"scratch.mkdir.{leaf}",
+                        nas_container(
+                            UTIL_IMAGE,
+                            f"mkdir -p /ws/nas-work/{name}/{leaf}",
+                            mounts=(("$HOME/workspace", "/ws"),),
+                        ),
+                    )
                 # The archive goes up as its own tree, OUTSIDE the git checkout,
                 # and after the builds. Copying it into the pushed clone would
                 # make that tree dirty, and `provenance.dirty` is a refusal: the
@@ -1003,7 +1061,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
             finally:
                 if args.keep:
                     print(f"  --keep: the scratch tree stays at {root}")
-                    summary["nas"] = {"kept": root}
+                    summary["keptScratchTree"] = root
                 else:
                     summary["nasLeftAsFound"] = cleanup(ex, name)
 
@@ -1015,22 +1073,33 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
                     ex, repo, staging, family, entry["runId"], refusals
                 )
 
+            # Keyed on the families asked for, never on whether anything was
+            # refused. Those are not the same question, and the difference is
+            # what let a gate that failed silently publish the other family and
+            # report success: no reasons were collected, so `if refusals` was
+            # false, and `if not imported` only asks whether ANY family got
+            # through. A family that could not be published does not publish the
+            # one that could through the same commit either, because a history
+            # holding one half of a capture reads as a complete run of one
+            # family.
             imported = [f for f, e in summary["families"].items() if e.get("imported")]
-            if not imported:
+            missing = [f for f in families if f not in imported]
+            if missing:
                 raise Refused(
                     refusals
-                    or ["nothing was imported, and no gate said why, which is itself a defect"]
+                    + [
+                        f"{', '.join(missing)} did not reach the history, so nothing is "
+                        "published: a capture publishes every family it was asked for or none "
+                        "of them."
+                    ]
                 )
             if refusals:
-                # A family that could not be published does not publish the one
-                # that could through the same commit. Either both families of a
-                # capture reach the repository or neither does, because a
-                # history holding one half of a run reads as a complete run.
                 raise Refused(refusals)
 
             if not args.plan:
                 summary["writes"] = publish(repo, staging, families)
-            summary["published"] = True
+            # A plan publishes nothing, so it does not get to say it published.
+            summary["published"] = not args.plan
             summary["history"] = {
                 "path": "tools/publish/history.json",
                 "entries": len(json.loads((staging / "history.json").read_text())),
@@ -1038,6 +1107,11 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
 
             if args.commit and not args.plan:
                 subprocess.run(["git", "-C", str(repo), "add", *summary["writes"]], check=True)
+                # `-- <paths>` and not a bare `git commit`. Without the pathspec
+                # this commits the whole index, so anything the operator had
+                # already staged rides along in a commit whose message says it
+                # is a capture. The help text promises the named paths; this is
+                # what makes that true.
                 subprocess.run(
                     [
                         "git",
@@ -1046,6 +1120,8 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
                         "commit",
                         "-m",
                         f"bench: publish {', '.join(imported)} at profile {args.profile}",
+                        "--",
+                        *summary["writes"],
                     ],
                     check=True,
                 )
@@ -1088,7 +1164,7 @@ def emit(args, summary: dict, ex: Executor) -> None:
                 "label": s.label,
                 "where": s.where,
                 **({"remote": s.remote} if s.where == "nas" else {"argv": s.argv}),
-                **({"stdin": s.stdin_path} if s.stdin_path else {}),
+                **({"stdin": s.stdin_path, "stdinHead": s.stdin_head} if s.stdin_path else {}),
             }
             for s in ex.steps
         ]

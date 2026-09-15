@@ -353,8 +353,10 @@ Nothing reaches this repository until every gate has passed. The whole chain run
 against a staging copy of `archive/` and `tools/publish/history.json`, so a
 contended, emulated, debug-built, unarchived, digest-broken or unpublishable
 capture leaves `git status` clean and prints every reason it was refused. What a
-successful run writes is the sealed document under `archive/<family>/` and the
-history entry derived from it; `--commit` commits exactly those paths.
+successful run writes is the sealed document under `archive/<family>/`, that
+family's `archive/<family>/index.json`, and the shared
+`tools/publish/history.json`; `--commit` commits exactly those paths and nothing
+else that happened to be staged.
 
 `tools/capture-nas.sh` is the same capture without the publishing half, and is
 still the way to get two documents out of the machine and look at them.
