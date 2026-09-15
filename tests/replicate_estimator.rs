@@ -5,11 +5,11 @@
 //! estimator this file replaces, which measured the control cell twice and
 //! published the gap between the two as the run's noise floor.
 //!
-//! Two full storage captures of the same cell on the same attested native host,
-//! eleven hours apart, neither carrying a condition warning, reported floors of
-//! 3.46% and 36.89%. Neither was wrong. A gap between two points has no
-//! dispersion of its own, so nothing in either document could say which was the
-//! outlier, and the two runs were incomparable in a way nothing flagged.
+//! Three full storage captures of the same cell on attested native hosts, none
+//! carrying a condition warning, reported floors of 3.46%, 36.89% and 21.31%.
+//! None of them was wrong. A gap between two points has no dispersion of its
+//! own, so nothing in any of the three documents could say which was the
+//! outlier, and the runs were incomparable in a way nothing flagged.
 
 use std::collections::BTreeMap;
 
@@ -148,7 +148,9 @@ fn two_point_disagreement(rng: &mut Rng, factor: f64, trials: usize) -> f64 {
             let pair = rng.placements(2, 5.0);
             replicate::spread_pct(pair[0], pair[1])
         };
-        let (Some(a), Some(b)) = (gap(rng), gap(rng)) else {
+        let first = gap(rng);
+        let second = gap(rng);
+        let (Some(a), Some(b)) = (first, second) else {
             continue;
         };
         let (lo, hi) = if a < b { (a, b) } else { (b, a) };
