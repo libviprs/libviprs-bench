@@ -257,6 +257,16 @@ test('config.json names only things the producer actually emits', () => {
   assert.ok(VOCAB.cellNames.includes(CONFIG.defaults.scales[0]), 'defaults.scales names no real cell');
 
   assert.ok(VOCAB.cellFields.includes(CONFIG.producer.seriesFrom));
+  for (const f of CONFIG.producer.rowIdentityFrom) {
+    // A row identity naming a field no cell carries is the worst of the shapes
+    // this file guards: it does not refuse and it does not throw, it makes every
+    // row look like every other row, and the run gets a large confident
+    // replicate count it never earned.
+    assert.ok(
+      VOCAB.cellFields.includes(f),
+      `producer.rowIdentityFrom names ${f}, which no cell has`,
+    );
+  }
   for (const f of [CONFIG.sections.scaleFrom, CONFIG.sections.unitFrom, CONFIG.sections.directionFrom]) {
     assert.ok(VOCAB.cellFields.includes(f), `sections names cell field ${f}, which does not exist`);
   }

@@ -356,7 +356,12 @@
           },
           "description": "Family names the crate emits. A document whose `family` is not in this list is refused rather than imported under a guessed name."
         },
-        "seriesFrom": {
+        "rowIdentityFrom": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Producer cell fields that together identify one published row, and therefore decide which rows are a second measurement of a row already published. The run declares the cell it measured twice and that cell names itself, so identity is the producer's own fields and never anything the page decides. This was the section key plus the tile count and neither names a cell: every `+c8` cell in the engines family shares both with its `+c1` twin, which filed 144 rows of the concurrency arm as replicates of `512x360@256+c1`, and 21851 is both `8192x8192@64+gradient` and `8192x8192@64+noise`. `backend` rather than the renamed series, because a rename is a display decision and identity must not move when a label does; no scale, because `cell` already determines it. Every field named here is required on every measured cell, so a document this cannot identify is refused rather than read as one row repeated."
+      },
+      "seriesFrom": {
           "type": "string",
           "description": "Producer cell field that becomes `samples[].library`."
         },
