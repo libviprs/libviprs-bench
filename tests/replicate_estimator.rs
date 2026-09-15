@@ -44,6 +44,7 @@ fn placement_row(cell: Cell, scenario: &'static str, samples: Vec<f64>) -> Docum
         scenario,
         metric: LOOKUPS,
         isolation: Isolation::ProcessPerScenario,
+        oversubscribed: None,
         warmup: Some(Warmup::ONE_DISCARDED_PASS),
         discarded_warmup: vec![],
         reps_declared: reps,
@@ -312,21 +313,28 @@ fn a_sweep_that_drifts_publishes_the_drift_beside_the_floor() {
         found.floor_pct
     );
 
-    // The mirror case: the same spread with no trend in it. Same floor to
-    // within the estimator, and a drift that has gone.
-    let scattered = [
-        first, last, first, last, first, last,
-    ];
+    // The mirror case: the same two values with no trend between them. The
+    // arrangement is symmetric about the middle of the sweep, so the fitted
+    // slope is exactly zero and every bit of the movement is scatter. A block
+    // that published one number could not tell this run from the ramp above.
+    let scattered = [first, last, first, first, last, first];
     let quiet = replicate::dispersion(&scattered).expect("six placements are a floor");
     assert!(
-        quiet.drift_pct.abs() < 20.0,
-        "a zigzag is not a trend, and this reads it as {}",
+        quiet.drift_pct.abs() < 1e-9,
+        "a symmetric arrangement has no trend, and this reads one of {}",
         quiet.drift_pct
     );
     assert!(
         quiet.residual_pct > 50.0,
-        "a zigzag is all scatter, and this reads it as {}",
+        "with no trend to remove, the scatter is everything: {}",
         quiet.residual_pct
+    );
+    assert!(
+        quiet.residual_pct > found.residual_pct * 10.0,
+        "the ramp and the zigzag move by the same amount, and the residual is what \
+         separates them: {} against {}",
+        quiet.residual_pct,
+        found.residual_pct
     );
 }
 

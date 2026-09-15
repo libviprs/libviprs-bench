@@ -788,6 +788,7 @@ if (baselinePath) {
 
 const GATED_FROM = producer.gatedFrom ?? null;
 const GATED_WHEN_UNCALIBRATED = producer.gatedWhenUncalibrated ?? null;
+const OVERSUBSCRIBED_FROM = producer.oversubscribedFrom ?? null;
 
 function gating(cell, library) {
   const metric = cell.metric;
@@ -796,6 +797,22 @@ function gating(cell, library) {
   if (GATED_FROM !== null && at(cell, GATED_FROM) !== undefined) {
     const declaredGate = at(cell, GATED_FROM);
     return { gated: declaredGate, tolerancePct: null, ungateableReason: null };
+  }
+  // A rung that asked for more threads than the host has cores. The number is
+  // real and is published, and on the one machine that measures x86_64 natively
+  // it is the only way to reach the rung the x86_64 knee sits on at all. It
+  // must never be graded, because the comparison it would be graded against ran
+  // on a host that had the cores for it, and those are not the same measurement
+  // (libviprs-bench #84).
+  if (OVERSUBSCRIBED_FROM !== null && at(cell, OVERSUBSCRIBED_FROM) === true) {
+    return {
+      gated: GATED_WHEN_UNCALIBRATED,
+      tolerancePct: null,
+      ungateableReason:
+        'this rung asked for more threads than the host has cores: the number is a real ' +
+        'oversubscription measurement and is published as one, and it is not comparable with ' +
+        'the same rung on a host that had the cores for it',
+    };
   }
   if (UNGATEABLE.includes(metric)) {
     return {
@@ -887,6 +904,8 @@ function sampleOf(cell) {
     isolation: cell.isolation ?? null,
     // The verdict inputs.
     ...gating(cell, library),
+    oversubscribed:
+      OVERSUBSCRIBED_FROM === null ? null : (at(cell, OVERSUBSCRIBED_FROM) ?? null),
     replicateSpreadPct: replicateSpread(cell),
     replicateSpreadCell: replicateSpread(cell) === null ? null : (doc.replicate?.cell ?? null),
     declared: typeof cell.key === 'string' && cell.key.endsWith(DECLARED_SUFFIX),
