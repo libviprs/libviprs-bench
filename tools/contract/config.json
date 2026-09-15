@@ -127,6 +127,7 @@
       "libviprs-engines",
       "libviprs-vips"
     ],
+    "rowIdentityFrom": ["backend", "cell", "source", "key"],
     "seriesFrom": "backend",
     "runnerToSeries": {},
     "outcomes": {
