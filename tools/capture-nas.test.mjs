@@ -10,6 +10,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +39,22 @@ function sshBlocks(src) {
 
 /** The single documented exception: creating the scratch directory itself. */
 const SCRATCH_MKDIR = /mkdir -p \\?\$HOME\/workspace\/nas-work/;
+
+/** One docker invocation, with no host shell around it.
+ *
+ *  `remote.includes('docker')` was the old rule and it is not a rule: anything
+ *  chained after a docker command with `;`, `|` or `&&` runs on the machine and
+ *  the substring test never sees it, and a host command that merely mentions
+ *  `/var/run/docker.sock` passes outright. So this strips what is inside the
+ *  container's own single-quoted argument, where a pipe is the container's
+ *  business, and then requires the remainder to be one `docker <verb> ...` with
+ *  no shell operator left in it.
+ */
+function isOneDockerCommand(remote) {
+  const outside = String(remote).replace(/'[^']*'/g, "''");
+  if (!/^docker (run|build|images|ps|rm|rmi|pull|inspect) /.test(outside)) return false;
+  return !/[;|&><`]|\$\(/.test(outside);
+}
 
 test('every command sent to the NAS runs in a container', () => {
   const blocks = sshBlocks(script);
@@ -73,4 +90,198 @@ test('the scratch tree is removed by mounting its parent, not itself', () => {
   // Docker creates a missing bind-mount source as root, so mounting the scratch
   // root is what left it root-owned and unwritable for the next run.
   assert.match(script, /-v \\?\$HOME\/workspace:\/ws/, 'the parent is mounted, not the scratch root');
+});
+
+// ---------------------------------------------------------------------------
+// The same rule, over the Python driver.
+//
+// `tools/capture.py` is the driver the shell script became, and the rule does
+// not care which language sends the command. Walking a Python source file with
+// a regex would be the fragile way to do this, so the driver has a `--plan`
+// mode that runs every line of its own orchestration against a recording
+// executor and prints the commands it WOULD send. That is stronger than reading
+// the source: the plan is produced by the code path a real run takes, so a
+// command added inside a branch is in it and a command a refactor moved is
+// still in it.
+//
+// The plan is also the completeness control. A guard that walks an empty list
+// is green for the same reason a clean script is, so the labels below are
+// asserted to be present: if the plan stops containing the capture, the archive
+// or the cleanup, this fails rather than passing on a walk of nothing.
+
+/** The driver's own account of every command it would send. */
+function plan() {
+  const proc = spawnSync(
+    'python3',
+    [join(here, 'capture.py'), '--plan', '--name', 'guard-fixture', '--json', '-'],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  // Never a skip. A host without python3 cannot check this rule, and a check
+  // that cannot run has to be the same colour as a check that failed: a
+  // capability skip is the exact shape that ships as a pass.
+  assert.equal(
+    proc.status,
+    0,
+    `tools/capture.py --plan did not run, so nothing below checked anything:\n${proc.stderr}`,
+  );
+  const started = proc.stdout.indexOf('{');
+  const summary = JSON.parse(proc.stdout.slice(started));
+  assert.ok(Array.isArray(summary.plan), '--plan emits the command list');
+  return summary.plan;
+}
+
+test('the driver sends nothing to the NAS that runs outside a container', () => {
+  // No exception, not even the scratch mkdir the script above is allowed. The
+  // driver pushes a second tree beside the first one, and by then the scratch
+  // root belongs to whatever uid the tar carried: extracting an archive whose
+  // top entry is `.` restores that entry's ownership onto the destination, the
+  // tar is made on a Mac at uid 501 and the NAS account is 1001, so a host-side
+  // `mkdir -p` inside the tree dies with "Permission denied" on a directory that
+  // plainly exists. The first end-to-end run failed there nine minutes in, with
+  // both images already built. Creating it in a container fixes the failure and
+  // removes the
+  // exception in the same move, so this asserts the stronger rule.
+  const steps = plan().filter((s) => s.where === 'nas');
+  assert.ok(steps.length >= 15, `expected a plan with the whole run in it, got ${steps.length} steps`);
+  const offenders = steps.filter((s) => !isOneDockerCommand(s.remote));
+  assert.deepEqual(
+    offenders.map((s) => `${s.label}: ${s.remote}`),
+    [],
+    'these would run on the machine itself rather than in a container',
+  );
+});
+
+test('the containment rule cannot be walked past by chaining onto a docker command', () => {
+  // The rule used to be `remote.includes('docker')`, a substring test over the
+  // whole string, and anything after a `;` or a `|` was invisible to it. That is
+  // not hypothetical: the cleanup listing piped `docker images` into a host-side
+  // `grep` and `sed` and the guard was green on it. These are the shapes that
+  // have to be red, and the last one is the real regression rather than the
+  // obvious one.
+  assert.ok(isOneDockerCommand("docker run --rm alpine:3.20 ls /ws"));
+  assert.ok(isOneDockerCommand("docker run --rm alpine:3.20 sh -c 'ls /ws | wc -l'"));
+  assert.ok(!isOneDockerCommand("tar -xf - -C /dest"));
+  assert.ok(!isOneDockerCommand("mkdir -p $HOME/workspace/nas-work/x"));
+  assert.ok(!isOneDockerCommand("docker images --format '{{.Tag}}' | grep viprs | sed 's/^/x/'"));
+  assert.ok(!isOneDockerCommand("docker rm -f a ; rm -rf /tmp/x"));
+  assert.ok(!isOneDockerCommand("docker ps -aq && rm -rf /tmp/x"));
+  assert.ok(!isOneDockerCommand("docker build -t x - > /tmp/log"));
+  assert.ok(!isOneDockerCommand("docker rm -f $(docker ps -aq)"));
+});
+
+test('the driver creates its scratch directories in a container, not as the host account', () => {
+  // The specific half of the rule above, named so that a regression reads as
+  // what it is rather than as "something is not containerised".
+  const made = plan().filter(
+    (s) => s.label.startsWith('push.mkdir.') || s.label.startsWith('scratch.mkdir.'),
+  );
+  // `out` and `scratch` are in here because leaving them to docker's
+  // auto-creation of a missing bind-mount source is the same end state with no
+  // record of who did it, and a selector that only saw `push.mkdir.*` could
+  // only ever check the directories that already complied.
+  assert.ok(
+    made.some((s) => s.label === 'scratch.mkdir.out'),
+    `the sweep's own directories are made too; the plan has ${made.map((s) => s.label).join(', ')}`,
+  );
+  for (const step of made) {
+    assert.match(step.remote, /^docker run /, `${step.label} runs on the machine itself`);
+    assert.match(step.remote, /-v \$HOME\/workspace:\/ws/, `${step.label} mounts the parent`);
+  }
+});
+
+test('the driver plans the whole run, so the walk above is not a walk of nothing', () => {
+  const labels = plan().map((s) => s.label);
+  for (const needed of [
+    'stage.clone.libviprs-bench',
+    'push.untar.guard-fixture',
+    'driver.image',
+    'build.storage',
+    'build.engines',
+    'settle.cores',
+    'capture.storage',
+    'retrieve.document.storage',
+    'check.storage',
+    'archive.storage',
+    'verify.storage',
+    'import.storage',
+    'cleanup.builder.storage',
+    'cleanup.image.storage',
+    'cleanup.scratch',
+    'cleanup.list.images',
+    'cleanup.list.scratch',
+  ]) {
+    assert.ok(labels.includes(needed), `the plan has no ${needed} step; it holds ${labels.join(', ')}`);
+  }
+});
+
+test('the driver builds the driver image rather than assuming it', () => {
+  // A local image on no registry. Assume it and docker goes to a pull that
+  // cannot succeed and reports an authentication problem, which is the wrong
+  // trail entirely; the script's own teardown is what exposed it.
+  const build = plan().find((s) => s.label === 'driver.image');
+  assert.match(build.remote, /^docker build .* -t nas-driver:latest -$/);
+  // The Dockerfile arrives over stdin rather than in a heredoc, so this remote
+  // command stays one docker invocation with no shell around it. The content is
+  // checked at its source instead.
+  assert.ok(build.stdin, 'the Dockerfile is fed in rather than written into the command');
+  assert.match(build.stdinHead, /docker-buildx-plugin/, 'on Docker 29 a CLI without buildx exits 125');
+  assert.match(build.stdinHead, /docker-ce-cli/);
+});
+
+test('the driver pushes the tree with .git and without target', () => {
+  const tar = plan().find((s) => s.label === 'stage.tar.tree');
+  assert.ok(tar, 'the tree is tarred for the push');
+  assert.ok(
+    !tar.argv.some((a) => a.includes('--exclude=.git')),
+    'the benchmark tree is pushed with its git history, or provenance resolves no commit',
+  );
+  assert.ok(tar.argv.includes('--exclude=target'), 'build output is not worth pushing');
+});
+
+test('the archive staging is pushed outside the git checkout', () => {
+  // Copying the repository's archive into the pushed clone would make that tree
+  // dirty, and `provenance.dirty` is a refusal: the staging that exists to file
+  // the run would refuse it.
+  const steps = plan().filter((s) => s.where === 'nas');
+  const archivePush = steps.find((s) => s.label === 'push.untar.archive');
+  assert.ok(archivePush, 'the archive goes up as its own tree');
+  assert.match(archivePush.remote, /nas-work\/guard-fixture\/archive:\/dest/);
+});
+
+test('the aggregator is given the family directory, not its parent', () => {
+  // `archive_text` writes `<root>/<runId>.json` and `<root>/index.json` into
+  // exactly what it is handed, so `--root archive` files an engines run beside
+  // the storage ones under an index that is not theirs.
+  for (const family of ['storage', 'engines']) {
+    const step = plan().find((s) => s.label === `archive.${family}`);
+    assert.match(step.remote, new RegExp(`--root /archive/${family}(\\s|$)`));
+  }
+});
+
+test('retrieval is a container cat, never scp', () => {
+  const steps = plan();
+  assert.ok(
+    !steps.some((s) => JSON.stringify(s).includes('scp')),
+    'scp fails on that host with "No such file or directory" on a file that exists',
+  );
+  const get = steps.find((s) => s.label === 'retrieve.document.storage');
+  assert.match(get.remote, /docker run .*cat \/out\/storage-x86\.json/);
+});
+
+test('the scratch tree is removed by mounting its parent, not itself', () => {
+  const step = plan().find((s) => s.label === 'cleanup.scratch');
+  assert.match(step.remote, /-v \$HOME\/workspace:\/ws/, 'the parent is mounted, not the scratch root');
+  assert.match(step.remote, /rm -rf \/ws\/nas-work\/guard-fixture/);
+});
+
+test('every local command is git, tar, or a container with its platform spelled out', () => {
+  // `DOCKER_DEFAULT_PLATFORM` has been both values on this Mac, and it is
+  // inherited by a shell started before it changed. An unpinned `docker run`
+  // here is whatever that variable happened to be.
+  const locals = plan().filter((s) => s.where === 'local');
+  const offenders = locals.filter((s) => {
+    if (['git', 'tar'].includes(s.argv[0])) return false;
+    return !(s.argv[0] === 'docker' && s.argv.includes('--platform') && s.argv.includes('linux/arm64'));
+  });
+  assert.deepEqual(offenders.map((s) => s.label), [], 'these run on the host toolchain unpinned');
 });
