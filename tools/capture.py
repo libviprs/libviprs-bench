@@ -584,11 +584,12 @@ def settle(ex: Executor, family: str, timeout_s: int = SETTLE_TIMEOUT_S) -> dict
         except ValueError:
             load = float("inf")
         readings.append(load)
-        print(f"  settling {family}: load {load} after {waited}s, waiting for under {threshold}")
+        print(f"  settling {family}: load {load} after {waited}s, waiting for under {threshold}", flush=True)
         if load < threshold:
             print(
                 f"  {family} STARTS AT LOAD {load} on {cores} cores, under the {threshold} this "
-                f"driver waits for, after {waited}s"
+                f"driver waits for, after {waited}s",
+                flush=True,
             )
             return {
                 "cores": cores,
@@ -697,11 +698,12 @@ def cleanup(ex: Executor, name: str) -> dict:
     left = {"images": images, "scratchTrees": trees}
     left["mine"] = sorted(item for item in images + trees if name in item)
     for kind in ("images", "scratchTrees"):
-        print(f"  {kind} left on the machine: {', '.join(left[kind]) or 'none'}")
+        print(f"  {kind} left on the machine: {', '.join(left[kind]) or 'none'}", flush=True)
     print(
         "  nothing of this run's is left"
         if not left["mine"]
-        else f"  STILL HERE, and it is this run's: {', '.join(left['mine'])}"
+        else f"  STILL HERE, and it is this run's: {', '.join(left['mine'])}",
+        flush=True,
     )
     return left
 
@@ -766,7 +768,7 @@ def capture_family(ex: Executor, name: str, family: str, profile: str, out_dir: 
         nas_container(UTIL_IMAGE, "cut -d' ' -f1-3 /proc/loadavg"),
         allow_failure=True,
     ).stdout.strip()
-    print(f"  load at start: {at_start or 'unread'}")
+    print(f"  load at start: {at_start or 'unread'}", flush=True)
     ex.nas_step(
         f"capture.{family}",
         nas_container(
@@ -790,7 +792,7 @@ def capture_family(ex: Executor, name: str, family: str, profile: str, out_dir: 
     ).stdout
     path = out_dir / f"{family}-x86.json"
     path.write_text(document)
-    print(f"  retrieved {path} ({len(document)} bytes)")
+    print(f"  retrieved {path} ({len(document)} bytes)", flush=True)
     return path
 
 
@@ -949,7 +951,7 @@ def import_family(
         ],
         allow_failure=True,
     )
-    print(result.stdout)
+    print(result.stdout, flush=True)
     if result.code != 0:
         gate_refused(result, family, "`import-run.mjs`", refusals)
         return False
@@ -1013,7 +1015,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
     families = [f for f in args.families.split(",") if f]
     unknown = [f for f in families if f not in FAMILIES]
     if unknown:
-        print(f"unknown family/families: {', '.join(unknown)}", file=sys.stderr)
+        print(f"unknown family/families: {', '.join(unknown)}", file=sys.stderr, flush=True)
         return 2
     name = args.name or f"viprs-capture-{os.getpid()}"
     # Injected by the tests, which drive the whole of this function against a
@@ -1064,11 +1066,11 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
                 if source.exists():
                     shutil.copytree(source, staging / "archive" / family)
 
-            print("== staging clean checkouts")
+            print("== staging clean checkouts", flush=True)
             revisions = stage_checkouts(ex, stage)
             summary["benchCommit"] = revisions.get("libviprs-bench")
             summary["engineCommit"] = revisions.get("libviprs")
-            print(f"  bench {summary['benchCommit']}, engine {summary['engineCommit']}")
+            print(f"  bench {summary['benchCommit']}, engine {summary['engineCommit']}", flush=True)
 
             root = scratch_root(name)
             tree_tar = make_tarball(ex, "stage.tar.tree", stage, tmpdir / "tree.tar", ("target",))
@@ -1106,7 +1108,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
                 push_tree(ex, name, archive_tar, f"{root}/archive")
 
                 for family in families:
-                    print(f"== capturing {family}, profile {args.profile}, native x86_64")
+                    print(f"== capturing {family}, profile {args.profile}, native x86_64", flush=True)
                     settled = settle(ex, family, args.settle_timeout)
                     document_path = capture_family(ex, name, family, args.profile, out_dir)
                     document = json.loads(document_path.read_text() or "{}")
@@ -1119,7 +1121,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
                     summary["families"][family] = entry
             finally:
                 if args.keep:
-                    print(f"  --keep: the scratch tree stays at {root}")
+                    print(f"  --keep: the scratch tree stays at {root}", flush=True)
                     summary["keptScratchTree"] = root
                 else:
                     summary["nasLeftAsFound"] = cleanup(ex, name)
@@ -1186,9 +1188,9 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
                 )
     except Refused as refused:
         summary["refusals"] = refused.reasons
-        print("\nREFUSED. Nothing was published and the repository is untouched:\n", file=sys.stderr)
+        print("\nREFUSED. Nothing was published and the repository is untouched:\n", file=sys.stderr, flush=True)
         for reason in refused.reasons:
-            print(f"  · {reason}\n", file=sys.stderr)
+            print(f"  · {reason}\n", file=sys.stderr, flush=True)
         emit(args, summary, ex)
         return 1
     except Exception as broke:
@@ -1205,12 +1207,13 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
     emit(args, summary, ex)
     if args.plan:
         return 0
-    print("\npublished:")
+    print("\npublished:", flush=True)
     for path in summary["writes"]:
-        print(f"  {path}")
+        print(f"  {path}", flush=True)
     print(
         "\nlibviprs-org reads these out of this repository at a pinned revision. Bump\n"
-        "benchmarks/BENCH_REV there to this commit and run its ingest to move the page."
+        "benchmarks/BENCH_REV there to this commit and run its ingest to move the page.",
+        flush=True,
     )
     return 0
 
@@ -1229,10 +1232,10 @@ def emit(args, summary: dict, ex: Executor) -> None:
         ]
     text = json.dumps(summary, indent=2)
     if args.json == "-" or (args.plan and not args.json):
-        print(text)
+        print(text, flush=True)
     elif args.json:
         Path(args.json).write_text(text + "\n")
-        print(f"\nsummary written to {args.json}")
+        print(f"\nsummary written to {args.json}", flush=True)
 
 
 if __name__ == "__main__":
