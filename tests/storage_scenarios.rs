@@ -872,8 +872,9 @@ fn the_ladder_measures_the_rung_each_architectures_knee_sits_on() {
 /// same key, and nothing downstream can refuse to grade one against the other.
 #[test]
 fn only_the_ladder_claims_a_thread_budget_and_it_claims_it_honestly() {
+    // `Scenario` needs no import: the methods are called on `dyn Scenario`,
+    // which names its own trait.
     use libviprs_bench::storage::registry;
-    use libviprs_bench::storage::scenarios::Scenario;
 
     let mut ladder_rungs = 0;
     for scenario in registry() {
