@@ -10,10 +10,24 @@
 //! the wrong place on at least one of those two machines, and there is no
 //! thread count that is right on both.
 //!
-//! So the ladder is fixed at 1, 2, 4 and 8, T=1 is the control, and an arm the
-//! host has no cores for is **skipped with a reason and stays in the
-//! document**. Dropping it would read as a measurement nobody took rather than
-//! one this host declined, and those are different claims.
+//! So the ladder is fixed at 1, 2, 4 and 8 and T=1 is the control.
+//!
+//! A rung above the core count used to be skipped with a reason, and that was
+//! honest and useless. The one machine this suite can measure x86_64 natively
+//! on has six cores, so it declined T=8 on every cell, which is the rung the
+//! x86_64 knee sits on: the host that exists to reproduce the x86_64
+//! concurrency story was structurally incapable of reaching it. A skip with a
+//! good reason is still a hole where the finding should be.
+//!
+//! So a rung now runs up to **twice** the core count and carries
+//! `oversubscribed: true` above it. Eight threads on six cores is not a clean
+//! scaling measurement and must never be graded against a T=8 rung on a host
+//! that has eight cores, but it does show the knee, and the flag is what keeps
+//! the two apart. Past twice the core count the rung stops measuring
+//! oversubscription and starts measuring the scheduler's run queue, and there
+//! it is still **skipped with a reason and stays in the document**. Dropping it
+//! would read as a measurement nobody took rather than one this host declined,
+//! and those are different claims.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::ThreadId;
@@ -31,15 +45,29 @@ use super::{
 /// The thread counts every sweep reports, whether or not the host can run them.
 pub const THREAD_LADDER: [usize; 4] = [1, 2, 4, 8];
 
+/// How far past the core count a rung may still be measured.
+///
+/// Two, because the rung that matters on the native x86_64 host is T=8 and that
+/// host has six cores. It is not a tuning knob: at 2x each core carries two
+/// runnable threads, which is the oversubscription a real client produces, and
+/// past that the number is the scheduler's rather than the reader's.
+pub const OVERSUBSCRIPTION_LIMIT: usize = 2;
+
 /// One rung of the ladder and what this host did with it.
 ///
 /// `skip` is `None` on a rung this host measures. K1.2's [`Outcome`] taxonomy
 /// is what the document keys on and [`Skip`] is what carries the reason, so a
 /// declined rung is `Outcome::Skipped` with a reason rather than a row that is
 /// simply absent.
+///
+/// `oversubscribed` is a fact about the rung on this host and is set whether or
+/// not the rung was measured: it says the thread budget is above the core
+/// count, which makes the number real but not comparable with the same rung on
+/// a host that has the cores for it.
 #[derive(Debug, Clone)]
 pub struct Arm {
     pub threads: usize,
+    pub oversubscribed: bool,
     pub skip: Option<Skip>,
 }
 
@@ -60,19 +88,26 @@ impl Arm {
     }
 }
 
-/// Every rung, in order, with the ones above `ncpu` marked skipped.
+/// Every rung, in order, measured up to twice `ncpu` and marked skipped above
+/// that.
 ///
 /// Every element of [`THREAD_LADDER`] comes back. That is the point: a 6-core
-/// host publishes four rows, three measured and one that says why it is not.
+/// host publishes four rows, all four measured, with the eight-thread one
+/// carrying `oversubscribed`. A 2-core runner publishes four rows, three
+/// measured and one that says why it is not.
 pub fn ladder(ncpu: usize) -> Vec<Arm> {
+    let ceiling = ncpu.saturating_mul(OVERSUBSCRIPTION_LIMIT).max(1);
     THREAD_LADDER
         .iter()
         .map(|&threads| Arm {
             threads,
-            skip: (threads > ncpu).then(|| {
+            oversubscribed: threads > ncpu,
+            skip: (threads > ceiling).then(|| {
                 Skip::skipped(format!(
-                    "this host has {ncpu} cores, so {threads} threads would measure \
-                     oversubscription rather than concurrency"
+                    "this host has {ncpu} cores and {threads} threads is more than \
+                     {OVERSUBSCRIPTION_LIMIT}x that: up to twice the core count the rung \
+                     measures oversubscription, which is a real thing a client produces, and \
+                     past it the rung measures the scheduler's run queue instead"
                 ))
             }),
         })
@@ -289,6 +324,10 @@ impl Scenario for Concurrent {
 
     fn reps(&self, profile: Profile) -> u32 {
         read_reps(profile)
+    }
+
+    fn oversubscribed(&self, ncpu: usize) -> Option<bool> {
+        Some(self.threads > ncpu)
     }
 
     fn primary(&self) -> MetricSpec {

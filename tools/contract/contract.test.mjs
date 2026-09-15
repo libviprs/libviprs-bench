@@ -257,6 +257,16 @@ test('config.json names only things the producer actually emits', () => {
   assert.ok(VOCAB.cellNames.includes(CONFIG.defaults.scales[0]), 'defaults.scales names no real cell');
 
   assert.ok(VOCAB.cellFields.includes(CONFIG.producer.seriesFrom));
+  for (const f of CONFIG.producer.rowIdentityFrom) {
+    // A row identity naming a field no cell carries is the worst of the shapes
+    // this file guards: it does not refuse and it does not throw, it makes every
+    // row look like every other row, and the run gets a large confident
+    // replicate count it never earned.
+    assert.ok(
+      VOCAB.cellFields.includes(f),
+      `producer.rowIdentityFrom names ${f}, which no cell has`,
+    );
+  }
   for (const f of [CONFIG.sections.scaleFrom, CONFIG.sections.unitFrom, CONFIG.sections.directionFrom]) {
     assert.ok(VOCAB.cellFields.includes(f), `sections names cell field ${f}, which does not exist`);
   }
@@ -396,6 +406,36 @@ test('a run on a different host or filesystem starts a new era', () => {
   const upstreamSig = liftEraSignature(null);
   assert.equal(upstreamSig(base), upstreamSig(otherMachine));
   assert.equal(upstreamSig(base), upstreamSig(otherFs));
+});
+
+// Goes red against: era axes that ignore which estimator produced the noise
+// floor. Document version 1 published `replicate.spreadPct` as the gap between
+// two measurements of the control cell; version 2 publishes a dispersion over
+// every placement under the same key. Both are real, neither is wrong, and one
+// line drawn through the two is a trend in an estimator rather than in the code
+// (libviprs-bench #84).
+test('a run whose replicate floor came from a different estimator starts a new era', () => {
+  const sig = liftEraSignature(CONFIG);
+  const host = { fingerprint: 'linux|aarch64|m1|8', fsType: 'ext4' };
+  const twoPoint = entry(['pmtiles', 'directory'], { host, schemaVersion: 1 });
+  const dispersion = entry(['pmtiles', 'directory'], { host, schemaVersion: 2 });
+  const alsoDispersion = entry(['pmtiles', 'directory'], { host, schemaVersion: 2 });
+
+  assert.equal(sig(dispersion), sig(alsoDispersion));
+  assert.notEqual(
+    sig(twoPoint),
+    sig(dispersion),
+    'a two-point floor and a six-placement floor landed on one x-axis',
+  );
+  // And the axis is declared, so this is not an accident of the fingerprint.
+  assert.ok(
+    CONFIG.era.axes.some((axis) => axis.from === 'schemaVersion'),
+    'nothing in the era axes reads the document schema version',
+  );
+  // The control: upstream's single axis cannot tell the two eras apart, which
+  // is exactly the gap this axis closes.
+  const upstreamSig = liftEraSignature(null);
+  assert.equal(upstreamSig(twoPoint), upstreamSig(dispersion));
 });
 
 // Goes red against: a fingerprint whose inputs are not on the document. The

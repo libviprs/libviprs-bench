@@ -927,6 +927,7 @@ pub fn rows_from_wire(
             scenario: &scenario.name(),
             metric: scenario.primary(),
             isolation: scenario.isolation(),
+            oversubscribed: scenario.oversubscribed(host_ncpu()),
             warmup: scenario.warmup(),
             discarded_warmup: wire.discarded_warmup.clone(),
             reps_declared: scenario.reps(profile),
@@ -950,6 +951,7 @@ pub fn rows_from_wire(
                 direction: parse_direction(&series.direction),
             },
             isolation: scenario.isolation(),
+            oversubscribed: scenario.oversubscribed(host_ncpu()),
             warmup: scenario.warmup(),
             discarded_warmup: wire.discarded_warmup.clone(),
             reps_declared: scenario.reps(profile),
@@ -963,6 +965,18 @@ pub fn rows_from_wire(
         }));
     }
     rows
+}
+
+/// How many cores the sweep is running on.
+///
+/// Read in the parent, not in the child: the two are the same machine, and the
+/// parent is where the row is built. `1` when the platform will not say, which
+/// makes every rung above the first oversubscribed and is the honest reading of
+/// "this host cannot tell me how many cores it has".
+fn host_ncpu() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
 }
 
 /// The metric name a child chose, which the parent did not know statically.

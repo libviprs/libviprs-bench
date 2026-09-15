@@ -153,13 +153,18 @@ fn the_full_profile_walks_the_brink_cell_and_the_noise_source() {
     }
 }
 
-/// The replicate cell is scheduled first and last in a full sweep.
+/// The replicate cell is scheduled through the whole of a full sweep.
 ///
-/// RED against a schedule that measures it once. Its spread is the only
-/// in-run noise floor the document has, and a verdict that calls a delta
-/// smaller than it a change is inventing one.
+/// RED against a schedule that measures it once, and against the one this
+/// replaced, which measured it exactly twice however long the sweep got. Its
+/// dispersion is the only in-run noise floor the document has, and a floor
+/// resting on two points has no dispersion of its own: two captures of the same
+/// cell on the same host reported 3.46% and 36.89% and neither document could
+/// say which was the outlier (#84).
 #[test]
-fn the_full_profile_schedules_the_replicate_cell_at_both_ends() {
+fn the_full_profile_schedules_the_replicate_cell_throughout() {
+    use libviprs_bench::storage::scenarios::replicate;
+
     let schedule = Profile::Full.cells();
     let control = libviprs_bench::storage::cells::replicate_cell(Profile::Full)
         .expect("a full sweep declares a replicate control");
@@ -173,10 +178,19 @@ fn the_full_profile_schedules_the_replicate_cell_at_both_ends() {
         Some(&control),
         "the sweep does not close on the replicate cell"
     );
+    assert_eq!(
+        replicate::placements(&schedule, control),
+        Profile::Full.measured_cells().len() + 1,
+        "the control is placed before the first measured cell and after every one of them"
+    );
     assert!(
-        schedule.len() >= 3,
-        "a schedule of {} is the control twice and nothing between it",
-        schedule.len()
+        replicate::placements(&schedule, control) >= replicate::MIN_REPLICATE_REPS,
+        "a sweep that holds fewer than {} placements publishes no floor at all",
+        replicate::MIN_REPLICATE_REPS
+    );
+    assert!(
+        !replicate::has_adjacent_placements(&schedule, control),
+        "two placements back to back see none of the drift across the sweep"
     );
     // The ci profile proves the harness runs and is never published, so it
     // carries no control.
@@ -626,15 +640,17 @@ fn every_ignored_storage_test_is_run_by_a_ci_job() {
     );
 }
 
-/// The replicate block is computed from the two ends of a sweep.
+/// The replicate block is computed from every placement in a sweep.
 ///
 /// A hand-built document rather than a real full sweep, because a full sweep is
 /// minutes and this is arithmetic over rows. RED against a `Document.replicate`
-/// that stays `None`, which is what it was before this change: `run_sweep`
-/// never set it, so the only in-run noise floor the family has never reached a
-/// reader.
+/// that stays `None`, which is what it was two lanes ago: `run_sweep` never set
+/// it, so the only in-run noise floor the family has never reached a reader.
+/// Also RED against the first-versus-last block this replaced, which would read
+/// these six placements as the gap between 8.0 and 9.6 and ignore the four in
+/// between (#84).
 #[test]
-fn the_replicate_block_is_computed_from_the_two_ends_of_the_sweep() {
+fn the_replicate_block_is_computed_from_every_placement_in_the_sweep() {
     use libviprs_bench::storage::cells::replicate_cell;
     use libviprs_bench::storage::scenarios::replicate::block_for;
 
@@ -651,37 +667,71 @@ fn the_replicate_block_is_computed_from_the_two_ends_of_the_sweep() {
         cell.median = Some(median);
         cell
     };
+    // Six placements, with a cell from somewhere else in the sweep between two
+    // of them. That one must not be mistaken for a placement: its own `cell`
+    // spec moves with its scale, because a real row's spec is what names it and
+    // the block matches on that. Two `engines` cells can share a tile count and
+    // a source and differ only in their thread budget, and a filter that could
+    // not tell those apart would compute a floor across two different
+    // measurements and call it drift (#75).
     doc.push(row(8.0));
-    // A cell from somewhere else in the sweep, which must not be mistaken for
-    // the closing control. Its own `cell` spec moves with its scale, because a
-    // real row's spec is what names it and the block now matches on that: two
-    // `engines` cells can share a tile count and a source and differ only in
-    // their thread budget, and a filter that could not tell those apart would
-    // compute a spread across two different measurements and call it drift
-    // (#75).
     let mut other = row(999.0);
     other.scale = 1373;
     other.cell = "8192x8192@256+gradient".to_string();
     doc.push(other);
-    doc.push(row(9.6));
+    for median in [8.6, 8.1, 8.9, 8.3, 9.6] {
+        doc.push(row(median));
+    }
 
-    let block = block_for(&doc, Profile::Full).expect("two ends make a block");
-    assert_eq!(block.replicate_reps, 2);
+    let block = block_for(&doc, Profile::Full).expect("six placements make a block");
+    assert_eq!(block.replicate_reps, 6);
     assert_eq!(block.cell, control.spec());
+    assert_eq!(
+        block
+            .estimator
+            .as_ref()
+            .expect("a published floor names its estimator")
+            .reps,
+        6
+    );
     let spread = block.spread_pct.as_object().expect("a spread object");
     let value = spread
         .get("pmtiles.read_random.p50")
         .and_then(|v| v.as_f64())
-        .expect("the control's metric has a spread");
+        .expect("the control's metric has a floor");
+    // The six placements have a standard deviation of 0.598 about a centre of
+    // 8.45, and six placements carry a multiplier of 2.777.
     assert!(
-        (value - 20.0).abs() < 0.01,
-        "8.0 against 9.6 is 20% of the smaller, and the block says {value}"
+        (value - 19.65).abs() < 0.2,
+        "the floor over all six placements is 19.65%, and the block says {value}"
+    );
+    // The estimator this replaced would have read the two ends, 8.0 and 9.6, as
+    // a flat 20% and thrown the middle four away.
+    assert!(
+        (value - 20.0).abs() > 0.05,
+        "the block is still reading the two ends and calling it a floor: {value}"
+    );
+    let drift = block
+        .drift_pct
+        .as_object()
+        .expect("a drift object")
+        .get("pmtiles.read_random.p50")
+        .and_then(|v| v.as_f64())
+        .expect("the control's metric has a drift");
+    assert!(
+        drift > 5.0,
+        "these six placements rise across the sweep and the block reads the trend as {drift}"
     );
 
-    // One end only is not a spread, and `ci` has no control at all.
+    // Too few placements is a refusal rather than a narrower floor, and `ci`
+    // has no control at all.
     let mut once = Document::new(Profile::Full, "1970-01-01T00:00:00.000Z".to_string());
     once.push(row(8.0));
     assert!(block_for(&once, Profile::Full).is_none());
+    let mut twice = Document::new(Profile::Full, "1970-01-01T00:00:00.000Z".to_string());
+    twice.push(row(8.0));
+    twice.push(row(9.6));
+    assert!(block_for(&twice, Profile::Full).is_none());
     assert!(block_for(&doc, Profile::Ci).is_none());
 }
 

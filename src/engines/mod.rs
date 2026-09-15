@@ -346,6 +346,10 @@ pub fn rows_for(
                 scenario: SCENARIO,
                 metric: *metric,
                 isolation: Isolation::ProcessPerRep,
+                // The engines family takes its thread budget from the cell and
+                // never asks for more than the host has cores, so there is no
+                // rung here to be oversubscribed.
+                oversubscribed: None,
                 warmup: Some(Warmup::ONE_DISCARDED_PASS),
                 discarded_warmup: discarded.to_vec(),
                 reps_declared: profile.reps(),

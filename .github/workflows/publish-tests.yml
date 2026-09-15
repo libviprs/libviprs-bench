@@ -13,8 +13,9 @@ name: Publication tools
 #
 # Node is on the runner image already, and the suite needs nothing else: no
 # dependencies, no package.json, no lockfile. The material it runs against is
-# `archive/storage/`, which is in the repository, so there is no capability here
-# that can be missing and turn a skip into something the same colour as a pass.
+# `archive/storage/` and `archive/engines/`, both in the repository, so there is
+# no capability here that can be missing and turn a skip into something the same
+# colour as a pass.
 
 on:
   push:
@@ -40,7 +41,9 @@ jobs:
       # the real archived run imports; if the archive ever stops being in the
       # repository, every refusal test still passes and proves nothing, so the
       # file is asserted to be here rather than assumed.
-      - name: the archived run is in the repository
+      - name: the archived runs are in the repository
         run: |
           test -f archive/storage/20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939.json
           grep -q '20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939' archive/storage/index.json
+          test -f archive/engines/20260915T021911Z-809ee8014d002518ce55edaceba698ca7a8b8a79-a7bac4a9.json
+          grep -q '20260915T021911Z-809ee8014d002518ce55edaceba698ca7a8b8a79-a7bac4a9' archive/engines/index.json

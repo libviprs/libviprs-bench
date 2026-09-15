@@ -233,12 +233,19 @@ if (!family) {
       `${enumerate(families)}`,
   );
 } else {
-  const wantVersion = producer.schemaVersion ?? 1;
-  if (doc.schemaVersion !== wantVersion) {
+  // One version or a list of them. A list is not laxity: version 2 redefined
+  // `replicate.spreadPct` from the gap between two measurements of the control
+  // cell to a dispersion over every placement of it, and both are readable, but
+  // they are different statistics. What keeps them apart is the `documentSchema`
+  // era axis, which puts a version-1 run and a version-2 run on separate x-axes
+  // rather than drawing one line through both (libviprs-bench #84). A version
+  // this config does not name is still refused outright.
+  const known = [producer.schemaVersion ?? 1].flat();
+  if (!known.includes(doc.schemaVersion)) {
     refuse(
-      `schemaVersion ${JSON.stringify(doc.schemaVersion ?? null)} is not version ` +
-        `${wantVersion} of ${doc.family}; the numbering is per family and a reader that ` +
-        'guesses reads a different document',
+      `schemaVersion ${JSON.stringify(doc.schemaVersion ?? null)} is not a version this ` +
+        `config reads for ${doc.family} (${known.join(', ')}); the numbering is per family ` +
+        'and a reader that guesses reads a different document',
     );
   }
   // The runner is a constant per family, so it says the same thing twice and a
@@ -612,6 +619,19 @@ if (unattested.length > 0) {
   );
 }
 
+// Which producer field means what, read once. Once, because the shape gate below
+// and the reader in section 7 both need the same answer, and a default written
+// out twice is a default that can drift in one place: the gate would then be
+// checking for a field nothing reads while the reader falls back to a field
+// nothing checked.
+const SERIES_FROM = producer.seriesFrom ?? 'backend';
+const ROW_IDENTITY_FROM = producer.rowIdentityFrom ?? ['backend', 'cell', 'source', 'key'];
+const SCENARIO_FROM = sections.scenarioFrom ?? ['key'];
+const SCENARIO_JOIN = sections.scenarioJoin ?? ' · ';
+const SCALE_FROM = sections.scaleFrom ?? 'scale';
+const UNIT_FROM = sections.unitFrom ?? 'unit';
+const DIRECTION_FROM = sections.directionFrom ?? 'direction';
+
 // The fields this reader needs from a measured cell, named by the config rather
 // than assumed. The `engines` family is being built in another lane and its
 // document may not have this cell shape; without this check `scenarioOf` would
@@ -619,11 +639,12 @@ if (unattested.length > 0) {
 // page that is wrong rather than a page that is missing.
 const REQUIRED_CELL_FIELDS = [
   ...new Set([
-    producer.seriesFrom ?? 'backend',
-    ...(sections.scenarioFrom ?? ['key']),
-    sections.scaleFrom ?? 'scale',
-    sections.unitFrom ?? 'unit',
-    sections.directionFrom ?? 'direction',
+    SERIES_FROM,
+    ...ROW_IDENTITY_FROM,
+    ...SCENARIO_FROM,
+    SCALE_FROM,
+    UNIT_FROM,
+    DIRECTION_FROM,
   ]),
 ];
 for (const field of REQUIRED_CELL_FIELDS) {
@@ -631,8 +652,9 @@ for (const field of REQUIRED_CELL_FIELDS) {
   if (missing.length > 0) {
     refuse(
       `${missing.length} measured cell(s) carry no \`${field}\`, which this config names as ` +
-        'part of the series, the section or its axis. A document of another shape must be ' +
-        'refused rather than read with this one\'s assumptions.',
+        'part of the series, the section, its axis or the identity that decides which rows ' +
+        'are the same row. A document of another shape must be refused rather than read with ' +
+        'this one\'s assumptions.',
     );
   }
 }
@@ -821,14 +843,7 @@ const TO_MS = { ns: 1e-6, us: 0.001, ms: 1, s: 1000 };
 const THROUGHPUT_UNITS = new Set(['1/s']);
 const UNGATEABLE = producer.ungateableMetrics ?? [];
 const DECLARED_SUFFIX = producer.declaredSuffix ?? '_declared';
-const SERIES_FROM = producer.seriesFrom ?? 'backend';
 const RUNNER_TO_SERIES = producer.runnerToSeries ?? {};
-
-const SCENARIO_FROM = sections.scenarioFrom ?? ['key'];
-const SCENARIO_JOIN = sections.scenarioJoin ?? ' · ';
-const SCALE_FROM = sections.scaleFrom ?? 'scale';
-const UNIT_FROM = sections.unitFrom ?? 'unit';
-const DIRECTION_FROM = sections.directionFrom ?? 'direction';
 
 /** The series id: the backend, renamed where the config says so.
  *
@@ -852,6 +867,40 @@ function seriesId(cell) {
 function scenarioOf(cell) {
   return SCENARIO_FROM.map((field) => cell[field]).filter((v) => v !== undefined && v !== null)
     .join(SCENARIO_JOIN);
+}
+
+/** What identifies one published row, so that a second copy of it is a replicate
+ *  and nothing else is.
+ *
+ *  This used to be the section key and the tile count, and both halves were
+ *  wrong in the same way: neither of them names a cell. A section is how the
+ *  page groups rows for drawing and a tile count is a magnitude, so two
+ *  genuinely different cells that happen to share both were read as one cell
+ *  measured twice. In the `engines` family every eight-thread cell shares a tile
+ *  count and a source with its single-thread twin, which filed 144 rows of the
+ *  concurrency arm as replicates of `512x360@256+c1` and left 162 where 18
+ *  belong. The same collision is the reason the section key carries the source:
+ *  21851 is both `8192x8192@64+gradient` and `8192x8192@64+noise`.
+ *
+ *  So identity comes from the fields the producer uses to name a cell, listed in
+ *  the config, and not from anything the page decides. Two consequences worth
+ *  spelling out:
+ *
+ *   * the raw `backend` rather than `seriesId`, because a rename is a display
+ *     decision and identity must not move when a label does;
+ *   * no scale, because `cell` already determines it. A producer that emitted
+ *     one cell name at two tile counts would be filing a defect, and the loud
+ *     version of that is two rows colliding rather than two rows quietly
+ *     splitting.
+ *
+ *  A JSON array and not a joined string: a separator can appear inside a field
+ *  value, and `a · b` from two fields must not be able to equal `a` and `b` from
+ *  two other fields. Every field in the list is checked to be present on every
+ *  measured cell before this runs, because an identity with a hole in it makes
+ *  every row look like the same row.
+ */
+function rowIdentity(cell) {
+  return JSON.stringify(ROW_IDENTITY_FROM.map((field) => cell[field]));
 }
 
 /** The replicate spread for a cell's metric, as a percentage, or null.
@@ -897,6 +946,7 @@ if (baselinePath) {
 
 const GATED_FROM = producer.gatedFrom ?? null;
 const GATED_WHEN_UNCALIBRATED = producer.gatedWhenUncalibrated ?? null;
+const OVERSUBSCRIBED_FROM = producer.oversubscribedFrom ?? null;
 
 function gating(cell, library) {
   const metric = cell.metric;
@@ -905,6 +955,22 @@ function gating(cell, library) {
   if (GATED_FROM !== null && at(cell, GATED_FROM) !== undefined) {
     const declaredGate = at(cell, GATED_FROM);
     return { gated: declaredGate, tolerancePct: null, ungateableReason: null };
+  }
+  // A rung that asked for more threads than the host has cores. The number is
+  // real and is published, and on the one machine that measures x86_64 natively
+  // it is the only way to reach the rung the x86_64 knee sits on at all. It
+  // must never be graded, because the comparison it would be graded against ran
+  // on a host that had the cores for it, and those are not the same measurement
+  // (libviprs-bench #84).
+  if (OVERSUBSCRIBED_FROM !== null && at(cell, OVERSUBSCRIBED_FROM) === true) {
+    return {
+      gated: GATED_WHEN_UNCALIBRATED,
+      tolerancePct: null,
+      ungateableReason:
+        'this rung asked for more threads than the host has cores: the number is a real ' +
+        'oversubscription measurement and is published as one, and it is not comparable with ' +
+        'the same rung on a host that had the cores for it',
+    };
   }
   if (UNGATEABLE.includes(metric)) {
     return {
@@ -996,6 +1062,8 @@ function sampleOf(cell) {
     isolation: cell.isolation ?? null,
     // The verdict inputs.
     ...gating(cell, library),
+    oversubscribed:
+      OVERSUBSCRIBED_FROM === null ? null : (at(cell, OVERSUBSCRIBED_FROM) ?? null),
     replicateSpreadPct: replicateSpread(cell),
     replicateSpreadCell: replicateSpread(cell) === null ? null : (doc.replicate?.cell ?? null),
     declared: typeof cell.key === 'string' && cell.key.endsWith(DECLARED_SUFFIX),
@@ -1041,12 +1109,17 @@ for (const cell of cells) {
     });
     continue;
   }
-  const key = `${library}/${scenarioOf(cell)}@${cell[SCALE_FROM]}`;
+  const key = rowIdentity(cell);
   // The replicate control measures one cell first and last, so that cell is in
   // the document twice. Publishing both would draw one run as two points and
   // make the control itself look like a regression; the second pass is kept
   // beside the samples, and the spread it was taken for is already in
   // `replicate.spreadPct`.
+  //
+  // A row is a replicate when it *is* a row already published, never when it
+  // resembles one. The run declares which cell it measured twice and that cell
+  // names itself, so a row naming a different cell is a different measurement
+  // however much it has in common with the control.
   if (seen.has(key)) {
     replicates.push(sampleOf(cell));
   } else {
