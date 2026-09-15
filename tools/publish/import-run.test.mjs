@@ -523,8 +523,39 @@ test('a document from another family or schema version is refused', () => {
   const family = runImport(mutate({ set: { family: 'libviprs-something' } }), emptyHistory());
   refused(family, /is not one this config knows/);
 
-  const version = runImport(mutate({ set: { schemaVersion: 2 } }), emptyHistory());
+  // A version the config does not name. Not 2: version 2 is the replicate floor
+  // and this importer reads it, which is why the list exists. RED against a
+  // check that accepts anything once the config carries more than one version
+  // (libviprs-bench #84).
+  const version = runImport(mutate({ set: { schemaVersion: 3 } }), emptyHistory());
   refused(version, /schemaVersion/);
+});
+
+test('both replicate eras import, and they do not land on one axis', () => {
+  // The archived document is version 1, where `replicate.spreadPct` was the gap
+  // between two measurements of the control cell. Version 2 publishes a
+  // dispersion over every placement under the same key. Both are real
+  // measurements and both import; what must never happen is one line drawn
+  // through the two.
+  //
+  // RED against an importer that reads a single version (the version-2 run is
+  // then refused) and against one that drops `schemaVersion` from the entry,
+  // which leaves the era axis with nothing to separate them by.
+  const eraOne = emptyHistory();
+  assert.equal(runImport(pristine(), eraOne).code, EXIT.OK);
+  const eraTwo = emptyHistory();
+  const two = runImport(mutate({ set: { schemaVersion: 2 } }), eraTwo);
+  assert.equal(two.code, EXIT.OK, `a version-2 document must import:\n${two.err}`);
+
+  const [first] = readHistory(eraOne);
+  const [second] = readHistory(eraTwo);
+  assert.equal(first.schemaVersion, 1);
+  assert.equal(second.schemaVersion, 2);
+  assert.notEqual(
+    first.schemaVersion,
+    second.schemaVersion,
+    'the entries carry no document schema version, so nothing can separate the two eras',
+  );
 });
 
 test('every reason is reported, never the first', () => {
@@ -671,6 +702,67 @@ test('a fitted baseline gates the metrics it fitted and still never a p99', () =
     (s) => s.library === 'directory' && s.key === 'read_random.p50' && s.scale === 21851,
   );
   assert.equal(unfitted.gated, false);
+});
+
+test('an oversubscribed rung is published and is never gated, even with a baseline', () => {
+  // A rung that asked for more threads than the host has cores. The number is
+  // real: on the one machine that measures x86_64 natively, six cores, it is the
+  // only way to reach the eight-thread rung the x86_64 knee sits on at all. It
+  // is not comparable with the same rung on a host that had the cores for it.
+  //
+  // RED against an importer that grades it anyway, which is what a fitted
+  // tolerance would do: the baseline below fits exactly this cell, and the
+  // control two lines down is the identical cell with the flag off, which IS
+  // gated. Without that control the test passes on an importer that gates
+  // nothing at all.
+  const baseline = join(scratch(), 'baseline.json');
+  writeFileSync(
+    baseline,
+    JSON.stringify({
+      host8: ARCHIVED_RUN_ID.split('-').pop(),
+      fsType: 'unknown',
+      cells: {
+        'pmtiles/read_concurrent@8.lookups_per_s@21851': { tolerancePct: 12.0, gateable: true },
+      },
+    }),
+  );
+
+  const key = 'read_concurrent@8.lookups_per_s';
+  const rung = (doc, value) => {
+    for (const cell of doc.cells) {
+      if (cell.backend === 'pmtiles' && cell.key === key && cell.scale === 21851) {
+        cell.oversubscribed = value;
+      }
+    }
+  };
+
+  const flagged = emptyHistory();
+  assert.equal(
+    runImport(mutate({ edit: (doc) => rung(doc, true) }), flagged, ['--baseline', baseline]).code,
+    EXIT.OK,
+  );
+  const sample = readHistory(flagged)[0].samples.find(
+    (s) => s.library === 'pmtiles' && s.key === key && s.scale === 21851,
+  );
+  assert.ok(sample, 'the oversubscribed rung is published, not dropped');
+  assert.equal(sample.oversubscribed, true, 'the flag has to reach the page');
+  assert.equal(sample.gated, false);
+  assert.equal(sample.tolerancePct, null);
+  assert.match(sample.ungateableReason, /more threads than the host has cores/);
+
+  // The control: the same cell, same baseline, flag off. If this one is not
+  // gated then the assertion above is about nothing.
+  const clear = emptyHistory();
+  assert.equal(
+    runImport(mutate({ edit: (doc) => rung(doc, false) }), clear, ['--baseline', baseline]).code,
+    EXIT.OK,
+  );
+  const control = readHistory(clear)[0].samples.find(
+    (s) => s.library === 'pmtiles' && s.key === key && s.scale === 21851,
+  );
+  assert.equal(control.oversubscribed, false);
+  assert.equal(control.gated, true, 'the baseline fits this cell, so with the flag off it grades');
+  assert.equal(control.tolerancePct, 12.0);
 });
 
 test('a baseline fitted on another host or filesystem gates nothing', () => {

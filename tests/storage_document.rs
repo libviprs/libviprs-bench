@@ -33,6 +33,7 @@ fn row(samples: Vec<f64>, invariants: InvariantBlock) -> DocumentCell {
         scenario: "read_random",
         metric: P50,
         isolation: Isolation::ProcessPerScenario,
+        oversubscribed: None,
         warmup: Some(Warmup::ONE_DISCARDED_PASS),
         discarded_warmup: vec![41.0],
         reps_declared: reps,

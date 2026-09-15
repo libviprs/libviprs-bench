@@ -152,6 +152,7 @@ fn sample_cell(backend: &str, scale: u64) -> DocumentCell {
             direction: Direction::LowerIsBetter,
         },
         isolation: Isolation::ProcessPerScenario,
+        oversubscribed: None,
         warmup: Some(Warmup::ONE_DISCARDED_PASS),
         discarded_warmup: vec![41.0],
         reps_declared: reps,
