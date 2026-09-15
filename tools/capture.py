@@ -65,6 +65,21 @@ THE TRAPS, CARRIED FORWARD FROM tools/capture-nas.sh RATHER THAN REDISCOVERED
     "Permission denied" on a directory that plainly exists. The first end-to-end
     run failed there, nine minutes in, with both images already built and the
     whole capture still ahead of it.
+ 9. The build driver's container carries a NAME. Interrupting this script does
+    not stop the build: SIGINT reaches the Python process, `subprocess.run`
+    raises, and the ssh child and everything downstream of it carry on, so the
+    machine keeps compiling with nobody attached. Cleanup can only remove a
+    container it can name, and an unnamed `docker run` is a random two-word
+    container whose only identification is what it happens to be running.
+
+-----------------------------------------------------------------------------
+WHAT IS MEASURED IS MAIN, NOT THIS WORKING TREE
+
+Both repositories are cloned fresh from GitHub. A run measured against an edited
+tree stamps `provenance.dirty` and is refused, and more to the point a number
+that cannot say which commit produced it is not evidence. So a change to the
+harness has to be on `main` before it can be measured, and the document records
+that commit rather than whatever happens to be checked out here.
 
 -----------------------------------------------------------------------------
 WHY NOTHING IS WRITTEN UNTIL EVERYTHING HAS PASSED
