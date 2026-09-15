@@ -1797,22 +1797,19 @@ pub fn comparison_suite(
             #[cfg_attr(not(feature = "libvips"), allow(unused_mut))]
             let mut vips_done = !family.measures_libvips();
             #[cfg(feature = "libvips")]
-            if family.measures_libvips() {
-                if let Some(vips) =
+            if family.measures_libvips()
+                && let Some(vips) =
                     bench_libvips_inprocess(&src, tile_size, conc, &format!("{label}_vips"))
-                {
-                    results.push(vips);
-                    vips_done = true;
-                }
+            {
+                results.push(vips);
+                vips_done = true;
             }
-            if !vips_done {
-                if let Some(ref png) = png_path {
-                    if let Some(vips) =
-                        bench_libvips(png, w, h, tile_size, conc, &format!("{label}_vips"))
-                    {
-                        results.push(vips);
-                    }
-                }
+            if !vips_done
+                && let Some(ref png) = png_path
+                && let Some(vips) =
+                    bench_libvips(png, w, h, tile_size, conc, &format!("{label}_vips"))
+            {
+                results.push(vips);
             }
         }
 
@@ -1861,7 +1858,7 @@ pub fn format_thousands(n: u64) -> String {
     let bytes = digits.as_bytes();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, &b) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(b as char);

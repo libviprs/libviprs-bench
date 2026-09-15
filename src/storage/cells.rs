@@ -375,7 +375,7 @@ pub fn period_px(source: Source) -> Option<u32> {
 /// level wherever 256 divides the tile, and to 74 and 329 at 128 and 64, where
 /// the identical tiles exist but their ids are not adjacent in Hilbert order.
 pub fn collapses_at(source: Source, tile_px: u32) -> bool {
-    period_px(source).is_some_and(|period| tile_px % period == 0)
+    period_px(source).is_some_and(|period| tile_px.is_multiple_of(period))
 }
 
 /// Whether a cell's declared shape survives the source it is filled from.

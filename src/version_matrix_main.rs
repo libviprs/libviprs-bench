@@ -215,14 +215,14 @@ fn main() -> ExitCode {
     );
     println!();
 
-    if let Some(parent) = opts.history.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "error: cannot create history directory {}: {e}",
-                parent.display()
-            );
-            return ExitCode::FAILURE;
-        }
+    if let Some(parent) = opts.history.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!(
+            "error: cannot create history directory {}: {e}",
+            parent.display()
+        );
+        return ExitCode::FAILURE;
     }
 
     // Pre-flight the shared history once. A corrupt/unreadable file is a

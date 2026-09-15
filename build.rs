@@ -585,13 +585,11 @@ fn read_package_version(manifest: &Path) -> Option<String> {
             in_package = line == "[package]";
             continue;
         }
-        if in_package {
-            if let Some(rest) = line.strip_prefix("version") {
-                let rest = rest.trim_start();
-                if let Some(rest) = rest.strip_prefix('=') {
-                    return Some(rest.trim().trim_matches('"').to_string());
-                }
-            }
+        if in_package
+            && let Some(rest) = line.strip_prefix("version")
+            && let Some(rest) = rest.trim_start().strip_prefix('=')
+        {
+            return Some(rest.trim().trim_matches('"').to_string());
         }
     }
     None

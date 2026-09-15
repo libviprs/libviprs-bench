@@ -742,14 +742,14 @@ fn read_package_field(manifest: &Path, field: &str) -> Option<String> {
             in_package = line == "[package]";
             continue;
         }
-        if in_package {
-            if let Some(rest) = line.strip_prefix(field) {
-                // Guard against key-prefix collisions (`name` vs `namespace`):
-                // the key must be followed by optional whitespace then `=`.
-                if let Some(rest) = rest.trim_start().strip_prefix('=') {
-                    return Some(rest.trim().trim_matches('"').to_string());
-                }
-            }
+        // The `strip_prefix('=')` half guards against key-prefix collisions
+        // (`name` vs `namespace`): the key must be followed by optional
+        // whitespace and then `=`.
+        if in_package
+            && let Some(rest) = line.strip_prefix(field)
+            && let Some(rest) = rest.trim_start().strip_prefix('=')
+        {
+            return Some(rest.trim().trim_matches('"').to_string());
         }
     }
     None

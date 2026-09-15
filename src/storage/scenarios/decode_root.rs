@@ -182,8 +182,10 @@ impl Scenario for DecodeRootScenario {
             .filter_map(|d| measured.nanos_per_entry(*d))
             .collect();
 
-        let mut invariants = Invariants::default();
-        invariants.root_entries = Some(measured.entries);
+        let invariants = Invariants {
+            root_entries: Some(measured.entries),
+            ..Invariants::default()
+        };
         let facts = vec![
             RepFacts {
                 invariants,
