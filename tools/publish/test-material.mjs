@@ -26,27 +26,55 @@ import { fileURLToPath } from 'node:url';
 
 import { computeDigests } from './canonical-json.mjs';
 
-export const ARCHIVED_RUN_ID =
-  '20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939';
+/** The archived runs this suite is allowed to run against, by family.
+ *
+ *  Two families and not one, because a cell in `storage` and a cell in
+ *  `engines` are spelled differently and the importer has to identify both. The
+ *  storage sweep varies the source image and spells it into the cell name; the
+ *  engines sweep varies the thread budget and spells that in instead. A rule
+ *  that reads as identity on one of them can be a coincidence on the other, and
+ *  with only the storage document in the tree there was no way to find out.
+ */
+export const ARCHIVED = {
+  storage: {
+    runId: '20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939',
+    dir: fileURLToPath(new URL('../../archive/storage/', import.meta.url)),
+  },
+  engines: {
+    runId: '20260915T021911Z-809ee8014d002518ce55edaceba698ca7a8b8a79-a7bac4a9',
+    dir: fileURLToPath(new URL('../../archive/engines/', import.meta.url)),
+  },
+};
 
-const archiveRoot = fileURLToPath(new URL('../../archive/storage/', import.meta.url));
+/** The storage run, which is what `family` defaults to everywhere below. */
+export const ARCHIVED_RUN_ID = ARCHIVED.storage.runId;
 
 export const IMPORTER = fileURLToPath(new URL('./import-run.mjs', import.meta.url));
 export const CONFIG = fileURLToPath(new URL('./config.json', import.meta.url));
 
+function archived(family) {
+  const entry = ARCHIVED[family];
+  // Not a default. A typo in a family name would otherwise read the storage
+  // document under an engines-shaped assertion, and the test would be green
+  // about a document it never opened.
+  if (!entry) throw new Error(`no archived run for family ${JSON.stringify(family)}`);
+  return entry;
+}
+
 /** The archived document exactly as the producer sealed it. */
-export function archivedDocumentText() {
-  return readFileSync(join(archiveRoot, `${ARCHIVED_RUN_ID}.json`), 'utf8');
+export function archivedDocumentText(family = 'storage') {
+  const { dir, runId } = archived(family);
+  return readFileSync(join(dir, `${runId}.json`), 'utf8');
 }
 
 /** The archived document, parsed. */
-export function archivedDocument() {
-  return JSON.parse(archivedDocumentText());
+export function archivedDocument(family = 'storage') {
+  return JSON.parse(archivedDocumentText(family));
 }
 
 /** The archive index as the producer wrote it. */
-export function archivedIndex() {
-  return JSON.parse(readFileSync(join(archiveRoot, 'index.json'), 'utf8'));
+export function archivedIndex(family = 'storage') {
+  return JSON.parse(readFileSync(join(archived(family).dir, 'index.json'), 'utf8'));
 }
 
 const scratches = [];
@@ -108,11 +136,13 @@ function locate(root, path) {
  * @param {(doc: object) => void}   [edits.edit]    an edit the paths cannot express
  * @param {boolean}                 [edits.reseal]  false to leave the stale digests in place
  * @param {boolean}                 [edits.index]   false to write an archive with no index row
+ * @param {string}                  [edits.family]  which archived run to start from
  * @returns {{dir: string, doc: object, runId: string, documentPath: string}}
  */
 export function mutate(edits = {}) {
-  const doc = archivedDocument();
-  const originalHost8 = ARCHIVED_RUN_ID.split('-').pop();
+  const family = edits.family ?? 'storage';
+  const doc = archivedDocument(family);
+  const originalHost8 = archived(family).runId.split('-').pop();
 
   for (const [path, value] of Object.entries(edits.set ?? {})) {
     const [parent, key] = locate(doc, path);
@@ -159,8 +189,8 @@ export function mutate(edits = {}) {
  *  The control for every refusal test. If this one does not import, a suite full
  *  of refusals proves nothing at all.
  */
-export function pristine() {
-  return mutate();
+export function pristine(family = 'storage') {
+  return mutate({ family });
 }
 
 /** An empty `history.json`, ready to import into. */

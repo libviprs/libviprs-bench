@@ -729,15 +729,18 @@ fn both_walks_take_the_same_n_coordinates() {
 // concurrent_curve
 // ---------------------------------------------------------------------------
 
-/// A rung the host has no cores for is skipped with a reason and stays in the
-/// document.
+/// A rung runs up to twice the core count, and one past that is skipped with a
+/// reason and stays in the document.
 ///
-/// RED against omission. A dropped row reads as a measurement nobody took,
-/// which is a different and worse claim than one this host declined, and it is
-/// the one a reader makes when a 6-core box publishes three points of a
-/// four-point curve.
+/// RED against omission, and RED against the rule this replaced, which declined
+/// every rung above `ncpu`. A dropped row reads as a measurement nobody took,
+/// which is a different and worse claim than one this host declined. A row
+/// declined for a good reason is still a hole where the finding should be:
+/// libviprs#1024 put the x86_64 knee at eight threads and the only host that
+/// measures x86_64 natively has six cores, so the old rule declined the rung the
+/// whole x86_64 concurrency story lives on, on every cell, forever.
 #[test]
-fn cells_above_ncpu_are_skipped_with_a_reason_not_dropped() {
+fn a_rung_runs_to_twice_the_core_count_and_says_when_it_is_oversubscribed() {
     let ladder = concurrent_curve::ladder(6);
     assert_eq!(
         ladder.len(),
@@ -748,38 +751,160 @@ fn cells_above_ncpu_are_skipped_with_a_reason_not_dropped() {
         ladder.iter().map(|arm| arm.threads).collect::<Vec<_>>(),
         concurrent_curve::THREAD_LADDER.to_vec()
     );
-
-    let skipped: Vec<_> = ladder.iter().filter(|arm| !arm.is_ok()).collect();
-    assert_eq!(
-        skipped.len(),
-        1,
-        "on six cores exactly the eight-thread rung is declined: {ladder:?}"
+    assert!(
+        ladder.iter().all(|arm| arm.is_ok()),
+        "six cores reach every rung of a ladder that stops at eight: {ladder:?}"
     );
-    assert_eq!(skipped[0].threads, 8);
+    let eight = ladder
+        .iter()
+        .find(|arm| arm.threads == 8)
+        .expect("the ladder has an eight-thread rung");
+    assert!(
+        eight.oversubscribed,
+        "eight threads on six cores is oversubscription and the row has to say so"
+    );
     assert_eq!(
-        skipped[0].outcome(),
+        eight.outcome(),
+        libviprs_bench::storage::scenarios::Outcome::Ok
+    );
+    for arm in ladder.iter().filter(|arm| arm.threads <= 6) {
+        assert!(
+            !arm.oversubscribed,
+            "{} threads on six cores is not oversubscription",
+            arm.threads
+        );
+    }
+
+    // Past twice the cores the rung is declined, and the reason names both.
+    let cramped = concurrent_curve::ladder(2);
+    let declined: Vec<_> = cramped.iter().filter(|arm| !arm.is_ok()).collect();
+    assert_eq!(
+        declined.len(),
+        1,
+        "on two cores exactly the eight-thread rung is past 2x: {cramped:?}"
+    );
+    assert_eq!(declined[0].threads, 8);
+    assert_eq!(
+        declined[0].outcome(),
         libviprs_bench::storage::scenarios::Outcome::Skipped
     );
-    let reason = skipped[0]
+    let reason = declined[0]
         .reason()
-        .expect("a skipped rung carries its reason");
+        .expect("a declined rung carries its reason");
     assert!(
-        reason.contains('6') && reason.contains('8'),
+        reason.contains('2') && reason.contains('8'),
         "the reason has to name the cores and the rung: {reason}"
     );
+    // The four-thread rung on two cores runs, and is marked.
+    let four = cramped
+        .iter()
+        .find(|arm| arm.threads == 4)
+        .expect("a four-thread rung");
+    assert!(four.is_ok());
+    assert!(four.oversubscribed);
 
     // The positive control: the rule is about the host, not a constant that
-    // always refuses eight.
+    // always refuses eight and not one that always accepts it.
     let roomy = concurrent_curve::ladder(16);
     assert!(
-        roomy.iter().all(|arm| arm.is_ok()),
-        "a sixteen-core host measures every rung: {roomy:?}"
+        roomy.iter().all(|arm| arm.is_ok() && !arm.oversubscribed),
+        "a sixteen-core host measures every rung and oversubscribes none: {roomy:?}"
     );
-    let cramped = concurrent_curve::ladder(1);
+    let single = concurrent_curve::ladder(1);
     assert_eq!(
-        cramped.iter().filter(|arm| arm.is_ok()).count(),
-        1,
-        "a single-core host measures only the control"
+        single.iter().filter(|arm| arm.is_ok()).count(),
+        2,
+        "a single-core host reaches the control and one rung above it: {single:?}"
+    );
+}
+
+/// The ladder reaches the rung each architecture's knee sits on, on the hosts
+/// this suite really publishes from.
+///
+/// RED against the rule this replaced. libviprs#1024 measured the bend: on
+/// arm64 p99 on the leaf-bearing cell goes 2.04, 2.27, 10.38, 43.06 us at one,
+/// two, four and eight threads, so the knee is at four; on native x86_64 the
+/// first three points are flat and the whole move is at eight. The arm64 laptop
+/// has eight cores and reaches its knee either way. The native x86_64 box has
+/// six, and under `threads > ncpu` it declined the eight-thread rung on every
+/// cell, so the epic's x86_64 concurrency story could not be reproduced from
+/// the one machine that can measure x86_64 natively.
+///
+/// Asserting that the skip was recorded with a good reason is what the suite
+/// did before, and it passed while the finding was unreachable.
+#[test]
+fn the_ladder_measures_the_rung_each_architectures_knee_sits_on() {
+    // libviprs#1024, both of them measured rather than chosen.
+    const ARM64_KNEE: usize = 4;
+    const X86_64_KNEE: usize = 8;
+    // The two hosts this suite publishes from, by their real core counts.
+    for (host, ncpu, knee) in [
+        ("the arm64 laptop", 8usize, ARM64_KNEE),
+        ("the native x86_64 box", 6usize, X86_64_KNEE),
+    ] {
+        let ladder = concurrent_curve::ladder(ncpu);
+        let rung = ladder
+            .iter()
+            .find(|arm| arm.threads == knee)
+            .unwrap_or_else(|| panic!("{host}: the ladder has no rung at {knee} threads"));
+        assert!(
+            rung.is_ok(),
+            "{host} has {ncpu} cores and declines the {knee}-thread rung, which is where its \
+             knee is: {:?}",
+            rung.reason()
+        );
+        assert_eq!(
+            rung.outcome(),
+            libviprs_bench::storage::scenarios::Outcome::Ok,
+            "{host}: the rung at the knee has to be a measurement"
+        );
+        // And the published row says whether the cores were there for it, so a
+        // reader never compares the x86_64 box's T=8 with the laptop's.
+        assert_eq!(rung.oversubscribed, knee > ncpu, "{host}");
+    }
+}
+
+/// Every scenario says whether its thread budget is above the host's cores, and
+/// only the ladder has one to say.
+///
+/// RED against a row that carries no such column: an eight-thread rung measured
+/// on six cores and one measured on eight are then the same row shape with the
+/// same key, and nothing downstream can refuse to grade one against the other.
+#[test]
+fn only_the_ladder_claims_a_thread_budget_and_it_claims_it_honestly() {
+    // `Scenario` needs no import: the methods are called on `dyn Scenario`,
+    // which names its own trait.
+    use libviprs_bench::storage::registry;
+
+    let mut ladder_rungs = 0;
+    for scenario in registry() {
+        let name = scenario.name();
+        match name.strip_prefix("read_concurrent@") {
+            Some(threads) => {
+                ladder_rungs += 1;
+                let threads: usize = threads.parse().expect("a rung names its thread count");
+                assert_eq!(
+                    scenario.oversubscribed(6),
+                    Some(threads > 6),
+                    "{name} on six cores"
+                );
+                assert_eq!(
+                    scenario.oversubscribed(16),
+                    Some(false),
+                    "{name} on sixteen cores"
+                );
+            }
+            None => assert_eq!(
+                scenario.oversubscribed(1),
+                None,
+                "{name} names no thread budget, so it must claim none"
+            ),
+        }
+    }
+    assert_eq!(
+        ladder_rungs,
+        concurrent_curve::THREAD_LADDER.len(),
+        "the registry lost a rung"
     );
 }
 
@@ -1040,14 +1165,19 @@ fn the_sync_model_uses_the_declared_parameters_and_names_them() {
 // replicate
 // ---------------------------------------------------------------------------
 
-/// The replicate cell is measured at both ends of the sweep and publishes its
-/// own spread.
+/// The replicate cell is measured through the sweep and publishes its own
+/// dispersion.
 ///
-/// RED against a schedule that measures it once, and against a block computed
-/// from one measurement: the spread then comes out zero, which reads as a
-/// perfectly quiet host and disables every noise verdict downstream.
+/// RED against a schedule that measures it once, against one that measures it
+/// only at the two ends, and against a block computed from a pair: the floor
+/// then has no dispersion of its own, which is how two captures of one cell on
+/// one host came out at 3.46% and 36.89% with nothing able to say which was the
+/// outlier (#84). The estimator's own arithmetic lives in
+/// `tests/replicate_estimator.rs`; what this one holds is the scenario's place
+/// in the sweep and the fact the whole control exists for, which is that the
+/// tail moves further than the median on an idle host running identical code.
 #[test]
-fn the_replicate_cell_is_measured_first_and_last_and_its_spread_is_published() {
+fn the_replicate_cell_is_measured_throughout_and_publishes_its_dispersion() {
     let control = cells::smoke_cell(Source::Gradient);
     let rest = [
         cells::mid_cell(Source::Gradient),
@@ -1056,50 +1186,80 @@ fn the_replicate_cell_is_measured_first_and_last_and_its_spread_is_published() {
     ];
 
     let schedule = replicate::schedule(control, &rest);
-    assert_eq!(schedule.len(), rest.len() + 2);
+    assert_eq!(schedule.len(), 2 * rest.len() + 1);
+    assert_eq!(replicate::placements(&schedule, control), rest.len() + 1);
+    assert!(!replicate::has_adjacent_placements(&schedule, control));
     assert!(replicate::measured_first_and_last(&schedule, control));
-    assert_eq!(&schedule[1..schedule.len() - 1], &rest[..]);
+    let measured: Vec<_> = schedule.iter().copied().filter(|c| *c != control).collect();
+    assert_eq!(&measured[..], &rest[..]);
 
     // The positive control: a schedule that measures it only at the front is
-    // not one this rule accepts.
+    // not one this rule accepts, and neither is the two-ended one this lane
+    // replaced.
     let once = {
         let mut cells = vec![control];
         cells.extend_from_slice(&rest);
         cells
     };
     assert!(!replicate::measured_first_and_last(&once, control));
-
-    let first = BTreeMap::from([
-        ("p50_us".to_string(), 8.0),
-        ("p99_us".to_string(), 5.71),
-        ("wall_ms".to_string(), 100.0),
-    ]);
-    let last = BTreeMap::from([
-        ("p50_us".to_string(), 8.4),
-        ("p99_us".to_string(), 9.96),
-        ("wall_ms".to_string(), 110.0),
-    ]);
-    let block = replicate::block(&control, &[first.clone(), last.clone()])
-        .expect("two measurements make a block");
-
-    assert_eq!(block.reps, replicate::REPLICATE_REPS);
-    assert_eq!(block.cell, control.spec());
-    assert_eq!(block.spread_pct.len(), 3);
-    let p99 = block.spread_pct["p99_us"];
+    assert_eq!(replicate::placements(&once, control), 1);
+    let two_ended = {
+        let mut cells = once.clone();
+        cells.push(control);
+        cells
+    };
+    assert!(replicate::measured_first_and_last(&two_ended, control));
     assert!(
-        (p99 - 74.4).abs() < 0.2,
-        "the spread is a percentage of the smaller measurement, and it came out {p99}"
+        replicate::placements(&two_ended, control) < replicate::MIN_REPLICATE_REPS,
+        "the schedule this replaced holds two placements, which is below what a published \
+         floor may rest on"
     );
-    assert!(block.spread_pct["p50_us"] < p99);
 
-    // A delta the spread covers is noise, and one it does not is not.
-    assert!(replicate::covered_by_noise(&block, "p99_us", 60.0));
-    assert!(!replicate::covered_by_noise(&block, "p99_us", 90.0));
-    assert!(!replicate::covered_by_noise(&block, "p50_us", 60.0));
+    // Five placements of the p50 and the p99, the second moving as the free
+    // replicate pair's p99 did.
+    let measurements: Vec<BTreeMap<String, f64>> = [
+        (8.0, 5.71),
+        (8.4, 9.96),
+        (8.1, 6.20),
+        (8.3, 9.10),
+        (7.9, 5.90),
+    ]
+    .iter()
+    .map(|(p50, p99)| {
+        BTreeMap::from([
+            ("p50_us".to_string(), *p50),
+            ("p99_us".to_string(), *p99),
+        ])
+    })
+    .collect();
+    let block = replicate::block(&control, &measurements).expect("five placements make a block");
 
-    // One measurement is refused rather than published as a zero spread.
-    let refusal = replicate::block(&control, &[first])
-        .expect_err("a block over one measurement is not a spread");
+    assert_eq!(block.reps, replicate::MIN_REPLICATE_REPS);
+    assert_eq!(block.estimator.reps, block.reps);
+    assert_eq!(block.cell, control.spec());
+    assert_eq!(block.spread_pct.len(), 2);
+    let p99 = block.spread_pct["p99_us"];
+    let p50 = block.spread_pct["p50_us"];
+    assert!(
+        p99 > 50.0,
+        "the tail on this host moves by tens of percent between placements of one cell \
+         running identical code, and the floor says {p99}"
+    );
+    assert!(
+        p50 < p99 / 5.0,
+        "the median is an order steadier than the tail and the floor should show it: {p50} \
+         against {p99}"
+    );
+
+    // A delta the floor covers is noise, and one it does not is not.
+    assert!(replicate::covered_by_noise(&block, "p99_us", p99 - 0.001));
+    assert!(!replicate::covered_by_noise(&block, "p99_us", p99 + 0.001));
+    assert!(!replicate::covered_by_noise(&block, "p50_us", p99 - 0.001));
+
+    // Fewer placements than a floor may rest on are refused rather than
+    // published as a narrower floor.
+    let refusal = replicate::block(&control, &measurements[..2])
+        .expect_err("a block over two placements is not a dispersion");
     assert!(refusal.contains(&control.spec()));
 }
 

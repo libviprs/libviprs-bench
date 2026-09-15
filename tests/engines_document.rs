@@ -722,15 +722,19 @@ fn a_dirty_tree_stamps_the_caveat_onto_every_cell_and_a_clean_one_does_not() {
 // The noise floor
 // ---------------------------------------------------------------------------
 
-/// RED against a sweep with no control, and against one that measures the
-/// control twice in a row.
+/// RED against a sweep with no control, against one that measures the control
+/// twice in a row, and against the two-ended schedule this replaced.
 ///
-/// First and last rather than back to back, because what the spread is trying
-/// to see is drift across the sweep: thermal, a neighbour waking up, the page
-/// cache filling. Two measurements in a row would see none of it and would
-/// publish a flatteringly small noise floor.
+/// Spread through the sweep rather than back to back, because what the floor is
+/// trying to see is drift across the sweep: thermal, a neighbour waking up, the
+/// page cache filling. Two measurements in a row would see none of it and would
+/// publish a flatteringly narrow noise floor. Two measurements at the two ends
+/// see all of it and still have no dispersion of their own, which is the defect
+/// this schedule answers (#84).
 #[test]
-fn a_publishable_profile_opens_and_closes_on_its_control_cell() {
+fn a_publishable_profile_places_its_control_throughout() {
+    use libviprs_bench::storage::scenarios::replicate;
+
     for profile in [Profile::Full, Profile::Xl] {
         let control = profile
             .replicate_cell()
@@ -748,16 +752,29 @@ fn a_publishable_profile_opens_and_closes_on_its_control_cell() {
             "{} closes on it",
             profile.label()
         );
+        let measured = cells.iter().filter(|c| **c != control).count();
         assert_eq!(
-            cells.iter().filter(|c| **c == control).count(),
-            2,
-            "{}: twice, not three times; the control is paid for and the rest of the sweep \
-             must not measure it a third time in its natural position",
+            replicate::placements(&cells, control),
+            measured + 1,
+            "{}: once before the first measured cell and once after each of them. The rest of \
+             the sweep must not measure the control a further time in its natural position \
+             either, which would show up here as one placement too many",
             profile.label()
         );
         assert!(
-            cells.len() > 3,
-            "{} has a sweep between the two ends",
+            replicate::placements(&cells, control) >= replicate::MIN_REPLICATE_REPS,
+            "{}: a sweep holding fewer than {} placements publishes no floor at all",
+            profile.label(),
+            replicate::MIN_REPLICATE_REPS
+        );
+        assert!(
+            !replicate::has_adjacent_placements(&cells, control),
+            "{}: two placements back to back see none of the drift",
+            profile.label()
+        );
+        assert!(
+            measured > 1,
+            "{} has a sweep between the placements",
             profile.label()
         );
     }
@@ -768,15 +785,16 @@ fn a_publishable_profile_opens_and_closes_on_its_control_cell() {
     assert_eq!(Profile::Ci.cells().len(), 1);
 }
 
-/// RED against a spread computed from the wrong pair.
+/// RED against a floor computed from the wrong rows, and against one computed
+/// from only two of them.
 ///
 /// Two `engines` cells can share a tile count and a source and differ only in
-/// their thread budget, so the block has to find its two measurements by the
+/// their thread budget, so the block has to find its placements by the
 /// control's own cell key. A filter on `(scale, source)`, which is what the
 /// storage family used before this lane, would pick up the other thread budget
-/// and publish a spread between two different measurements as drift.
+/// and publish a floor between two different measurements as drift.
 #[test]
-fn the_replicate_block_is_the_spread_between_the_two_ends_of_the_sweep() {
+fn the_replicate_block_is_the_dispersion_over_every_placement_in_the_sweep() {
     use libviprs_bench::storage::scenarios::replicate::block_for_cell;
 
     let control = EngineCell::new(1024, 720, 1);
@@ -810,31 +828,57 @@ fn the_replicate_block_is_the_spread_between_the_two_ends_of_the_sweep() {
             doc.push(row);
         }
     };
-    push(&mut doc, control, 500);
+    // Six placements whose two ends agree exactly, with the decoy between two of
+    // them. The estimator this replaced read the first and the last row and
+    // would call this a floor of zero on a control that swung by a fifth.
+    let walls = [500u64, 600, 520, 580, 510, 500];
+    push(&mut doc, control, walls[0]);
     push(&mut doc, decoy, 9_000);
-    push(&mut doc, control, 550);
+    for wall in &walls[1..] {
+        push(&mut doc, control, *wall);
+    }
 
-    let block = block_for_cell(&doc, &control.spec()).expect("two ends make a block");
+    let wall_floor = |block: &libviprs_bench::storage::document::Replicate| {
+        block
+            .spread_pct
+            .as_object()
+            .expect("a spread object")
+            .get("monolithic.pyramid.wall")
+            .and_then(|v| v.as_f64())
+            .expect("the wall column has a floor")
+    };
+
+    let block = block_for_cell(&doc, &control.spec()).expect("six placements make a block");
     assert_eq!(block.cell, control.spec());
-    assert_eq!(block.replicate_reps, 2);
-    let spread = block.spread_pct.as_object().expect("a spread object");
-    let wall = spread
-        .get("monolithic.pyramid.wall")
-        .and_then(|v| v.as_f64())
-        .expect("the wall column has a spread");
-    // 500 and 550, as a percentage of the smaller.
+    assert_eq!(block.replicate_reps, 6);
+    assert_eq!(
+        block
+            .estimator
+            .as_ref()
+            .expect("a published floor names its estimator")
+            .reps,
+        6
+    );
+    let wall = wall_floor(&block);
+    // A standard deviation of 43.7 about a centre of 515, at the six-placement
+    // multiplier of 2.777.
     assert!(
-        (wall - 10.0).abs() < 1e-9,
-        "the spread is between the two ends, not against the cell in the middle: {wall}"
+        (wall - 23.57).abs() < 0.2,
+        "the floor is over every placement, not the two ends and the cell in the middle: {wall}"
+    );
+    assert!(
+        wall > 1.0,
+        "the two ends of this sweep are both 500, so anything reading only those publishes a \
+         floor of zero on a control that swung by a fifth: {wall}"
     );
 
-    // The same three cells with the decoy LAST. The block has to read the
-    // control's rows and no others, independently of what order the sweep
-    // happened to put them in: a version that took "the first row for this key
-    // and the last one" without checking WHICH cell each row belongs to gives
-    // the same answer as this one while the control closes the sweep, and a
-    // wildly different one the moment anything follows it. The mutation table
-    // caught that the earlier fixture could not tell the two apart.
+    // The same cells with the decoy LAST. The block has to read the control's
+    // rows and no others, independently of what order the sweep happened to put
+    // them in: a version that collected rows for a key without checking WHICH
+    // cell each row belongs to gives the same answer as this one while the
+    // control closes the sweep, and a wildly different one the moment anything
+    // follows it. The mutation table caught that the earlier fixture could not
+    // tell the two apart.
     let mut reordered = Document::new_for(
         engines::FAMILY,
         engines::RUNNER,
@@ -842,31 +886,34 @@ fn the_replicate_block_is_the_spread_between_the_two_ends_of_the_sweep() {
         "2026-09-14T12:00:00.000Z".to_string(),
         engines::measurement(Profile::Full),
     );
-    push(&mut reordered, control, 500);
-    push(&mut reordered, control, 550);
+    for wall in &walls {
+        push(&mut reordered, control, *wall);
+    }
     push(&mut reordered, decoy, 9_000);
-    let block = block_for_cell(&reordered, &control.spec()).expect("two ends make a block");
-    let wall = block
-        .spread_pct
-        .as_object()
-        .expect("a spread object")
-        .get("monolithic.pyramid.wall")
-        .and_then(|v| v.as_f64())
-        .expect("the wall column has a spread");
+    let block = block_for_cell(&reordered, &control.spec()).expect("six placements make a block");
+    let moved = wall_floor(&block);
     assert!(
-        (wall - 10.0).abs() < 1e-9,
-        "a row that is not the control's must not become one end of the spread: {wall}"
+        (moved - wall).abs() < 1e-9,
+        "a row that is not the control's became a placement: {moved} against {wall}"
     );
 
-    // And a control measured once has no spread, rather than a spread of zero,
-    // which would read as a perfectly quiet host.
-    let mut once = Document::new_for(
-        engines::FAMILY,
-        engines::RUNNER,
-        Profile::Full.label(),
-        "2026-09-14T12:00:00.000Z".to_string(),
-        engines::measurement(Profile::Full),
-    );
-    push(&mut once, control, 500);
-    assert_eq!(block_for_cell(&once, &control.spec()), None);
+    // And a control placed fewer times than a floor can rest on has no floor at
+    // all, rather than a narrow one that would read as a quiet host.
+    for count in 1..5usize {
+        let mut short = Document::new_for(
+            engines::FAMILY,
+            engines::RUNNER,
+            Profile::Full.label(),
+            "2026-09-14T12:00:00.000Z".to_string(),
+            engines::measurement(Profile::Full),
+        );
+        for wall in walls.iter().take(count) {
+            push(&mut short, control, *wall);
+        }
+        assert_eq!(
+            block_for_cell(&short, &control.spec()),
+            None,
+            "{count} placements published a floor"
+        );
+    }
 }
