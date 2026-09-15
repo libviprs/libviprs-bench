@@ -269,7 +269,7 @@ fn canonical_number(n: &Number, path: &str) -> Result<String, CanonicalError> {
         return Ok("0".to_string());
     }
     let magnitude = v.abs();
-    if magnitude >= LARGEST_PLAIN_MAGNITUDE || magnitude < SMALLEST_PLAIN_MAGNITUDE {
+    if !(SMALLEST_PLAIN_MAGNITUDE..LARGEST_PLAIN_MAGNITUDE).contains(&magnitude) {
         return Err(CanonicalError::OutOfPlainRange {
             path: path.to_string(),
             value: v,

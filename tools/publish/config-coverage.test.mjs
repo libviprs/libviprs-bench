@@ -44,9 +44,25 @@ function codeOnly(src) {
     .join('\n');
 }
 
+/**
+ * Keys named through `ruleSet('<key>', …)`, which is how an allowed set is read
+ * now that an empty one has to be a configuration fault rather than a refusal.
+ *
+ * Without this the walk below goes quiet on every key that moved to `ruleSet`,
+ * and a quiet walk reads exactly like a config with nothing missing. Five keys
+ * moved at once, so this is not hypothetical: `keysReadThroughRuleSet` has its
+ * own positive control for that reason.
+ */
+function keysReadThroughRuleSet(src) {
+  const found = new Set();
+  for (const m of codeOnly(src).matchAll(/ruleSet\(\s*'([A-Za-z][A-Za-z0-9]*)'/g)) found.add(m[1]);
+  return found;
+}
+
 function pathsReadFrom(src) {
   const found = new Set();
   for (const m of codeOnly(src).matchAll(/producer\.([A-Za-z][A-Za-z0-9]*)/g)) found.add(m[1]);
+  for (const key of keysReadThroughRuleSet(src)) found.add(key);
   return [...found].sort();
 }
 
@@ -59,6 +75,21 @@ function pathsDocumented(src) {
   }
   return [...found].sort();
 }
+
+test('the ruleSet walk finds the keys that moved onto it', () => {
+  // A positive control on the walk, not on the config. `pathsReadFrom` folds
+  // `ruleSet('<key>', …)` in, and if that regex ever stops matching, the orphan
+  // test below goes green by seeing fewer reads rather than by the config being
+  // right: a zero has two explanations and this rules one of them out.
+  const viaRuleSet = keysReadThroughRuleSet(source);
+  assert.ok(
+    viaRuleSet.size >= 4,
+    `expected the ruleSet walk to find the allowed-set keys, found ${[...viaRuleSet].join(', ') || 'none'}`,
+  );
+  for (const key of ['publishableProfiles', 'families']) {
+    assert.ok(viaRuleSet.has(key), `${key} is read through ruleSet and the walk did not see it`);
+  }
+});
 
 test('every producer key the importer reads is defined or an intentional default', () => {
   const read = pathsReadFrom(source);
