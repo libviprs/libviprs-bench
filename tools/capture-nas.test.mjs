@@ -115,16 +115,32 @@ function plan() {
 }
 
 test('the driver sends nothing to the NAS that runs outside a container', () => {
+  // No exception, not even the scratch mkdir the script above is allowed. The
+  // driver pushes a second tree beside the first one, and by then the scratch
+  // root belongs to whatever uid the tar carried: extracting an archive whose
+  // top entry is `.` restores that entry's ownership onto the destination, the
+  // tar is made on a Mac at uid 501 and the NAS account is 1001, so a host-side
+  // `mkdir -p` inside the tree dies with "Permission denied" on a directory that
+  // plainly exists. The first end-to-end run failed there after fifty minutes of
+  // building. Creating it in a container fixes the failure and removes the
+  // exception in the same move, so this asserts the stronger rule.
   const steps = plan().filter((s) => s.where === 'nas');
   assert.ok(steps.length >= 15, `expected a plan with the whole run in it, got ${steps.length} steps`);
-  const offenders = steps.filter(
-    (s) => !s.remote.includes('docker') && !SCRATCH_MKDIR.test(s.remote),
-  );
+  const offenders = steps.filter((s) => !s.remote.includes('docker'));
   assert.deepEqual(
     offenders.map((s) => `${s.label}: ${s.remote}`),
     [],
     'these would run on the machine itself rather than in a container',
   );
+});
+
+test('the driver creates its scratch directories in a container, not as the host account', () => {
+  // The specific half of the rule above, named so that a regression reads as
+  // what it is rather than as "something is not containerised".
+  for (const step of plan().filter((s) => s.label.startsWith('push.mkdir.'))) {
+    assert.match(step.remote, /^docker run /, `${step.label} runs on the machine itself`);
+    assert.match(step.remote, /-v \$HOME\/workspace:\/ws/, `${step.label} mounts the parent`);
+  }
 });
 
 test('the driver plans the whole run, so the walk above is not a walk of nothing', () => {
