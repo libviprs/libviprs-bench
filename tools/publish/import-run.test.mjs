@@ -357,7 +357,87 @@ test('an unattested ok cell is refused', () => {
     }),
     emptyHistory(),
   );
-  refused(r, /without `storageAttested: true`/);
+  refused(r, /without `attested: true`/);
+});
+
+test('a cell attested under the new field name imports, and under neither is refused', () => {
+  // The field is `attested` on lane/k2.2-engines-document and `storageAttested`
+  // in every document archived before it, because widening the cell shape to a
+  // second family turned a field name into a family name. The archive keeps old
+  // documents forever, so both names have to read.
+  //
+  // RED against reading one name only, in either direction: every document of
+  // the other shape then comes back `undefined`, which reads as "unattested"
+  // and refuses the whole archive while looking like a gate doing its job.
+  const renamed = runImport(
+    mutate({
+      edit(doc) {
+        for (const c of doc.cells) {
+          c.attested = c.storageAttested;
+          delete c.storageAttested;
+        }
+      },
+    }),
+    emptyHistory(),
+  );
+  assert.equal(renamed.code, EXIT.OK, renamed.err);
+
+  // And a cell carrying neither name is a shape this importer has not been
+  // taught, which is a different fact from a cell that failed attestation.
+  const neither = runImport(
+    mutate({
+      edit(doc) {
+        for (const c of doc.cells) delete c.storageAttested;
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(neither, /none of the attestation fields/, /shape the importer has not been taught/);
+});
+
+test('the run id the document states must be the one its evidence derives', () => {
+  // Every archived document written so far carries `runId: null`, because the
+  // producer declared the field and never populated it (fixed on
+  // lane/k2.2-engines-document). So this importer never reads it: the id is
+  // derived from `startedAt`, the library commit and the host bucket, and joined
+  // to the archive index.
+  //
+  // RED against keying the entry on `doc.runId`, which today would file every
+  // run under `null` and give an idempotency that works because everything
+  // collides. Once the producer does write it, the two must agree.
+  const r = runImport(
+    mutate({ set: { runId: '20260101T000000Z-' + 'a'.repeat(40) + '-12345678' } }),
+    emptyHistory(),
+  );
+  refused(r, /states runId/, /derives/);
+
+  // The control: the archived document states null, the entry is keyed on a real
+  // id, and importing it twice still leaves one entry.
+  const history = emptyHistory();
+  const run = pristine();
+  assert.equal(run.doc.runId, null, 'the producer has never populated this field');
+  assert.equal(runImport(run, history).code, EXIT.OK);
+  assert.equal(runImport(run, history).code, EXIT.OK);
+  const entries = readHistory(history);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].runId, ARCHIVED_RUN_ID);
+  assert.notEqual(entries[0].runId, null);
+});
+
+test('a cell stamped dirty is refused', () => {
+  // `--allow-dirty` stamps every cell so a reader quoting one cell knows, and
+  // the producer has never written the field, so this path has never been
+  // exercised by a real run. It is exercised here. RED against an importer that
+  // reads the document header and not the cells.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        doc.cells[0].dirty = true;
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /stamped `dirty`/);
 });
 
 test('a dirty flag that is absent is refused, not read as clean', () => {

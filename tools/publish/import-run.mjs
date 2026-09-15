@@ -129,7 +129,6 @@ const fromRepo = (p) => (isAbsolute(p) ? p : join(repoRoot, p));
 const at = (root, path) => path.split('.').reduce((n, k) => (n == null ? undefined : n[k]), root);
 
 const documentPath = resolve(flag('document'));
-const archiveDir = resolve(flag('archive') ?? fromRepo(producer.archiveDir ?? 'archive/storage'));
 const historyPath = resolve(
   flag('history') ?? fromRepo(producer.historyPath ?? 'tools/publish/history.json'),
 );
@@ -282,12 +281,43 @@ function runIdFor(d) {
 }
 
 const derivedRunId = runIdFor(doc);
+// The document's own `runId` is NOT what this keys on, and today it could not
+// be: the producer writes the field and has never populated it, so every
+// archived document carries `runId: null` (fixed on lane/k2.2-engines-document).
+// Keying on it would give one null-keyed entry per run and an idempotency that
+// works because everything collides. The id is derived from the run's own
+// evidence and joined to the archive index instead, which is what makes
+// re-importing replace rather than append. When the producer does start writing
+// it, a stated id that disagrees with the derived one is a defect and says so.
+if (typeof doc.runId === 'string' && doc.runId.length > 0 && doc.runId !== derivedRunId) {
+  refuse(
+    `the document states runId ${JSON.stringify(doc.runId)} and its own evidence derives ` +
+      `${JSON.stringify(derivedRunId)}; the id is a function of the run, so a disagreement ` +
+      'means one of the two was written by hand',
+  );
+}
 if (!derivedRunId) {
   refuse(
     'the document has no `startedAt` or no `provenance.library.commit`, so it cannot derive ' +
       'the run id the archive files it under',
   );
 }
+
+// Two families archive now, each under `archive/<family>/`, so the default
+// cannot be resolved before the document has said which family it is.
+// `archive/<family without its prefix>`, which is `archive::dir_for_family` on
+// the producer side. One directory and one index per family, never a shared
+// one: two families derive their run ids from the same fields, so a `storage`
+// and an `engines` sweep started in the same second against the same commit on
+// the same host derive the same id, and in one directory the second would look
+// like a collision.
+const archiveDir = resolve(
+  flag('archive') ??
+    fromRepo(
+      producer.archiveDirByFamily?.[doc.family] ??
+        join(producer.archiveRoot ?? 'archive', family?.id ?? 'unknown'),
+    ),
+);
 
 const indexPath = join(archiveDir, producer.documentIndex ?? 'index.json');
 let archivedRow = null;
@@ -445,15 +475,54 @@ if (okCells.length === 0) {
   );
 }
 
+// Inherited from causl and, today, unreachable: `--allow-dirty` stamps
+// `dirty: true` on every cell so a reader quoting one cell knows, and the
+// producer has never written the field (found in K2.2). The check stays because
+// the flag is meant to work and the aggregator refuses a dirty run that is not
+// stamped, so the day it does the page must not be the last to hear.
 const dirtyCells = cells.filter((c) => c.dirty === true);
 if (dirtyCells.length > 0) {
-  refuse(`${dirtyCells.length} cell(s) are stamped \`dirty\` and were measured against a dirty tree`);
+  refuse(
+    `${dirtyCells.length} cell(s) are stamped \`dirty\` and were measured against a tree with ` +
+      'uncommitted changes in it',
+  );
 }
 
-const unattested = okCells.filter((c) => c.storageAttested !== true);
+// The field is `attested` on `lane/k2.2-engines-document` and `storageAttested`
+// in every document archived before it: widening the cell shape to a second
+// family is what turned a field name into a family name. Both names are read, in
+// the order the config lists them, and a cell carrying NEITHER is a different
+// refusal from a cell carrying `false`. That distinction is the whole point of
+// naming them here: read only the new name and every old document comes back
+// `undefined`, which reads as "unattested" and refuses the entire archive, and
+// read only the old one and every new document does the same. Either way the
+// importer looks like a gate doing its job while it is really answering a
+// question nobody asked.
+const ATTESTED_FROM = producer.attestedFrom ?? ['attested', 'storageAttested'];
+const attestationOf = (cell) => {
+  for (const field of ATTESTED_FROM) {
+    if (cell[field] !== undefined) return { field, value: cell[field] };
+  }
+  return { field: null, value: undefined };
+};
+
+const unnamed = okCells.filter((c) => attestationOf(c).field === null);
+if (unnamed.length > 0) {
+  refuse(
+    `${unnamed.length} measured cell(s) carry none of the attestation fields this config ` +
+      `names (${ATTESTED_FROM.join(', ')}), so nothing here has looked at whether they were ` +
+      'observed. This is a document of a shape the importer has not been taught, not a run ' +
+      'that failed attestation.',
+  );
+}
+
+const unattested = okCells.filter((c) => {
+  const { field, value } = attestationOf(c);
+  return field !== null && value !== true;
+});
 if (unattested.length > 0) {
   refuse(
-    `${unattested.length} cell(s) claim \`ok\` without \`storageAttested: true\`: ` +
+    `${unattested.length} cell(s) claim \`ok\` without \`attested: true\`: ` +
       unattested.slice(0, 5).map((c) => `${c.backend}/${c.key}@${c.scale}`).join(', ') +
       (unattested.length > 5 ? ', …' : '') +
       '. Attestation is observed in the measuring process, never asserted, and a number with ' +
@@ -815,7 +884,7 @@ function sampleOf(cell) {
     replicateSpreadCell: replicateSpread(cell) === null ? null : (doc.replicate?.cell ?? null),
     declared: typeof cell.key === 'string' && cell.key.endsWith(DECLARED_SUFFIX),
     deterministic: false,
-    attested: cell.storageAttested ?? null,
+    attested: attestationOf(cell).value ?? null,
     // Honest to the field names for once: RSS on generate, the counting
     // allocator's peak on read scenarios, null where neither was measured.
     peakRssMb: inv.peakRssMb ?? null,
@@ -852,7 +921,7 @@ for (const cell of cells) {
       // withdrawal. A cell that produced no number has no timed work to attest,
       // and giving the two the same field value would let a filter count one as
       // the other.
-      storageAttested: cell.storageAttested ?? null,
+      attested: attestationOf(cell).value ?? null,
     });
     continue;
   }

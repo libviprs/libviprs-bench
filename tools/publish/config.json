@@ -38,8 +38,26 @@
   },
 
   "producer": {
-    "archiveDir": "archive/storage",
+    "archiveRoot": "archive",
+    "archiveDirByFamily": {},
+    "_archiveRoot": [
+      "archive/<family without its libviprs- prefix>, which is archive::dir_for_family on the",
+      "producer side. One directory and one index per family: two families derive their run",
+      "ids from the same fields, so two sweeps started in the same second against the same",
+      "commit on the same host derive the same id, and in one directory the second would look",
+      "like a collision. archiveDirByFamily overrides a single family if one ever needs it."
+    ],
     "documentIndex": "index.json",
+
+    "attestedFrom": ["attested", "storageAttested"],
+    "_attestedFrom": [
+      "Two names for one field, newest first. It is `attested` on",
+      "lane/k2.2-engines-document and `storageAttested` in every document archived before",
+      "it, because widening the cell shape to a second family turned a field name into a",
+      "family name. The archive keeps old documents forever, so both are read; a cell",
+      "carrying neither is refused as a shape this importer has not been taught, which is a",
+      "different refusal from a cell that failed attestation."
+    ],
     "historyPath": "tools/publish/history.json",
 
     "families": ["libviprs-storage", "libviprs-engines", "libviprs-vips"],
