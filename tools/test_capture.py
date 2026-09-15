@@ -48,6 +48,16 @@ class SettleThreshold(unittest.TestCase):
             capture.settle_threshold(0)
 
 
+class SettleBudget(unittest.TestCase):
+    def test_the_budget_covers_the_decay_from_an_image_build(self):
+        # Red against the shell script's five minutes. Two image builds leave
+        # this box at a load five minutes does not shed: a run measured its first
+        # family at 10.62 on six cores with 0 of 539 cells quiet, while the
+        # second family settled at 2.69 after 100 seconds because the first
+        # sweep's ten minutes had done the waiting for it.
+        self.assertGreaterEqual(capture.SETTLE_TIMEOUT_S, 900)
+
+
 class PublishableProfiles(unittest.TestCase):
     def setUp(self):
         tmp = __import__("tempfile").TemporaryDirectory()
@@ -388,6 +398,53 @@ class DriverWiring(unittest.TestCase):
         # test was green against a driver that published the storage half.
         self.assertEqual(self.repo_state(), before)
         self.assertEqual((self.repo / "tools" / "publish" / "history.json").read_text(), "[]\n")
+
+    def test_a_machine_that_does_not_go_quiet_captures_nothing(self):
+        # Red against the shell script's behaviour, which prints a warning and
+        # measures anyway. That is the right call for a tool a person watches:
+        # the load is recorded and the publish gate refuses the run. It is the
+        # wrong call here. A run of the shell script measured its first family at
+        # 1-minute load 10.62 on six cores with 0 of 539 cells quiet, ten minutes
+        # of this machine spent on a document whose only use was to be thrown
+        # away, because two image builds leave the box at a load five minutes of
+        # waiting does not shed.
+        recorder = Recorder()
+        original = recorder.run
+
+        def stay_hot(step):
+            if step.label == "settle.load":
+                recorder.steps.append(step)
+                return capture.Result(step, 0, "10.62", "")
+            return original(step)
+
+        recorder.run = stay_hot
+        before = self.repo_state()
+        code = self.drive(recorder, extra=["--settle-timeout", "0"])
+        self.assertEqual(code, 1)
+        self.assertFalse(
+            [s.label for s in recorder.steps if s.label.startswith("capture.")],
+            "nothing was measured, which is the whole point of refusing here",
+        )
+        self.assertEqual(self.repo_state(), before)
+        summary = json.loads(self.summary_path.read_text())
+        reasons = " ".join(summary["refusals"])
+        self.assertIn("did not go quiet", reasons)
+        self.assertIn("10.62", reasons, "the load it gave up at is in the reason")
+
+    def test_the_load_each_family_starts_at_is_in_the_drivers_own_output(self):
+        # Red against leaving it in the document. A person reading the transcript
+        # should be able to see the run was doomed before they read the refusal,
+        # and the shell script's warning line was easy to miss: a grep filter
+        # that matched `settled` and not `still above` dropped it entirely and
+        # made it look as though the settle had never run.
+        recorder = Recorder()
+        self.drive(recorder)
+        summary = json.loads(self.summary_path.read_text())
+        for family in ("storage", "engines"):
+            settled = summary["families"][family]["settle"]
+            self.assertTrue(settled["settled"])
+            self.assertEqual(settled["startedAtLoad"], 0.5)
+            self.assertEqual(settled["cores"], 6)
 
     def test_the_cleanup_runs_even_when_the_capture_fails(self):
         # Red against cleanup on the success path only. A failed capture that

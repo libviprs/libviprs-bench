@@ -153,7 +153,25 @@ REPOS = {
     "libviprs": "https://github.com/libviprs/libviprs.git",
 }
 
-SETTLE_TIMEOUT_S = 300
+# How long the driver waits for the machine to go quiet before it gives up, and
+# gives up meaning REFUSES rather than measures anyway.
+#
+# 300 seconds was the shell script's budget and it is not enough. Two image
+# builds leave this box at a load that five minutes does not shed: a run of the
+# shell script measured the first family at 1-minute load 10.62 on six cores with
+# 0 of 539 cells quiet, while the second family, going straight afterwards,
+# settled at 2.69 after 100 seconds and came out 48% quiet. The first document
+# was worthless and the ten minutes that produced it were spent knowing it would
+# be refused.
+#
+# So the budget is twenty minutes, which covers the decay from a build, and
+# running out of it is fatal. "Capture anyway and record the load" is the right
+# call for a tool a person runs and watches, because the load is in the document
+# and the publish gate refuses it. It is the wrong call for an automated
+# publishing path: the run costs real NAS time and its output cannot be
+# published either way, so the useful outcome is "the machine did not go quiet,
+# nothing was captured" rather than a refused document.
+SETTLE_TIMEOUT_S = 1200
 SETTLE_POLL_S = 20
 
 
@@ -524,17 +542,26 @@ def build_family_image(ex: Executor, name: str, family: str) -> str:
     return tag
 
 
-def settle(ex: Executor) -> dict:
-    """Wait for the machine to shed the load the build phase put on it.
+def settle(ex: Executor, family: str, timeout_s: int = SETTLE_TIMEOUT_S) -> dict:
+    """Wait for the machine to go quiet, and refuse if it does not.
 
     The first end-to-end run of the shell script failed its own publish gate for
-    exactly this: the image builds left the box hot, storage opened at 1-minute
-    load 7.77 on six cores, and the importer refused 284 of 526 measured cells
-    for `machineLoad.quiet: false`. The capture was contending with itself.
+    this: the image builds left the box hot, storage opened at 1-minute load 7.77
+    on six cores, and the importer refused 284 of 526 measured cells for
+    `machineLoad.quiet: false`. The capture was contending with itself.
 
-    Not fatal when it times out. The harness records the load it ran at and the
-    importer refuses a run whose typical cell was not quiet, so a slow machine
-    produces a refused document rather than a quiet lie.
+    Two things changed after that. The threshold is relative to core count, not
+    absolute, because this machine's floor is 1.4 to 2.2 with every resident
+    container at 0% CPU and an absolute 1.2 can never be met. And running out of
+    the budget REFUSES. The shell script prints a warning and captures anyway,
+    which is honest, since the load is recorded and the publish gate turns the
+    run away; it is also ten minutes of measuring spent on a document whose only
+    use is to be thrown out, and on a path that publishes without a person
+    watching that is the wrong trade.
+
+    Every reading is printed as it is taken, so the transcript shows the decay
+    and the load the family actually started at, rather than leaving that in the
+    document for whoever reads the refusal afterwards.
     """
     cores_out = ex.nas_step("settle.cores", nas_container(UTIL_IMAGE, "nproc")).stdout
     try:
@@ -543,7 +570,8 @@ def settle(ex: Executor) -> dict:
         cores = 6
     threshold = settle_threshold(cores)
     waited = 0
-    while waited < SETTLE_TIMEOUT_S:
+    readings: list[float] = []
+    while True:
         raw = ex.nas_step(
             "settle.load",
             nas_container(UTIL_IMAGE, "sh -c 'cut -d\" \" -f1 /proc/loadavg'"),
@@ -552,15 +580,37 @@ def settle(ex: Executor) -> dict:
             load = float(raw.strip())
         except ValueError:
             load = float("inf")
+        readings.append(load)
+        print(f"  settling {family}: load {load} after {waited}s, waiting for under {threshold}")
         if load < threshold:
-            print(f"  settled at load {load} (under {threshold}, {cores} cores) after {waited}s")
-            return {"cores": cores, "threshold": threshold, "load": load, "waitedSeconds": waited}
-        if ex.plan:
+            print(
+                f"  {family} STARTS AT LOAD {load} on {cores} cores, under the {threshold} this "
+                f"driver waits for, after {waited}s"
+            )
+            return {
+                "cores": cores,
+                "threshold": threshold,
+                "startedAtLoad": load,
+                "waitedSeconds": waited,
+                "settled": True,
+            }
+        # The wait goes AFTER the decision to keep waiting, so a budget that is
+        # already spent does not buy one more sleep before it gives up.
+        if ex.plan or waited >= timeout_s:
             break
-        time.sleep(SETTLE_POLL_S)
+        time.sleep(min(SETTLE_POLL_S, timeout_s - waited))
         waited += SETTLE_POLL_S
-    print(f"  still above {threshold} after {waited}s; capturing anyway, and the load is recorded")
-    return {"cores": cores, "threshold": threshold, "load": None, "waitedSeconds": waited}
+    raise Refused(
+        [
+            f"the machine did not go quiet for {family}: after {waited}s the 1-minute load was "
+            f"{readings[-1] if readings else 'unread'} on {cores} cores and this driver waits for "
+            f"under {threshold}. Readings: {', '.join(str(r) for r in readings[-10:])}. Nothing "
+            "was captured, because a sweep taken at this load produces a document whose cells "
+            "are not quiet, and the importer refuses a run whose typical cell was not quiet. "
+            "Measuring anyway would cost ten minutes of this machine and produce a file to throw "
+            "away. Wait for whatever else is running to finish, or raise --settle-timeout."
+        ]
+    )
 
 
 def cleanup(ex: Executor, name: str) -> dict:
@@ -942,6 +992,12 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
         action="store_true",
         help="print every command this would run, and run none of them",
     )
+    parser.add_argument(
+        "--settle-timeout",
+        type=int,
+        default=SETTLE_TIMEOUT_S,
+        help="seconds to wait for the machine to go quiet before refusing (default %(default)s)",
+    )
     parser.add_argument("--keep", action="store_true", help="leave the scratch tree on the NAS")
     parser.add_argument(
         "--commit",
@@ -1048,7 +1104,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
 
                 for family in families:
                     print(f"== capturing {family}, profile {args.profile}, native x86_64")
-                    settled = settle(ex)
+                    settled = settle(ex, family, args.settle_timeout)
                     document_path = capture_family(ex, name, family, args.profile, out_dir)
                     document = json.loads(document_path.read_text() or "{}")
                     entry = {"settle": settled, "document": str(document_path)}
