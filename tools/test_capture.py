@@ -333,6 +333,28 @@ class DriverWiring(unittest.TestCase):
         for needed in ("cleanup.images", "cleanup.scratch", "cleanup.list"):
             self.assertIn(needed, labels)
 
+    def test_a_hard_failure_still_writes_the_summary(self):
+        # Red against letting the exception out with nothing written. The first
+        # end-to-end run died fifty minutes in and left a traceback and no
+        # record: which families had been captured, whether the machine was
+        # clean, what the revisions were, all of it only in the scrollback.
+        recorder = Recorder()
+        original = recorder.run
+
+        def blow_up(step):
+            if step.label == "capture.storage":
+                recorder.steps.append(step)
+                raise RuntimeError("the sweep died")
+            return original(step)
+
+        recorder.run = blow_up
+        with self.assertRaises(RuntimeError):
+            self.drive(recorder)
+        summary = json.loads(self.summary_path.read_text())
+        self.assertIn("the sweep died", summary["failed"])
+        self.assertFalse(summary["published"])
+        self.assertIn("nasLeftAsFound", summary, "and it says whether the machine is clean")
+
     def test_a_non_publishable_profile_is_refused_before_anything_is_measured(self):
         # Red against leaving the profile to the importer. `ci` archives
         # indistinguishably from a calibrated sweep, so the only thing that

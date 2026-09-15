@@ -1011,6 +1011,16 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
             print(f"  · {reason}\n", file=sys.stderr)
         emit(args, summary, ex)
         return 1
+    except Exception as broke:
+        # Not a refusal: something failed rather than answered. The summary is
+        # still written, because a capture that dies fifty minutes in is exactly
+        # when the record of what it had already done is worth having, and a
+        # traceback on its own says nothing about which families were captured or
+        # whether the machine was left clean. The traceback goes to stderr after
+        # it, unchanged.
+        summary["failed"] = str(broke)
+        emit(args, summary, ex)
+        raise
 
     emit(args, summary, ex)
     if args.plan:
