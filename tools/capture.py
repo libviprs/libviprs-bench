@@ -551,27 +551,40 @@ def cleanup(ex: Executor, name: str) -> dict:
         + " 2>/dev/null || true",
         allow_failure=True,
     )
+    # Report what is left by listing it, never by asserting the machine is
+    # clean. Names and not counts: a count answers "is anything here", and the
+    # question is "is anything of MINE here", which a count cannot answer on a
+    # machine other jobs also use. One name per line with its own prefix, so
+    # there is nothing to parse and no `grep -c` printing a 0 and exiting 1 while
+    # an `|| echo 0` prints a second one underneath it.
     listing = ex.nas_step(
         "cleanup.list",
-        "printf 'images matching this run: ' ; "
-        "docker images --format '{{.Repository}}:{{.Tag}}' | grep -c '"
-        + name
-        + "' || echo 0 ; printf 'scratch trees remaining: ' ; "
+        "docker images --format '{{.Repository}}:{{.Tag}}' | grep viprs-nas "
+        "| sed 's/^/image left: /' ; "
         + nas_container(
             name,
             UTIL_IMAGE,
-            "sh -c 'ls /ws/nas-work 2>/dev/null | wc -l'",
+            "sh -c 'ls /ws/nas-work 2>/dev/null | sed \"s|^|scratch left: |\"'",
             mounts=(("$HOME/workspace", "/ws"),),
         ),
         allow_failure=True,
     ).stdout
-    left = {"raw": listing.strip()}
+    left = {"images": [], "scratchTrees": []}
     for line in listing.splitlines():
-        if line.startswith("images matching this run:"):
-            left["imagesMatchingThisRun"] = line.split(":", 1)[1].strip()
-        if line.startswith("scratch trees remaining:"):
-            left["scratchTreesRemaining"] = line.split(":", 1)[1].strip()
-    print(f"  {left.get('raw', '').splitlines()}")
+        if line.startswith("image left: "):
+            left["images"].append(line.split(": ", 1)[1].strip())
+        if line.startswith("scratch left: "):
+            left["scratchTrees"].append(line.split(": ", 1)[1].strip())
+    left["mine"] = sorted(
+        item for item in left["images"] + left["scratchTrees"] if name in item
+    )
+    for kind in ("images", "scratchTrees"):
+        print(f"  {kind} left on the machine: {', '.join(left[kind]) or 'none'}")
+    print(
+        "  nothing of this run's is left"
+        if not left["mine"]
+        else f"  STILL HERE, and it is this run's: {', '.join(left['mine'])}"
+    )
     return left
 
 

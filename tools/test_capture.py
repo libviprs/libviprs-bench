@@ -211,7 +211,9 @@ class Recorder(capture.Executor):
             code = self.import_code
             out = "run 20260101"
         elif label.startswith("cleanup.list"):
-            out = "images matching this run: 0\nscratch trees remaining: 0"
+            # Somebody else's run is on the machine, which is the ordinary case
+            # and the reason the listing names things instead of counting them.
+            out = "image left: viprs-nas-storage:someone-else\nscratch left: someone-else"
         result = capture.Result(step, code, out, out if code else "")
         return result
 
@@ -349,9 +351,41 @@ class DriverWiring(unittest.TestCase):
         # that the machine is left as it was found, verified by listing, so the
         # listing's own answer is what the summary carries.
         self.drive(Recorder())
-        summary = json.loads(self.summary_path.read_text())
-        self.assertEqual(summary["nasLeftAsFound"]["imagesMatchingThisRun"], "0")
-        self.assertEqual(summary["nasLeftAsFound"]["scratchTreesRemaining"], "0")
+        left = json.loads(self.summary_path.read_text())["nasLeftAsFound"]
+        # What is left is named, and what is left OF THIS RUN is the answer. A
+        # count cannot give it: this machine carries other people's jobs, and a
+        # run that reported "1 scratch tree remaining" would be reporting on
+        # somebody else while saying nothing about itself.
+        self.assertEqual(left["images"], ["viprs-nas-storage:someone-else"])
+        self.assertEqual(left["scratchTrees"], ["someone-else"])
+        self.assertEqual(left["mine"], [])
+
+    def test_a_leftover_of_this_run_is_named_rather_than_counted_away(self):
+        # Red against `mine = []`, and the reason this test exists separately:
+        # in the case above nothing of the run is left, so an implementation that
+        # never looks still answers correctly. A guard whose fixture cannot
+        # produce the thing it is guarding against is a fixed point, not a test.
+        recorder = Recorder()
+        original = recorder.run
+
+        def leave_something(step):
+            if step.label == "cleanup.list":
+                recorder.steps.append(step)
+                return capture.Result(
+                    step,
+                    0,
+                    "image left: viprs-nas-storage:unit-test\n"
+                    "image left: viprs-nas-storage:someone-else\n"
+                    "scratch left: unit-test\n",
+                    "",
+                )
+            return original(step)
+
+        recorder.run = leave_something
+        self.drive(recorder)
+        left = json.loads(self.summary_path.read_text())["nasLeftAsFound"]
+        self.assertEqual(left["mine"], ["unit-test", "viprs-nas-storage:unit-test"])
+        self.assertIn("viprs-nas-storage:someone-else", left["images"])
 
 
 if __name__ == "__main__":
