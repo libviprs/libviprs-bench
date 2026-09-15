@@ -81,8 +81,13 @@ test('a number outside plain notation is refused rather than written in exponent
   // that hands the number to JSON.stringify and moves on.
   assert.throws(() => canonicalJson({ v: 1e21 }), CanonicalError);
   assert.throws(() => canonicalJson({ v: 1e-7 }), CanonicalError);
-  assert.equal(canonicalJson({ v: 1e20 }), '{"v":100000000000000000000}');
   assert.equal(canonicalJson({ v: 1e-6 }), '{"v":0.000001}');
+  // The producer allows an f64 of 1e20 (it is below 1e21 and prints the same in
+  // both languages) and refuses a u64 above 2^53-1. JavaScript cannot tell the
+  // two apart after JSON.parse, so this side refuses both: admitting the pair
+  // would mean admitting a digest the producer would have refused, and no
+  // benchmark document carries a number up there anyway.
+  assert.throws(() => canonicalJson({ v: 1e20 }), CanonicalError);
   assert.equal(canonicalJson({ v: 0 }), '{"v":0}');
   assert.equal(canonicalJson({ v: -0 }), '{"v":0}');
 });

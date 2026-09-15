@@ -399,10 +399,16 @@ test('every sample carries its confidence and the reasons for it', () => {
   assert.ok(entry.samples.every((s) => s.confidence === 'high' || s.confidence === 'low'));
   assert.ok(entry.samples.every((s) => Array.isArray(s.lowConfidenceReasons)));
 
-  const saturated = entry.samples.filter((s) =>
-    s.lowConfidenceReasons.some((r) => /timer saturated/.test(r)),
-  );
-  assert.equal(saturated.length, 106);
+  const saturatedIn = (rows) =>
+    rows.filter((s) => s.lowConfidenceReasons.some((r) => /timer saturated/.test(r)));
+
+  // 106 counts every measured cell in the document, and 11 of those are the
+  // replicate pass measuring the 93 cell a second time. The page sees 95 of
+  // them as samples and the other 11 as the control they were taken for, and
+  // nothing is lost between the two.
+  assert.equal(saturatedIn([...entry.samples, ...entry.replicates]).length, 106);
+  const saturated = saturatedIn(entry.samples);
+  assert.equal(saturated.length, 95);
   assert.ok(saturated.every((s) => s.confidence === 'low'));
   assert.ok(saturated.every((s) => s.timerSaturated === true));
 
@@ -588,7 +594,8 @@ test('the replicate cell is published once and its second pass is kept beside it
   const replicated = entry.replicates;
   assert.equal(replicated.length, 48);
   assert.ok(replicated.every((s) => s.scale === 93));
-  assert.equal(entry.samples.filter((s) => s.scale === 93).length, 49);
+  assert.equal(entry.samples.filter((s) => s.scale === 93).length, 48);
+  assert.equal(entry.samples.length, 284, '332 ok cells less the 48 the replicate pass repeats');
 });
 
 test('a sample keeps its unit and direction and never converts a rate into milliseconds', () => {
