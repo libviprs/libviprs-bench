@@ -347,6 +347,66 @@ test('an unattested ok cell is refused', () => {
   refused(r, /without `storageAttested: true`/);
 });
 
+test('a dirty flag that is absent is refused, not read as clean', () => {
+  // RED against `dirty === true`, which reads a missing flag as a clean tree.
+  // The producer is forbidden `skip_serializing_if` for exactly this reason, and
+  // an importer that accepts absence undoes that at the other end.
+  refused(runImport(mutate({ remove: ['provenance.dirty'] }), emptyHistory()), /provenance\.dirty/);
+  refused(
+    runImport(mutate({ remove: ['provenance.library.dirty'] }), emptyHistory()),
+    /provenance\.library\.dirty/,
+  );
+});
+
+test('an outcome the config does not classify is refused, not silently skipped', () => {
+  // The producer has five outcomes today and the config buckets all of them. The
+  // day it grows a sixth, an importer that treats anything not `ok` as a skip
+  // drops every cell that has it and the page shows a gap.
+  //
+  // RED against a two-way `outcome === 'ok' ? sample : skip`.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        const c = doc.cells.find((x) => x.outcome === 'ok');
+        c.outcome = 'degraded';
+        c.reason = 'an outcome from a producer this importer has not met';
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /does not classify/, /degraded/);
+});
+
+test('an invariant name the config does not classify is refused', () => {
+  // An invariant nobody classified is neither exact nor filesystem-dependent, so
+  // it would be carried onto the page and never compared: a claim no refusal can
+  // contradict. RED against carrying the invariants array through untouched.
+  const r = runImport(
+    mutate({
+      edit(doc) {
+        doc.invariants.push({
+          library: 'pmtiles',
+          scale: 93,
+          source: 'gradient',
+          name: 'inode_count',
+          value: 1,
+          unit: 'count',
+        });
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /not in the config's list/, /inode_count/);
+});
+
+test('a runner that disagrees with its family is refused', () => {
+  // Both are constants the producer stamps, so they say the same thing twice and
+  // a disagreement means the document was assembled rather than measured.
+  // RED against reading one of the two.
+  const r = runImport(mutate({ set: { runner: 'libviprs-engines' } }), emptyHistory());
+  refused(r, /does not match family/);
+});
+
 test('a document from another family or schema version is refused', () => {
   const family = runImport(mutate({ set: { family: 'libviprs-something' } }), emptyHistory());
   refused(family, /is not one this config knows/);
