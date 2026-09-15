@@ -206,8 +206,7 @@ pub fn run_arm(
     // archive can put the sweep in, so a join failure is reported as one
     // instead of unwinding the parent: `Scenario::run` turns it into a
     // `Skip::failed` and the rest of the sweep continues.
-    let per_thread: Vec<Result<(Vec<Duration>, ThreadId, u64), String>> =
-        std::thread::scope(|scope| {
+    let per_thread: Vec<ThreadOutcome> = std::thread::scope(|scope| {
             let handles: Vec<_> = pieces
                 .iter()
                 .map(|piece| scope.spawn(|| walk(reader, piece)))
@@ -242,10 +241,15 @@ pub fn run_arm(
     })
 }
 
-fn walk(
-    reader: &dyn TileReader,
-    coords: &[TileCoord],
-) -> Result<(Vec<Duration>, ThreadId, u64), String> {
+/// What one lookup thread comes back with: its latencies, the id of the thread
+/// that actually ran them, and how many of its lookups hit a tile.
+///
+/// Named rather than spelled out at each of the three places it appears. The
+/// thread id is in here and not derived afterwards because it is the evidence
+/// for the T=1 control: see [`ArmRun::thread_ids`].
+type ThreadOutcome = Result<(Vec<Duration>, ThreadId, u64), String>;
+
+fn walk(reader: &dyn TileReader, coords: &[TileCoord]) -> ThreadOutcome {
     let mut latencies = Vec::with_capacity(coords.len());
     let mut hits = 0;
     for coord in coords {

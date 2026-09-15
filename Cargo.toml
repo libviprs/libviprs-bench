@@ -108,6 +108,25 @@ criterion = { version = "0.5", features = ["html_reports"] }
 #
 # (`tests/pdf_fixture.rs` used to pull sha2 in as a dev-dependency; it still
 # compiles, because a normal dependency is in scope for tests too.)
+# Lints this crate refuses to accumulate again.
+#
+# `collapsible_if` had sixteen hits across twelve files, on `main`, all of them
+# warnings, and CI's clippy step carries no `-D warnings`, so nothing was ever
+# red. Two lanes in one epic reported them as noise they had to read past, which
+# is what a warning nobody can act on turns into. Denying the one lint here
+# rather than `-D warnings` in the workflow is deliberate twice over: the
+# workflow's toolchain is `stable` and floats, so a blanket deny goes red the day
+# clippy ships a new lint and for a reason nobody asked for, and a change to
+# `ci.yml` reddens libviprs-tests' hook mirror until it is mirrored in the same
+# wave. A `[lints]` table is neither. It is also the guard for this: re-nest one
+# of the collapsed `if`s and `cargo clippy` fails rather than mentioning it.
+#
+# Narrow on purpose. Every other lint this crate cleared stays at clippy's own
+# default level, because each one added here is a way for a toolchain bump to
+# break a build over style.
+[lints.clippy]
+collapsible_if = "deny"
+
 [build-dependencies]
 sha2 = "0.11"
 

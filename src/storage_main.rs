@@ -109,11 +109,11 @@ fn main() -> ExitCode {
     }
 
     let document = storage::run_sweep(profile);
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("storage: cannot make {}: {e}", parent.display());
-            return ExitCode::FAILURE;
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("storage: cannot make {}: {e}", parent.display());
+        return ExitCode::FAILURE;
     }
     if let Err(e) = std::fs::write(&path, document.to_json()) {
         eprintln!("storage: cannot write {}: {e}", path.display());

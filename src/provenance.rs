@@ -490,14 +490,14 @@ pub fn libvips_version() -> String {
         }
     }
     // CLI fallback: parse "vips-8.18.4".
-    if let Ok(out) = std::process::Command::new("vips").arg("--version").output() {
-        if out.status.success() {
-            let s = String::from_utf8_lossy(&out.stdout);
-            if let Some(v) = s.trim().strip_prefix("vips-") {
-                return v.to_string();
-            }
-            return s.trim().to_string();
+    if let Ok(out) = std::process::Command::new("vips").arg("--version").output()
+        && out.status.success()
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        if let Some(v) = s.trim().strip_prefix("vips-") {
+            return v.to_string();
         }
+        return s.trim().to_string();
     }
     "unknown".to_string()
 }
@@ -522,10 +522,10 @@ fn cpu_model() -> String {
     {
         if let Ok(text) = std::fs::read_to_string("/proc/cpuinfo") {
             for line in text.lines() {
-                if let Some(rest) = line.split_once(':') {
-                    if line.starts_with("model name") {
-                        return rest.1.trim().to_string();
-                    }
+                if let Some(rest) = line.split_once(':')
+                    && line.starts_with("model name")
+                {
+                    return rest.1.trim().to_string();
                 }
             }
             // aarch64 has no `model name` line at all: it reports `CPU
@@ -668,10 +668,10 @@ fn detect_container() -> bool {
     if std::path::Path::new("/.dockerenv").exists() {
         return true;
     }
-    if let Ok(text) = std::fs::read_to_string("/proc/1/cgroup") {
-        if text.contains("docker") || text.contains("kubepods") || text.contains("containerd") {
-            return true;
-        }
+    if let Ok(text) = std::fs::read_to_string("/proc/1/cgroup")
+        && (text.contains("docker") || text.contains("kubepods") || text.contains("containerd"))
+    {
+        return true;
     }
     false
 }
@@ -1221,17 +1221,37 @@ impl Provenance {
                     .to_string(),
             );
         }
-        if let Some(fs) = &self.filesystem {
-            if fs.fs_type == "tmpfs" && !fs.declared_tmpfs {
-                warnings.push(format!(
-                    "WARNING: the scratch directory {} is on tmpfs, which is RAM with a \
-                     filesystem interface. Nothing will archive unless the profile declares it.",
-                    fs.scratch_dir
-                ));
-            }
+        if let Some(fs) = &self.filesystem
+            && fs.fs_type == "tmpfs"
+            && !fs.declared_tmpfs
+        {
+            warnings.push(format!(
+                "WARNING: the scratch directory {} is on tmpfs, which is RAM with a \
+                 filesystem interface. Nothing will archive unless the profile declares it.",
+                fs.scratch_dir
+            ));
         }
         warnings
     }
+}
+
+/// The nearest ancestor of `dir` that exists, `dir` itself included.
+///
+/// `statfs` needs a path that is there, and a path that is not there yet is the
+/// one case where `"unknown"` is a lie rather than an unanswerable question:
+/// the directory is about to be created, and it will be created on whatever
+/// filesystem its nearest existing ancestor is mounted on. Naming that is a
+/// fact; `"unknown"` for a mount `/proc/self/mountinfo` is simultaneously
+/// naming `/dev/vda1` is not.
+///
+/// This is a net and not the fix. The fix is that every producer makes its
+/// scratch root before it asks what the root is on, which is what
+/// [`crate::family::Family::scratch_root`] is for. The net is here because the
+/// failure it catches was invisible: a populated field saying nothing looks
+/// exactly like a populated field saying something.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn nearest_existing(dir: &Path) -> Option<&Path> {
+    dir.ancestors().find(|p| p.exists())
 }
 
 /// Name the filesystem under `dir`.
@@ -1256,7 +1276,7 @@ fn fs_type_name(dir: &Path) -> String {
         (0x2011_BAB0, "exfat"),
         (0xCA45_1A4E, "bcachefs"),
     ];
-    match statfs_type(dir) {
+    match nearest_existing(dir).and_then(statfs_type) {
         Some(magic) => MAGICS
             .iter()
             .find(|(m, _)| *m == magic)
@@ -1285,6 +1305,9 @@ fn statfs_type(dir: &Path) -> Option<i64> {
 fn fs_type_name(dir: &Path) -> String {
     use std::ffi::{CStr, CString};
     use std::os::unix::ffi::OsStrExt as _;
+    let Some(dir) = nearest_existing(dir) else {
+        return "unknown".to_string();
+    };
     let Ok(path) = CString::new(dir.as_os_str().as_bytes()) else {
         return "unknown".to_string();
     };
