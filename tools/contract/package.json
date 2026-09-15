@@ -1,0 +1,12 @@
+{
+  "name": "@libviprs-bench/contract",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The frozen copy of causl's dashboard, import and render stack, its sync gate, and the libviprs config that drives every difference.",
+  "scripts": {
+    "test": "node --test '*.test.mjs'",
+    "gate": "./sync-contract.sh --check && node parameterize.mjs --check && node --test '*.test.mjs'",
+    "regen": "node parameterize.mjs --write && REGEN_GOLDEN=1 node --test golden-render.test.mjs"
+  }
+}

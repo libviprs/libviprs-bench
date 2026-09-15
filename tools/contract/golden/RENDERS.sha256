@@ -1,0 +1,5 @@
+# sha256 of each render golden-render.test.mjs produces. Regenerate with
+# REGEN_GOLDEN=1 node --test tools/contract/golden-render.test.mjs
+aecd7f038d4312fc1d03a8c97c26c99a96d7a9858affd4620f7d98b366b58b26  frozen dashboard.js over history.sample.json
+699fd06b7e865acde05206fe688059a9ae8c3274be2de993351df4653137c3f4  frozen dashboard.js over history.json
+6f4bfacc07f7b8df4ef7c10d8b10c17c3a660d540c607fbf2f1512965ae108d8  generated dashboard.js over history.sample.json with config.json
