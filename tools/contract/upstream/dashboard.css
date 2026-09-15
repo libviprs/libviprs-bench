@@ -1,0 +1,1196 @@
+/* ============================================================
+   causl.org/benchmarks: dashboard styles (#707, restructured by #1247).
+
+   Page-specific rules for the live dashboard. Inherits the brand
+   tokens from causl-org/site.css (--causal-cyan, --mist, etc.).
+   No new colours are introduced here; the verdict palette reuses
+   --success-mint / --conflict-coral / --signal-blue / --commit-amber
+   from the brand palette so contrast is the same as the rest of
+   the site.
+
+   #1247 reshaped the per-cell cards (one card per library × scenario
+   × scale) into per-section cards (one card per scenario × scale,
+   with every series stacked on a single chart). The filter /
+   verdict-legend / meta / status-callout chrome above and below the
+   grid is unchanged; only the card-level rules differ.
+   ============================================================ */
+
+/* Dashboard status text: sits on --surface-base (page background). */
+.dashboard-loading,
+.dashboard-empty,
+.dashboard-error {
+  font-family: var(--mono);
+  font-size: 0.92rem;
+  color: var(--text-on-base-subtle);
+  padding: var(--space-6) 0;
+}
+
+.dashboard-error {
+  color: var(--state-error-fg);
+}
+
+:root[data-theme="light"] .dashboard-loading,
+:root[data-theme="light"] .dashboard-empty {
+  color: var(--text-on-base-muted);
+}
+
+/* -- Top meta strip -------------------------------------------- */
+
+.dashboard-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-5) var(--space-6);
+  padding: var(--space-4) var(--space-5);
+  margin-bottom: var(--space-4);
+  border: 1px solid rgba(39, 211, 195, 0.22);
+  border-radius: var(--radius-md);
+  background: rgba(39, 211, 195, 0.06);
+  font-family: var(--mono);
+  font-size: 0.86rem;
+}
+
+.dashboard-meta strong {
+  display: block;
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--causal-cyan);
+  font-weight: 700;
+  /* 0.15rem: hairline gap under a meta label; sub-grid, keep literal. */
+  margin-bottom: 0.15rem;
+}
+
+.dashboard-meta code {
+  font-size: 0.82rem;
+}
+
+:root[data-theme="light"] .dashboard-meta {
+  background: rgba(39, 211, 195, 0.1);
+}
+
+/* -- Filter shell --------------------------------------------- */
+
+.filter-shell {
+  margin: 0 0 var(--space-4);
+  border: 1px solid rgba(169, 181, 201, 0.18);
+  border-radius: var(--radius-md);
+  background: rgba(11, 16, 32, 0.45);
+  padding: var(--space-3) var(--space-4) var(--space-4);
+}
+
+:root[data-theme="light"] .filter-shell {
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(11, 16, 32, 0.1);
+}
+
+.filter-summary {
+  font-family: var(--mono);
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--causal-cyan);
+  cursor: pointer;
+  padding: var(--space-2) var(--space-1);
+  user-select: none;
+  outline-offset: 4px;
+}
+
+.filter-summary:focus-visible {
+  outline: 2px solid var(--state-focus-outline);
+  border-radius: 4px;
+}
+
+.filter-host {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  margin-top: var(--space-2);
+}
+
+.filter-group {
+  border: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.filter-legend {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fog);
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+
+.filter-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* Filter chip: sits on --surface-elevated (filter-shell panel). */
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  /* 0.28rem / 0.65rem: chip-internal padding, kept literal to
+     preserve the existing 999px-radius pill geometry. */
+  padding: 0.28rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-on-elevated);
+  background: rgba(255, 255, 255, 0.03);
+  font-family: var(--mono);
+  font-size: 0.76rem;
+  color: var(--text-on-elevated);
+  cursor: pointer;
+  user-select: none;
+}
+
+.filter-chip:hover {
+  border-color: var(--state-hover-fg);
+  background: var(--state-hover-bg);
+}
+
+.filter-chip:focus-within {
+  outline: 2px solid var(--state-focus-outline);
+  outline-offset: 2px;
+}
+
+.filter-chip input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--causal-cyan);
+}
+
+.filter-chip-text { line-height: 1; }
+
+:root[data-theme="light"] .filter-chip {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: var(--border-on-elevated);
+  color: var(--text-on-elevated);
+}
+
+.filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+  align-self: flex-end;
+}
+
+.filter-action {
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  /* 0.32rem / 0.7rem: small action-button padding kept literal. */
+  padding: 0.32rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid rgba(39, 211, 195, 0.32);
+  background: rgba(39, 211, 195, 0.08);
+  color: var(--causal-cyan);
+  cursor: pointer;
+}
+
+.filter-action:hover {
+  background: var(--state-pressed-bg);
+}
+
+.filter-action:focus-visible {
+  outline: 2px solid var(--state-focus-outline);
+  outline-offset: 2px;
+}
+
+/* -- Verdict legend ------------------------------------------- */
+
+.verdict-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3) var(--space-4);
+  margin: var(--space-2) 0 var(--space-5);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: rgba(11, 16, 32, 0.36);
+  border: 1px solid rgba(169, 181, 201, 0.14);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+}
+
+:root[data-theme="light"] .verdict-legend {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(11, 16, 32, 0.1);
+}
+
+.verdict-legend-label {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--causal-cyan);
+  font-size: 0.7rem;
+}
+
+.verdict-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text-on-elevated);
+}
+
+:root[data-theme="light"] .verdict-legend-item {
+  color: var(--text-on-elevated);
+}
+
+.verdict-legend-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--verdict-color, var(--fog));
+  border: 1px solid rgba(11, 16, 32, 0.4);
+}
+
+/* -- Per-scenario group ---------------------------------------
+
+   Class names are `bench-section-*` (not `section-*`) because
+   `.section-head` / `.section-grid` are already taken by
+   site.css for the page-level layout shell. Scoping the
+   dashboard cards under a `bench-` prefix avoids the collision
+   without having to alter site.css. */
+
+.dashboard-grid { display: block; }
+
+.bench-section-group {
+  margin-bottom: var(--space-7);
+}
+
+.bench-section-group-title {
+  font-family: var(--mono);
+  font-size: 0.84rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--causal-cyan);
+  margin: 0 0 var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid rgba(39, 211, 195, 0.22);
+}
+
+/* -- Section grid (one card per scenario × scale) ------------- */
+
+/* Wider min-column than the old cell grid (280px) because each
+   card now hosts a 640×220 multi-series chart plus a legend strip
+   with one chip per framework. 520px keeps a 2-column layout on
+   most laptop widths and a 3-column layout on wide displays
+   without crushing the chart or legend. */
+.bench-section-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+  gap: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  .bench-section-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Bench section card: paired with --surface-elevated. */
+.bench-section-card {
+  position: relative;
+  background: linear-gradient(180deg,
+    rgba(26, 34, 56, 0.72), rgba(12, 18, 34, 0.78));
+  border: 1px solid var(--border-on-elevated);
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  color: var(--text-on-elevated);
+}
+
+:root[data-theme="light"] .bench-section-card {
+  background: linear-gradient(180deg, #FFFFFF, #F4F7FC);
+  border-color: var(--border-on-elevated);
+  box-shadow: 0 6px 18px rgba(11, 16, 32, 0.06);
+  color: var(--text-on-elevated);
+}
+
+.bench-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.bench-section-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-on-elevated);
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+:root[data-theme="light"] .bench-section-title {
+  color: var(--text-on-elevated);
+}
+
+.bench-section-scale {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--text-on-elevated-subtle);
+  letter-spacing: 0.04em;
+  /* 0.12rem / 0.5rem: small pill geometry, kept literal for the
+     999px-radius badge shape. */
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(39, 211, 195, 0.08);
+  border: 1px solid rgba(39, 211, 195, 0.28);
+}
+
+:root[data-theme="light"] .bench-section-scale {
+  color: var(--text-on-elevated-muted);
+}
+
+.bench-section-chart {
+  /* 0.1rem: sub-pixel chart bleed, sub-grid; keep literal. */
+  margin: 0.1rem -0.1rem 0;
+  /* The chart is drag-pannable (vertical) and wheel-zoomable: the
+     grab cursor advertises the pan affordance; touch-action /
+     user-select off so a pointer drag pans (and the wheel zooms)
+     instead of scrolling the page or selecting text. */
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Active drag: keep the grabbing cursor even over the help-cursor
+   hit-rects so the gesture reads consistently while panning. */
+.bench-section-chart.is-panning,
+.bench-section-chart.is-panning svg rect[pointer-events="all"] {
+  cursor: grabbing;
+}
+
+.bench-section-chart svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* The per-point invisible hit rects emit native OS tooltips on
+   hover. Give the cursor a "help" affordance so the user knows
+   there's information to pull up by hovering. */
+.bench-section-chart svg rect[pointer-events="all"] {
+  cursor: help;
+}
+
+/* Smoothed median lines: slight glow on hover for visual feedback. */
+.bench-section-chart svg path[stroke-width="1.8"] {
+  transition: stroke-width 0.15s, opacity 0.15s;
+}
+
+.bench-section-chart:hover svg path[stroke-width="1.8"] {
+  stroke-width: 2.2;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bench-section-chart svg path[stroke-width="1.8"] {
+    transition: none !important;
+  }
+}
+
+/* -- #1304: in-place skip boxes ------------------------------
+   Per-section "skip strip" sitting inside `.bench-section-chart`
+   below the SVG. One `<li class="skip-box">` per framework that
+   has no measurement at this (scenario × scale). Each box spans
+   the chart-area horizontally so it occupies the visual slot the
+   data would have, fixed-height (28 px) so it never re-scales the
+   y-axis, with a diagonal-stripe muted background distinct from
+   any library colour and any verdict colour. Inside: an uppercase
+   library tag + a short taxonomy label ("stack overflow", "API
+   not expressible", "WASM-only", "library limit"). Full skip
+   reason exposed via `title` (mouse) + `aria-label` (AT). The
+   element is keyboard-focusable (`tabindex="0"`) and styled with
+   a `:focus-visible` outline that matches the rest of the page. */
+
+.bench-section-skip-boxes {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.skip-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  /* 28 px: fixed height per spec; never scaled to the y-axis. */
+  min-height: 28px;
+  /* 0.18rem / 0.5rem: small internal padding kept literal so the
+     box reads as a thin in-chart strip, not a card. */
+  padding: 0.18rem 0.6rem;
+  border-radius: 6px;
+  border: 1px dashed rgba(169, 181, 201, 0.45);
+  /* Diagonal-stripe muted background: distinct from every
+     library color (Async Cyan / Copper / Violet / Ash) and every
+     verdict color (mint / coral / blue / amber). The stripes are
+     drawn with a repeating-linear-gradient so the rule stays
+     theme-aware via the surrounding palette. */
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(169, 181, 201, 0.12),
+      rgba(169, 181, 201, 0.12) 6px,
+      rgba(169, 181, 201, 0.04) 6px,
+      rgba(169, 181, 201, 0.04) 12px
+    );
+  color: var(--text-on-elevated-subtle);
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  cursor: help;
+  /* Tooltip-on-hover via native title is the primary surface;
+     keep the box itself unselectable so the cursor and focus
+     remain on the strip rather than the label text. */
+  user-select: none;
+}
+
+:root[data-theme="light"] .skip-box {
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(11, 16, 32, 0.08),
+      rgba(11, 16, 32, 0.08) 6px,
+      rgba(11, 16, 32, 0.02) 6px,
+      rgba(11, 16, 32, 0.02) 12px
+    );
+  border-color: rgba(11, 16, 32, 0.22);
+  color: var(--text-on-elevated-muted);
+}
+
+.skip-box:focus-visible {
+  outline: 2px solid var(--state-focus-outline);
+  outline-offset: 2px;
+}
+
+/* Per-class accent: a 3 px left border tinted to the library
+   colour so the eye links the strip back to the missing series
+   on the chart above. The stripe pattern stays neutral so the
+   box never reads as a coloured bar. */
+.skip-box::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-top-left-radius: 6px;
+  border-bottom-left-radius: 6px;
+  background: var(--lib-color, var(--fog));
+  opacity: 0.85;
+}
+
+.skip-box-lib {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.66rem;
+  color: var(--lib-color, var(--fog));
+  /* 0.05rem: flush the tag past the 3px accent strip; literal. */
+  padding-left: 0.35rem;
+}
+
+.skip-box-label {
+  font-weight: 600;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--text-on-elevated);
+}
+
+:root[data-theme="light"] .skip-box-label {
+  color: var(--text-on-elevated);
+}
+
+/* Per-taxonomy badge tint: paint the label background so the
+   class is readable at a glance even without the tooltip. The
+   palette reuses brand state colours at low alpha so we don't
+   introduce new colours. */
+.skip-class-stack-overflow .skip-box-label {
+  /* conflict-coral, low alpha: "the library crashed reading this". */
+  background: rgba(255, 100, 110, 0.14);
+  border: 1px solid rgba(255, 100, 110, 0.32);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+.skip-class-api-gap .skip-box-label {
+  /* signal-blue, low alpha: "the library can't express this". */
+  background: rgba(79, 124, 255, 0.14);
+  border: 1px solid rgba(79, 124, 255, 0.34);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+.skip-class-wasm-only .skip-box-label {
+  /* commit-amber, low alpha: "only-causl scenario, not measurable
+     elsewhere by design". */
+  background: rgba(255, 179, 71, 0.14);
+  border: 1px solid rgba(255, 179, 71, 0.36);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+.skip-class-library-limit .skip-box-label {
+  background: rgba(169, 181, 201, 0.14);
+  border: 1px solid rgba(169, 181, 201, 0.34);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+/* -- causl-bench#37 typed SKIP taxonomy -----------------------
+   The publisher now emits structured SKIP rows on `history.json`'s
+   `skipped[]` with a fixed `reason` enum drawn from
+   `packages/bench/src/skip-row.ts`:
+
+     artefact-missing     → wasm bridge artefact not built
+                            (muted warm gray, actionable rebuild).
+     feature-not-wired    → setup path not routed through
+                            `makeCauslAsync` (muted cool cyan;
+                            TODO-style, future PR resumes).
+     engine-incompatible  → sync-only LibraryHarness seam the
+                            wasm engine can't honour (muted
+                            violet, semantic gap).
+     timeout              → wall-clock budget exceeded
+                            (muted commit-amber).
+     oom                  → V8 heap exhaustion / exit 134
+                            (muted conflict-coral).
+
+   All five reuse the brand palette tokens (--causal-cyan,
+   --signal-blue, --commit-amber, --conflict-coral, --fog) so
+   no new colours are introduced, only new bindings of existing
+   ones. Each rule paints the .skip-box-label pill background +
+   border at the same low-alpha ratio as the legacy `.skip-class-*`
+   classes above (0.14 fill / 0.32-ish border) so the strip reads
+   uniformly across legacy and typed rows. */
+
+.skip-class-artefact-missing .skip-box-label {
+  background: rgba(143, 162, 170, 0.16);
+  border: 1px solid rgba(143, 162, 170, 0.40);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+.skip-class-feature-not-wired .skip-box-label {
+  /* causal-cyan, low alpha: TODO-style "wiring pending" cue. */
+  background: rgba(17, 217, 255, 0.13);
+  border: 1px solid rgba(17, 217, 255, 0.36);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+.skip-class-engine-incompatible .skip-box-label {
+  /* signal-blue (= mutation-violet), low alpha: "semantic gap". */
+  background: rgba(124, 77, 255, 0.14);
+  border: 1px solid rgba(124, 77, 255, 0.36);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+.skip-class-timeout .skip-box-label {
+  /* commit-amber, low alpha: "ran past the wall-clock budget". */
+  background: rgba(255, 179, 71, 0.14);
+  border: 1px solid rgba(255, 179, 71, 0.38);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+.skip-class-oom .skip-box-label {
+  /* conflict-coral, low alpha: "ran out of memory". */
+  background: rgba(255, 100, 110, 0.14);
+  border: 1px solid rgba(255, 100, 110, 0.36);
+  border-radius: 4px;
+  padding: 0.06rem 0.4rem;
+}
+
+/* Typed-row marker on .skip-box itself: keeps the dashed border +
+   striped surface from the legacy class, just adds a `data-typed`
+   hook for downstream automation that wants to filter the typed
+   subset (e.g. the "show skipped rows" toggle's future surface). */
+.skip-box--typed[data-typed-reason] {
+  /* Keep the geometry identical to the legacy .skip-box. The
+     per-reason colour rides on the label pill above. */
+}
+
+/* -- Per-section legend strip (one chip per framework) -------- */
+
+.bench-section-legend {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-2) 0 0;
+  border-top: 1px solid rgba(169, 181, 201, 0.12);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2) var(--space-3);
+}
+
+:root[data-theme="light"] .bench-section-legend {
+  border-top-color: rgba(11, 16, 32, 0.08);
+}
+
+.bench-legend-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto auto;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  /* 0.28rem / 0.5rem: chip-internal padding kept literal. */
+  padding: 0.28rem 0.5rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(169, 181, 201, 0.1);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+}
+
+:root[data-theme="light"] .bench-legend-item {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: rgba(11, 16, 32, 0.08);
+}
+
+.bench-legend-swatch {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--lib-color, var(--causal-cyan));
+  box-shadow: 0 0 0 1px rgba(11, 16, 32, 0.45) inset;
+}
+
+.bench-legend-lib {
+  color: var(--lib-color, var(--causal-cyan));
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+/* `.bench-legend-lib--annotated` and `.bench-legend-lib-note` used to
+   live here. They styled the ⓘ marker on a legend chip whose series
+   carried a LIBRARY_ANNOTATION entry, and the only entries were the
+   withdrawal notices on the two wasm series that are now deleted from
+   history.json. LIBRARY_ANNOTATION is empty, so the renderer never
+   emits either class and the rules are removed with the data. The map
+   and the renderer branch stay; if a series ever needs a footnote
+   again, these two rules come back with it. */
+
+.bench-legend-stats {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--text-on-elevated);
+  font-size: 0.72rem;
+}
+
+:root[data-theme="light"] .bench-legend-stats {
+  color: var(--text-on-elevated);
+}
+
+.bench-legend-median {
+  font-weight: 700;
+}
+
+.bench-legend-p95 {
+  color: var(--text-on-elevated-subtle);
+  font-size: 0.68rem;
+}
+
+:root[data-theme="light"] .bench-legend-p95 {
+  color: var(--text-on-elevated-subtle);
+}
+
+.bench-legend-verdict {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  /* Small pill geometry; kept literal for the 999px-radius shape. */
+  padding: 0.12rem 0.45rem 0.12rem 0.4rem;
+  border-radius: 999px;
+  color: var(--verdict-color, var(--fog));
+  background: color-mix(in srgb, var(--verdict-color, var(--fog)) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--verdict-color, var(--fog)) 42%, transparent);
+  cursor: help;
+}
+
+.bench-legend-verdict-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--verdict-color, var(--fog));
+  border: 1px solid rgba(11, 16, 32, 0.4);
+}
+
+.bench-legend-verdict-label { line-height: 1; }
+
+/* #1293 skipped-library legend chip: strikethrough on the framework
+   name, ✗ badge in the verdict slot, muted stats columns, and a
+   subdued chip surface so the skipped row reads as "no measurement"
+   rather than "regressed". Tooltip carries the runner's reason. */
+.bench-legend-item--skipped {
+  opacity: 0.78;
+  background: rgba(169, 181, 201, 0.06);
+  border-style: dashed;
+}
+
+:root[data-theme="light"] .bench-legend-item--skipped {
+  background: rgba(11, 16, 32, 0.04);
+}
+
+.bench-legend-lib--strike s {
+  text-decoration: line-through;
+  text-decoration-thickness: 0.12em;
+  text-decoration-color: color-mix(
+    in srgb,
+    var(--lib-color, var(--fog)) 80%,
+    transparent
+  );
+}
+
+.bench-legend-stats--muted {
+  color: var(--text-on-elevated-subtle);
+  font-style: italic;
+}
+
+.bench-legend-verdict--skipped {
+  color: var(--fog);
+  background: color-mix(in srgb, var(--fog) 14%, transparent);
+  border-color: color-mix(in srgb, var(--fog) 50%, transparent);
+}
+
+/* causl-bench#37: typed SKIP chip in the legend's verdict slot.
+   Mirrors the .skip-class-* taxonomy used by the in-chart skip
+   strip so a (scenario × library) cell with a typed skip reads
+   the same colour in BOTH places: the in-chart strip below the
+   SVG and the legend chip next to it. The `--skip-typed` modifier
+   resets the verdict-pill geometry to the per-reason variable so
+   each reason carries its own muted surface + border without the
+   generic-skip neutral grey.
+
+   The taxonomy → token mapping:
+     artefact-missing    → --fog          (muted warm gray)
+     feature-not-wired   → --causal-cyan  (muted cool cyan, TODO)
+     engine-incompatible → --signal-blue  (muted violet, semantic)
+     timeout             → --commit-amber (muted amber)
+     oom                 → --conflict-coral (muted red)
+
+   Geometry inherits from .bench-legend-verdict so the chip stays
+   the same 999px-radius pill shape across legacy + typed paths;
+   only colour shifts. */
+.bench-legend-verdict--skip-typed {
+  /* Reset the inherited --verdict-color tint (which the legacy
+     skipped chip wires to --fog) so the per-reason rule below can
+     paint the surface against the brand token directly. */
+  color: var(--skip-reason-color, var(--fog));
+  background: color-mix(
+    in srgb,
+    var(--skip-reason-color, var(--fog)) 14%,
+    transparent
+  );
+  border-color: color-mix(
+    in srgb,
+    var(--skip-reason-color, var(--fog)) 44%,
+    transparent
+  );
+}
+
+.bench-legend-verdict--skip-typed .bench-legend-verdict-badge {
+  background: var(--skip-reason-color, var(--fog));
+  color: rgba(11, 16, 32, 0.85);
+}
+
+.bench-legend-skip-reason-artefact-missing {
+  --skip-reason-color: var(--fog);
+}
+
+.bench-legend-skip-reason-feature-not-wired {
+  --skip-reason-color: var(--causal-cyan);
+}
+
+.bench-legend-skip-reason-engine-incompatible {
+  --skip-reason-color: var(--signal-blue);
+}
+
+.bench-legend-skip-reason-timeout {
+  --skip-reason-color: var(--commit-amber);
+}
+
+.bench-legend-skip-reason-oom {
+  --skip-reason-color: var(--conflict-coral);
+}
+
+.bench-legend-verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 50%;
+  background: var(--fog);
+  color: rgba(11, 16, 32, 0.85);
+  font-size: 0.6rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.bench-legend-profile-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 6px;
+  border: 1px dashed rgba(39, 211, 195, 0.35);
+  background: rgba(39, 211, 195, 0.05);
+  color: var(--causal-cyan);
+  font-size: 0.86rem;
+  line-height: 1;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.bench-legend-profile-link:hover,
+.bench-legend-profile-link:focus-visible {
+  background: var(--state-pressed-bg);
+  border-color: var(--state-hover-fg);
+  text-decoration: none;
+  outline: none;
+}
+
+.bench-legend-profile-link:focus-visible {
+  outline: 2px solid var(--state-focus-outline);
+  outline-offset: 2px;
+}
+
+/* -- Status callout (replaces the old "MVP deferred" callout) -- */
+
+.status-callout {
+  margin: var(--space-5) 0 var(--space-6);
+  padding: var(--space-3) var(--space-5);
+  border: 1px dashed var(--state-warning-border);
+  background: var(--state-warning-bg);
+  border-radius: var(--radius-md);
+  font-size: 0.92rem;
+}
+
+.status-callout strong {
+  color: var(--commit-amber);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.status-callout p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-on-base-muted);
+}
+
+:root[data-theme="light"] .status-callout p {
+  color: var(--text-on-base-muted);
+}
+
+/* The "decision log" callout is a <details>, so give the summary a
+   discreet caret affordance and the same uppercase-mono treatment
+   as the strong-tag callouts. */
+details.status-callout > summary {
+  cursor: pointer;
+  list-style: none;
+  outline-offset: 4px;
+}
+
+details.status-callout > summary::-webkit-details-marker {
+  display: none;
+}
+
+details.status-callout > summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: var(--space-2);
+  color: var(--commit-amber);
+  transition: transform 0.15s;
+}
+
+details.status-callout[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+details.status-callout > summary:focus-visible {
+  outline: 2px solid var(--state-focus-outline);
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  details.status-callout > summary::before {
+    transition: none !important;
+  }
+}
+
+/* -- Honest callout -------------------------------------------
+
+   Deliberately the loudest non-error element on the page: it sits
+   directly above the median chart and must be impossible to miss,
+   because the chart plots causl-wasm at its real values and those
+   are several times causl-ts on most cells. A median chart cannot
+   explain why, so the callout has to.
+
+   Coral (not the muted amber of .status-callout) + a solid 3px
+   left rule + elevated surface give it visual primacy on load.
+
+   No element carries this class today; index.html uses
+   `.callout-enterprise` for that slot. The rules stay because the
+   callout is a page-authoring affordance, not dashboard.js output. */
+.bench-honest-callout {
+  margin: var(--space-5) 0 var(--space-6);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--conflict-coral);
+  border-left: 3px solid var(--conflict-coral);
+  background: var(--surface-elevated);
+  border-radius: var(--radius-md);
+  font-size: 0.95rem;
+}
+
+.bench-honest-callout > strong:first-child {
+  display: block;
+  margin-bottom: var(--space-2);
+  color: var(--conflict-coral);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.bench-honest-callout p {
+  margin: var(--space-2) 0 0;
+  color: var(--text-on-base);
+  line-height: 1.55;
+}
+
+.bench-honest-callout strong {
+  color: var(--text-on-base);
+}
+
+.bench-honest-callout code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+}
+
+.bench-honest-callout a {
+  color: var(--conflict-coral);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.bench-honest-callout .bench-honest-callout-refs {
+  margin-top: var(--space-3);
+  padding-top: var(--space-2);
+  border-top: 1px dashed var(--conflict-coral);
+  font-size: 0.86rem;
+  color: var(--text-on-base-muted);
+}
+
+/* -- Library limitations section (#1302) ---------------------- */
+
+/* Each `.skip-class` is one bucket card. Visually distinct from
+   a `.card` (which sits in a `.grid-3` row) so the buckets stack
+   vertically and read like a legend rather than a feature grid.
+   Border + spacing reuse the same tokens as `.status-callout` but
+   without the warning palette: these are explanatory, not alerts. */
+
+.skip-class {
+  margin: var(--space-5) 0;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid rgba(39, 211, 195, 0.18);
+  background: rgba(39, 211, 195, 0.04);
+  border-radius: var(--radius-md);
+}
+
+.skip-class .mono-label {
+  /* Inherits brand kicker styling from site.css; nudge the
+     letter-spacing tighter so the longer "Class N · Title"
+     strings sit on one line at mobile widths. */
+  letter-spacing: 0.06em;
+}
+
+.skip-class h3 {
+  margin: var(--space-2) 0 var(--space-3);
+  font-size: 1.05rem;
+}
+
+.skip-class p {
+  margin: var(--space-2) 0;
+  color: var(--text-on-base-muted);
+  font-size: 0.94rem;
+  line-height: 1.55;
+}
+
+:root[data-theme="light"] .skip-class p {
+  color: var(--text-on-base);
+}
+
+.skip-class p strong {
+  color: var(--text-on-base);
+  font-weight: 600;
+}
+
+.skip-class code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+}
+
+.skip-class-footer {
+  margin: var(--space-5) 0 var(--space-4);
+  padding: var(--space-3) 0 0;
+  border-top: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+  font-size: 0.88rem;
+  color: var(--text-on-base-subtle);
+}
+
+:root[data-theme="light"] .skip-class-footer {
+  color: var(--text-on-base-muted);
+}
+
+/* -- prefers-reduced-motion: drop all transitions ------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .button,
+  .bench-legend-profile-link,
+  .filter-action {
+    transition: none !important;
+  }
+
+  html { scroll-behavior: auto !important; }
+}
+
+/* ============================================================
+   The dual-engine comparison panel lived here.
+
+   Its ~270 lines of table, pill, stack and staleness-warning
+   rules are gone because the panel they styled is gone from
+   index.html. The panel compared two series that turned out to be
+   the same TypeScript engine, its data file (dual-engine.json) was
+   deleted upstream and its fetch had been 404ing for months, and
+   the withdrawn rows behind it are now deleted from history.json
+   rather than retracted in place.
+
+   Two of those rules also hard-coded #5EE6A8 and #9FF0C8 as copies
+   of the LIBRARY_COLOR entries in dashboard.js. A colour defined in
+   two files drifts in one of them, so I am not carrying the copies
+   forward: dashboard.js owns the series palette.
+   ============================================================ */
+
+/* ==============================================================
+   Generated results tables (`render-latest.mjs`).
+
+   These are static, checked-in HTML rather than anything this
+   dashboard renders, so they get their own class rather than
+   reusing `table.compare` from site.css: that table centres
+   every cell and forces a 320px first column, which is right for
+   a feature matrix and wrong for 81 rows of numbers.
+
+   The rule the numbers follow: measurements are right-aligned in
+   the mono face so digits line up column-wise and an outlier is
+   visible without reading any of them.
+   ============================================================== */
+
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+  font-family: var(--mono);
+}
+
+.results-table th,
+.results-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid rgba(143, 162, 170, 0.14);
+  white-space: nowrap;
+}
+
+.results-table thead th {
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  text-align: left;
+  color: var(--text-on-base-muted);
+  border-bottom: 1px solid rgba(17, 217, 255, 0.28);
+}
+
+.results-table tbody th[scope="row"] {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-on-base);
+  white-space: normal;
+}
+
+.results-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* The fastest cell in a ranked row. Cyan is the brand's own colour and
+   is not a state semantic, so marking "best" with it does not read as
+   "pass", which matters because a slower library here is not failing
+   anything. */
+.results-table td.best {
+  color: var(--causal-cyan);
+  font-weight: 600;
+}
+
+/* A cell that produced no number. Muted rather than red: an
+   `inapplicable` cell is a fact about the library's architecture, not
+   a defect, and colouring it like an error would editorialise. */
+.results-table td.absent,
+.results-table .row-absent td {
+  color: var(--text-on-base-subtle);
+  font-style: italic;
+  white-space: normal;
+}
+
+/* Confidence chip. `low` is the driver's own verdict that its median
+   should not be quoted, so it is legible rather than decorative. */
+.results-table .conf {
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.05em 0.4em;
+  border-radius: var(--radius-sm, 3px);
+  color: var(--text-on-base-subtle);
+}
+
+.results-table .conf-high {
+  color: var(--success-mint);
+  background: rgba(94, 230, 168, 0.10);
+}
+
+.results-table .conf-low {
+  color: var(--commit-amber);
+  background: rgba(240, 180, 41, 0.12);
+}
+
+:root[data-theme="light"] .results-table thead th,
+:root[data-theme="light"] .results-table td.absent,
+:root[data-theme="light"] .results-table .row-absent td {
+  color: var(--text-on-base);
+}
+
+/* Measured, but not ranked. Struck through rather than hidden: the cell has a
+   real number and the reader is entitled to it; what it does not have is the
+   aggregator's permission to be compared. */
+.results-table td.unranked { color: var(--text-on-base-subtle); }
+.results-table td.unranked s { text-decoration-thickness: 1px; opacity: 0.85; }
