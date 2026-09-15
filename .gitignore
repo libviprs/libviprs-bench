@@ -54,3 +54,7 @@ fixtures/*.raw
 # Docker build context artifacts
 *.tar
 *.tar.gz
+
+# Python bytecode from tools/capture.py and its tests.
+__pycache__/
+*.pyc
