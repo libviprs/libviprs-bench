@@ -9,9 +9,9 @@ archive/engines/
   <runId>.json                    the sealed document
 ```
 
-Everything about how a run gets in here — the run id, the four digests, the
+Everything about how a run gets in here (the run id, the four digests, the
 canonicalisation rules they depend on, the full refusal table, and the three
-ordinary ways a commit comes back null — is in
+ordinary ways a commit comes back null) is in
 [`../storage/README.md`](../storage/README.md) and is **identical** for both
 families. There is one `storage-aggregate`, one `admit`, one `seal` and one set
 of rules; this file only records the two things that are this family's own.
@@ -23,8 +23,8 @@ the measured library's commit, and a hash over the environment that decides
 whether two runs are comparable. None of those is the family. So a `storage` and
 an `engines` sweep started in the same second against the same commit on the
 same host derive the **same id**, and in one directory the second would be
-refused as a collision with the first — a true statement about ids and a useless
-one about the runs.
+refused as a collision with the first, which is a true statement about ids and a
+useless one about the runs.
 
 Putting the family into the id would be the other fix and it is the wrong one:
 the id is what a page keys an era on, and a family is not part of an era.

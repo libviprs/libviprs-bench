@@ -3,9 +3,9 @@
 //!
 //! Every fixture in this file is the real binary's output. That is not a style
 //! choice: the first admission suite in this epic was green against a
-//! hand-written fixture whose shape the producer never emits — it carried a
+//! hand-written fixture whose shape the producer never emits. It carried a
 //! `runners` array that does not exist and a scalar `reps` where the real
-//! `Measurement` writes a map — so a whole suite passed against a document
+//! `Measurement` writes a map, so a whole suite passed against a document
 //! nobody writes, and the first real one was refused for 26 reasons. A fixture
 //! is allowed to be a MUTATION of the producer's output and nothing else.
 //!
@@ -266,6 +266,53 @@ fn the_aggregator_binary_checks_and_archives_an_engines_document() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// RED against a default archive root that ignores the document's family.
+///
+/// `--archive` with no `--root` has to read the family out of the document and
+/// file it under `archive/<family>/`. Driven through the binary with its working
+/// directory moved, because the default root is relative and a unit test of
+/// `dir_for_document` proves the mapping without proving the binary uses it.
+#[test]
+fn the_aggregator_files_an_engines_document_under_its_own_family_by_default() {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let cwd = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("k22-default-root-{}-{nonce}", std::process::id()));
+    std::fs::create_dir_all(&cwd).expect("a scratch working directory");
+    let path = cwd.join("engines-results.json");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&as_if_release_and_clean()).expect("it serialises"),
+    )
+    .expect("the fixture is written");
+
+    let archived = Command::new(env!("CARGO_BIN_EXE_storage-aggregate"))
+        .arg("--archive")
+        .arg(&path)
+        .current_dir(&cwd)
+        .output()
+        .expect("the aggregator runs");
+    assert!(
+        archived.status.success(),
+        "--archive with no --root refused an engines document:\n{}",
+        String::from_utf8_lossy(&archived.stderr)
+    );
+    assert!(
+        cwd.join("archive/engines/index.json").is_file(),
+        "it lands under archive/engines/, not archive/storage/: {:?}",
+        std::fs::read_dir(cwd.join("archive")).map(|d| d
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .collect::<Vec<_>>())
+    );
+    assert!(
+        !cwd.join("archive/storage").exists(),
+        "and nothing was written into the other family's directory"
+    );
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
 /// RED against one archive directory for both families.
 ///
 /// Two families derive their run ids the same way from the same fields, so a
@@ -347,10 +394,7 @@ fn an_engines_document_built_in_debug_is_refused() {
     let text = serde_json::to_string(&debug).expect("it serialises");
     let refusals = archive::admit_text(&text).expect("it canonicalises");
     assert_eq!(
-        refusals
-            .iter()
-            .filter(|r| r.code == "debug-build")
-            .count(),
+        refusals.iter().filter(|r| r.code == "debug-build").count(),
         2,
         "both halves refuse: the assertions flag and the profile name: {refusals:?}"
     );
@@ -370,9 +414,9 @@ fn an_engines_document_built_in_debug_is_refused() {
 /// RED against an aggregator that refuses only an admitted emulation.
 ///
 /// Three states, not two: `false` passes, `true` is refused because the timings
-/// describe the translator as much as the code, and anything else — a probe
-/// that could not observe, a missing field — is refused because nothing in the
-/// document can settle it. The third is the state the published numbers this
+/// describe the translator as much as the code, and anything else (a probe that
+/// could not observe, a missing field) is refused because nothing in the document
+/// can settle it. The third is the state the published numbers this
 /// epic replaced are in.
 #[test]
 fn an_engines_document_taken_under_emulation_is_refused() {
@@ -432,8 +476,7 @@ fn an_engines_document_with_an_unattested_ok_cell_is_refused() {
 fn an_engines_document_whose_reps_disagree_is_refused() {
     let doc = document();
     assert_eq!(
-        doc["measurement"]["reps"],
-        doc["provenance"]["invocation"]["resolved"]["reps"],
+        doc["measurement"]["reps"], doc["provenance"]["invocation"]["resolved"]["reps"],
         "the producer's two halves agree, which is what makes the mutation below meaningful"
     );
     assert_eq!(

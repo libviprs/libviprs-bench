@@ -270,13 +270,14 @@ cargo run --release --bin engines -- --profile full   # the publishable sweep
 
 Every `(engine, canvas, thread budget)` cell takes a discarded warm-up and then
 seven timed repetitions, **each in its own child process**. That is not
-tidiness. `scalability` runs all three engines in one process and reads
-`getrusage(RUSAGE_SELF).ru_maxrss`, a monotonic process-wide high-water mark, so
-whichever engine peaks highest sets the watermark and every engine measured
-after it reports that number as its own: the first full capture has
-byte-identical peak RSS for all three engines in twenty of twenty groups. A
-child per repetition makes it a per-run peak, taken by the parent through
-`wait4`, on one basis for every engine.
+tidiness. The sweep that produced the first full capture ran all three engines
+in one process and read `getrusage(RUSAGE_SELF).ru_maxrss`, a monotonic
+process-wide high-water mark, so whichever engine peaked highest set the
+watermark and every engine measured after it reported that number as its own:
+that capture has byte-identical peak RSS for all three engines in twenty of
+twenty groups. A child per repetition makes it a per-run peak, taken by the
+parent through `wait4`, on one basis for every engine. At `4096x2880` the three
+now report 78.8, 50.7 and 56.5 MB.
 
 A cell publishes `wall`, `peak_rss_mb`, `tracked_memory_mb`,
 `tiles_per_second` and the two derived columns, each as `samples[]` with a
