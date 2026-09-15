@@ -435,9 +435,8 @@ fn tiles_produced_is_an_invariant_with_an_equality_verdict() {
 fn allocated_bytes_is_measured_and_not_published_as_an_invariant() {
     let runs = three_reps();
     assert!(
-        runs.iter().all(|r| r
-            .artefact
-            .is_some_and(|a| a.allocated_bytes == 1_474_560)),
+        runs.iter()
+            .all(|r| r.artefact.is_some_and(|a| a.allocated_bytes == 1_474_560)),
         "the walk records it, which is the half that is not in question"
     );
     let built = rows(&runs);
@@ -607,8 +606,8 @@ fn the_facet_key_is_asked_of_the_planner() {
 /// `storage::archive` refuses a document whose `provenance.allowDirty` is true
 /// and whose cells do not each carry `dirty: true`, because a reader quoting one
 /// cell would otherwise not know. Nothing filled the field, so a run with the
-/// flag set was refused for `dirty-not-stamped` — the exact rule the flag exists
-/// to satisfy. I found it by setting the variable and reading the refusal:
+/// flag set was refused for `dirty-not-stamped`, which is the exact rule the flag
+/// exists to satisfy. I found it by setting the variable and reading the refusal:
 /// "provenance.allowDirty is true but 18 of 18 cells do not carry dirty: true".
 ///
 /// The stamp is taken from the provenance and not from the flag, so a run that
@@ -666,4 +665,127 @@ fn a_dirty_tree_stamps_the_caveat_onto_every_cell_and_a_clean_one_does_not() {
     }
     unstamped.stamp_dirty_from_provenance();
     assert!(unstamped.cells.iter().all(|c| c.dirty.is_none()));
+}
+
+// ---------------------------------------------------------------------------
+// The noise floor
+// ---------------------------------------------------------------------------
+
+/// RED against a sweep with no control, and against one that measures the
+/// control twice in a row.
+///
+/// First and last rather than back to back, because what the spread is trying
+/// to see is drift across the sweep: thermal, a neighbour waking up, the page
+/// cache filling. Two measurements in a row would see none of it and would
+/// publish a flatteringly small noise floor.
+#[test]
+fn a_publishable_profile_opens_and_closes_on_its_control_cell() {
+    for profile in [Profile::Full, Profile::Xl] {
+        let control = profile
+            .replicate_cell()
+            .unwrap_or_else(|| panic!("{} has a control", profile.label()));
+        let cells = profile.cells();
+        assert_eq!(
+            cells.first(),
+            Some(&control),
+            "{} opens on its control",
+            profile.label()
+        );
+        assert_eq!(
+            cells.last(),
+            Some(&control),
+            "{} closes on it",
+            profile.label()
+        );
+        assert_eq!(
+            cells.iter().filter(|c| **c == control).count(),
+            2,
+            "{}: twice, not three times; the control is paid for and the rest of the sweep \
+             must not measure it a third time in its natural position",
+            profile.label()
+        );
+        assert!(
+            cells.len() > 3,
+            "{} has a sweep between the two ends",
+            profile.label()
+        );
+    }
+
+    // `ci` is never published, so it has no noise floor to publish either, and
+    // measuring its one cell twice would double the smoke test to say nothing.
+    assert_eq!(Profile::Ci.replicate_cell(), None);
+    assert_eq!(Profile::Ci.cells().len(), 1);
+}
+
+/// RED against a spread computed from the wrong pair.
+///
+/// Two `engines` cells can share a tile count and a source and differ only in
+/// their thread budget, so the block has to find its two measurements by the
+/// control's own cell key. A filter on `(scale, source)`, which is what the
+/// storage family used before this lane, would pick up the other thread budget
+/// and publish a spread between two different measurements as drift.
+#[test]
+fn the_replicate_block_is_the_spread_between_the_two_ends_of_the_sweep() {
+    use libviprs_bench::storage::scenarios::replicate::block_for_cell;
+
+    let control = EngineCell::new(1024, 720, 1);
+    // Same canvas, same source, same tile count, different thread budget. This
+    // is the row the spread must not be computed against.
+    let decoy = EngineCell::new(1024, 720, 8);
+    assert_eq!(control.planned_tiles(), decoy.planned_tiles());
+
+    let mut doc = Document::new_for(
+        engines::FAMILY,
+        engines::RUNNER,
+        Profile::Full.label(),
+        "2026-09-14T12:00:00.000Z".to_string(),
+        engines::measurement(Profile::Full),
+    );
+    let push = |doc: &mut Document, cell: EngineCell, wall_ms: u64| {
+        let runs = vec![
+            run(Engine::Monolithic, wall_ms, 9_700_000, 25),
+            run(Engine::Monolithic, wall_ms, 9_700_000, 25),
+            run(Engine::Monolithic, wall_ms, 9_700_000, 25),
+        ];
+        for row in engines::rows_for(
+            cell,
+            Engine::Monolithic,
+            &runs,
+            &[],
+            Profile::Full,
+            MachineLoad::unknown(),
+            None,
+        ) {
+            doc.push(row);
+        }
+    };
+    push(&mut doc, control, 500);
+    push(&mut doc, decoy, 9_000);
+    push(&mut doc, control, 550);
+
+    let block = block_for_cell(&doc, &control.spec()).expect("two ends make a block");
+    assert_eq!(block.cell, control.spec());
+    assert_eq!(block.replicate_reps, 2);
+    let spread = block.spread_pct.as_object().expect("a spread object");
+    let wall = spread
+        .get("monolithic.pyramid.wall")
+        .and_then(|v| v.as_f64())
+        .expect("the wall column has a spread");
+    // 500 and 550, as a percentage of the smaller.
+    assert!(
+        (wall - 10.0).abs() < 1e-9,
+        "the spread is between the two ends, not against the cell in the middle: {wall}"
+    );
+
+    // And a control measured once has no spread, rather than a spread of zero,
+    // which would read as a perfectly quiet host.
+    let mut once = Document::new_for(
+        engines::FAMILY,
+        engines::RUNNER,
+        Profile::Full.label(),
+        "2026-09-14T12:00:00.000Z".to_string(),
+        engines::measurement(Profile::Full),
+    );
+    push(&mut once, control, 500);
+    assert_eq!(block_for_cell(&once, &control.spec()), None);
 }

@@ -92,7 +92,9 @@ fn run(args: &[String]) -> Result<u8, String> {
             }
             "--root" => {
                 i += 1;
-                root = Some(PathBuf::from(args.get(i).ok_or("--root needs a directory")?));
+                root = Some(PathBuf::from(
+                    args.get(i).ok_or("--root needs a directory")?,
+                ));
             }
             "--scratch" => {
                 i += 1;
@@ -168,7 +170,8 @@ fn do_archive(path: &Path, root: Option<&Path>) -> Result<u8, String> {
     let root = match root {
         Some(root) => root.to_path_buf(),
         None => archive::dir_for_document(
-            &integrity::parse_document(&text).map_err(|err| format!("{}: {err}", path.display()))?,
+            &integrity::parse_document(&text)
+                .map_err(|err| format!("{}: {err}", path.display()))?,
         ),
     };
     match archive::archive_text(&text, &root) {

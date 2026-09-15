@@ -3,13 +3,14 @@
 //!
 //! # What this replaces
 //!
-//! `scalability` measures each `(engine, canvas, thread budget)` **once** and
-//! writes a bare JSON array of sixty rows. The array records no commit, no
-//! toolchain, no platform, no emulation verdict and no dispersion, so a page
-//! that charts it as a time series invents regressions that never happened, and
-//! nothing downstream can tell a real move from the noise floor. The published
-//! PMTiles numbers this epic exists to retire have exactly that shape and were
-//! most likely taken under Rosetta; nothing in them says so.
+//! The sweep that produced the first full `engines` capture measured each
+//! `(engine, canvas, thread budget)` **once** and wrote a bare JSON array of
+//! sixty rows. The array records no commit, no toolchain, no platform, no
+//! emulation verdict and no dispersion, so a page that charts it as a time
+//! series invents regressions that never happened, and nothing downstream can
+//! tell a real move from the noise floor. The published PMTiles numbers this
+//! epic exists to retire have exactly that shape and were most likely taken
+//! under Rosetta; nothing in them says so.
 //!
 //! So this family emits the same document the `storage` family does, through
 //! the same structs: `schemaVersion`, `family`, `runner`, `profile`,
@@ -24,15 +25,15 @@
 //!
 //! Every `(engine, cell)` takes a discarded warm-up and then N timed
 //! repetitions, each in its own child process, through
-//! [`crate::harness::spawn_single_cell`]. That is not tidiness either. The old
-//! sweep ran all three engines in one process and read
+//! [`crate::harness::spawn_single_cell`]. That is not tidiness either. The
+//! sweep behind that capture ran all three engines in one process and read
 //! `getrusage(RUSAGE_SELF).ru_maxrss`, a monotonic process-wide high-water
 //! mark, so whichever engine peaked highest set the watermark and every engine
-//! measured after it reported that number as its own: the first full capture
-//! has byte-identical peak RSS for all three engines in twenty of twenty
-//! groups, to seven decimal places. A child per repetition makes the watermark
-//! a per-run peak, taken by the parent through `wait4`, on one basis for every
-//! engine.
+//! measured after it reported that number as its own: the capture has
+//! byte-identical peak RSS for all three engines in twenty of twenty groups, to
+//! seven decimal places. A child per repetition makes the watermark a per-run
+//! peak, taken by the parent through `wait4`, on one basis for every engine. At
+//! `4096x2880` the three now report 78.8, 50.7 and 56.5 MB.
 //!
 //! The engine order rotates between repetitions, so slow drift over a cell's
 //! wall-clock window hits the three roughly equally rather than penalising
@@ -76,6 +77,7 @@ use crate::storage::document::{
     CellLabels, CellReport, Document, DocumentCell, InvariantBlock, MachineLoad, Measurement,
     MeasurementSpec, Reps,
 };
+use crate::storage::scenarios::replicate;
 use crate::storage::scenarios::{Direction, Invariants, Isolation, MetricSpec, RepFacts, Unit};
 use crate::storage::scenarios::{Outcome, Warmup};
 use crate::storage::{agreed, stats};
@@ -439,8 +441,11 @@ pub fn run_sweep(profile: Profile) -> Document {
         let verdicts = attest::attest_group(&group);
         for (engine, verdict) in &verdicts {
             for reason in verdict.reasons() {
-                eprintln!("engines: {} is not attested: {reason}", cell.spec());
-                let _ = engine;
+                eprintln!(
+                    "engines: {} {} is not attested: {reason}",
+                    engine.as_str(),
+                    cell.spec()
+                );
             }
         }
 
@@ -467,6 +472,13 @@ pub fn run_sweep(profile: Profile) -> Document {
     }
 
     doc.rebuild_invariant_table();
+    // The in-run noise floor: how far the control cell's own numbers moved
+    // between the start of the sweep and the end of it. On a host with no
+    // calibrated baseline this is the only noise figure there is, and a page
+    // that charts a delta smaller than it is inventing a regression.
+    doc.replicate = profile
+        .replicate_cell()
+        .and_then(|control| replicate::block_for_cell(&doc, &control.spec()));
     doc.finished_at = Some(crate::storage::now_iso());
     doc.provenance = Some(sweep_provenance(profile, &doc));
     // The dirt travels with every number or the run is refused for the rule

@@ -75,7 +75,9 @@ fn grid(runs: &[RunMetrics]) -> Option<&[u64]> {
 /// The tile count every repetition of one engine reported, when they agree.
 fn tiles(runs: &[RunMetrics]) -> Option<u64> {
     let first = runs.first()?.tiles_produced;
-    runs.iter().all(|r| r.tiles_produced == first).then_some(first)
+    runs.iter()
+        .all(|r| r.tiles_produced == first)
+        .then_some(first)
 }
 
 /// Whether every repetition walked a real tree.

@@ -181,7 +181,11 @@ RUN cargo fetch --locked
 RUN cargo build --locked --release --bin scalability --bin report --bin engines \
     --bin storage-aggregate
 
-CMD ["cargo", "run", "--release", "--bin", "engines", "--", "--family", "engines", "--profile", "ci"]
+# `full` and not `ci`: `ci` is the smoke profile and is never published, so a
+# bare `docker run` of this image should produce the sweep the page is drawn
+# from, which is what the CMD it replaces did.
+CMD ["cargo", "run", "--release", "--bin", "engines", "--", \
+     "--family", "engines", "--profile", "full"]
 
 # ---------------------------------------------------------------------------
 # Stage 3: the `vips` comparison family.

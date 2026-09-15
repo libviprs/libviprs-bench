@@ -5,8 +5,8 @@
 //! the cheapest way to make a document archivable is to stamp `attested: true`
 //! and move on, and in a sweep where everything really is attested no assertion
 //! over the document can tell an observation from a constant. So the verdict is
-//! tested where it CAN fail — handed a group that disagrees, a group of one, an
-//! engine that wrote nothing — and every case has to move it.
+//! tested where it CAN fail, handed a group that disagrees, a group of one, or an
+//! engine that wrote nothing, and every case has to move it.
 //!
 //! What this does not cover, stated plainly: the one line in `run_sweep` that
 //! copies the verdict onto the row. A constant there is indistinguishable from
@@ -54,11 +54,22 @@ fn wrote(engine: Engine, grid: Vec<u64>, tiles: u64) -> RunMetrics {
 fn agreeing_group() -> Vec<(Engine, Vec<RunMetrics>)> {
     [Engine::Monolithic, Engine::Streaming, Engine::MapReduce]
         .into_iter()
-        .map(|e| (e, vec![wrote(e, vec![16, 4, 4, 1], 25), wrote(e, vec![16, 4, 4, 1], 25)]))
+        .map(|e| {
+            (
+                e,
+                vec![
+                    wrote(e, vec![16, 4, 4, 1], 25),
+                    wrote(e, vec![16, 4, 4, 1], 25),
+                ],
+            )
+        })
         .collect()
 }
 
-fn verdict(group: &[(Engine, Vec<RunMetrics>)], engine: Engine) -> libviprs_bench::engines::attest::Attestation {
+fn verdict(
+    group: &[(Engine, Vec<RunMetrics>)],
+    engine: Engine,
+) -> libviprs_bench::engines::attest::Attestation {
     attest_group(group)
         .into_iter()
         .find(|(e, _)| *e == engine)
@@ -192,8 +203,7 @@ fn the_grid_and_the_tile_count_are_both_compared() {
         run.tiles_produced = 26;
     }
     assert_eq!(
-        miscounted[0].1[0].per_level_tiles,
-        miscounted[1].1[0].per_level_tiles,
+        miscounted[0].1[0].per_level_tiles, miscounted[1].1[0].per_level_tiles,
         "the fixture has to keep the grid, or it is not testing the count"
     );
     assert!(!verdict(&miscounted, Engine::Monolithic).agreed);
