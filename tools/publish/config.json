@@ -1,0 +1,180 @@
+{
+  "_": [
+    "The importer's half of K2.3's config schema (libviprs-bench#76, comment 5673286441),",
+    "in the shape that comment publishes. It is provisional and lives here only so this",
+    "lane's tests can run before #79 merges: at compose it folds into",
+    "tools/contract/config.json and this file goes away, which costs no code because",
+    "--config already prefers the contract copy when one is there.",
+    "",
+    "Only the blocks the importer reads are filled in. series, defaults, samples.carry",
+    "and the verdict palette are the dashboard's and stay K2.3's, with one exception",
+    "noted under producer.gatedWhenUncalibrated."
+  ],
+
+  "contract": {
+    "upstreamRev": "cd65c76",
+    "configVersion": 1,
+    "provenance": "20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939"
+  },
+
+  "sections": {
+    "scenarioFrom": ["key", "source"],
+    "scenarioJoin": " · ",
+    "scaleFrom": "scale",
+    "unitFrom": "unit",
+    "directionFrom": "direction"
+  },
+
+  "samples": {
+    "carry": ["unit", "direction", "confidence", "cell", "key", "source", "reps", "cov"]
+  },
+
+  "era": {
+    "axes": [
+      { "id": "series", "from": "samples[].library", "kind": "set" },
+      { "id": "host", "from": "host.fingerprint", "kind": "value" },
+      { "id": "filesystem", "from": "host.fsType", "kind": "value" }
+    ]
+  },
+
+  "producer": {
+    "archiveRoot": "archive",
+    "archiveDirByFamily": {},
+    "_archiveRoot": [
+      "archive/<family without its libviprs- prefix>, which is archive::dir_for_family on the",
+      "producer side. One directory and one index per family: two families derive their run",
+      "ids from the same fields, so two sweeps started in the same second against the same",
+      "commit on the same host derive the same id, and in one directory the second would look",
+      "like a collision. archiveDirByFamily overrides a single family if one ever needs it."
+    ],
+    "documentIndex": "index.json",
+
+    "attestedFrom": ["attested", "storageAttested"],
+    "_attestedFrom": [
+      "Two names for one field, newest first. It is `attested` on",
+      "lane/k2.2-engines-document and `storageAttested` in every document archived before",
+      "it, because widening the cell shape to a second family turned a field name into a",
+      "family name. The archive keeps old documents forever, so both are read; a cell",
+      "carrying neither is refused as a shape this importer has not been taught, which is a",
+      "different refusal from a cell that failed attestation."
+    ],
+    "historyPath": "tools/publish/history.json",
+
+    "families": ["libviprs-storage", "libviprs-engines", "libviprs-vips"],
+    "familyIdPrefix": "libviprs-",
+    "schemaVersion": 1,
+
+    "seriesFrom": "backend",
+    "runnerToSeries": {},
+
+    "outcomes": {
+      "measured": ["ok"],
+      "structural": ["failed", "refused"],
+      "refusing": []
+    },
+    "_outcomes": [
+      "Three buckets, not causl's two. Upstream refuses the whole import if any cell is",
+      "`failed`, because there a failed cell means a runner crashed. Seven cells in the",
+      "real capture are `failed` for a fact about the backend (a directory tree has no",
+      "root directory to decode) and four are `refused` because allocated_bytes moved",
+      "between reps of one generation. Both import as skips carrying their reason, and",
+      "`refusing` is empty because the run-level form of causl's check is the one that",
+      "survives: at least one cell must be measured."
+    ],
+
+    "publishableProfiles": ["full", "xl"],
+    "_publishableProfiles": [
+      "`ci` proves the harness runs and is never a measurement: three reps, a cut-down",
+      "cell list, and an archive entry indistinguishable from a calibrated sweep. It is",
+      "refused here rather than at the archive door, because the archive is allowed to",
+      "hold it and the page is not."
+    ],
+
+    "hostFingerprintFrom": [
+      "provenance.os",
+      "provenance.arch",
+      "provenance.cpuModel",
+      "provenance.ncpu",
+      "provenance.inContainer",
+      "provenance.emulated"
+    ],
+    "archiveBucketFrom": [
+      "provenance.os",
+      "provenance.arch",
+      "provenance.cpuModel",
+      "provenance.node.rustc",
+      "provenance.filesystem.fsType",
+      "provenance.emulated"
+    ],
+    "_archiveBucketFrom": [
+      "Two fingerprints, because there are two questions. hostFingerprintFrom is the",
+      "page's era axis and is K2.3's list. archiveBucketFrom is the producer's own",
+      "host8, the last segment of every run id, and it is a different set of fields:",
+      "rustc and the scratch filesystem are in it and ncpu is not. The importer derives",
+      "the run id from the document and joins it to the archive index, so it has to",
+      "reproduce the producer's list exactly; carrying both keeps the era axis right",
+      "without making the archive join wrong."
+    ],
+    "fsTypeFrom": "provenance.filesystem.fsType",
+    "replicateSpreadFrom": "replicate.spreadPct",
+
+    "gatedFrom": null,
+    "gatedWhenUncalibrated": false,
+    "_gatedWhenUncalibrated": [
+      "One deliberate disagreement with the schema comment, flagged rather than",
+      "smuggled. gatedFrom is null because no cell carries a `gated` field, and the",
+      "comment then has the importer write null, on the sound argument that 'nobody",
+      "said' and 'not gated' are different facts. But verdict.gate only suppresses a",
+      "chip on a literal false, so null hands all 284 cells to verdict.regressionPct,",
+      "a 10% constant, when 159 of them are low-confidence and the free replicate pair",
+      "already moved one metric 53.3%. Chips computed against a guess are the defect",
+      "this epic exists to remove, so the importer writes false with a reason while no",
+      "calibration exists, and true only where a fitted baseline supplies a tolerance.",
+      "Set this to null to get the schema comment's literal behaviour."
+    ],
+    "ungateableMetrics": ["p99", "max"],
+    "declaredSuffix": "_declared",
+
+    "invariantNames": [
+      "output_bytes",
+      "allocated_bytes",
+      "filesystem_entries",
+      "directories",
+      "tiles_produced",
+      "artefact_digest",
+      "root_entries",
+      "leaves",
+      "requests",
+      "request_bytes"
+    ],
+    "invariantsExactWithinCommit": [
+      "output_bytes",
+      "filesystem_entries",
+      "directories",
+      "tiles_produced",
+      "artefact_digest",
+      "root_entries",
+      "leaves",
+      "requests",
+      "request_bytes"
+    ],
+    "invariantsFilesystemDependent": ["allocated_bytes"],
+    "_invariantsFilesystemDependent": [
+      "allocated_bytes is the filesystem's answer to the same bytes, so it moves with",
+      "the block size and is compared only between runs on the same fsType and mount",
+      "source. In the exact list it would refuse an honest run on another disk."
+    ],
+    "invariantCommitKeys": ["provenance.library.commit", "provenance.commit"],
+    "_invariantCommitKeys": [
+      "Both trees, because the harness generates the source image: a harness-only",
+      "change can move output_bytes honestly and refusing it would block publication",
+      "with no way to clear it. The cost is that a harness-only change does not get the",
+      "within-commit check."
+    ],
+
+    "refuse": {
+      "majorityNoisyCells": true,
+      "perturbingRustflags": ["-C instrument-coverage", "-Z"]
+    }
+  }
+}
