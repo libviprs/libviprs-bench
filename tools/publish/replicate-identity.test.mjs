@@ -237,7 +237,15 @@ test('replicate identity does not borrow the key the page draws sections with', 
     'the storage run declares one replicate cell and nothing else is one',
   );
   // The pair the tile count cannot tell apart, both published as themselves.
-  const collide = entry.samples.filter((s) => s.scale === 21851 && s.key === 'generate.wall');
+  // One backend, because 21851 is a tile count and three rows of two backends
+  // carry it, which is the same point from a third direction.
+  const collide = entry.samples.filter(
+    (s) => s.scale === 21851 && s.key === 'generate.wall' && s.library === 'directory',
+  );
+  assert.deepEqual(collide.map((s) => s.cell).sort(), [
+    '8192x8192@64+gradient',
+    '8192x8192@64+noise',
+  ]);
   assert.deepEqual(collide.map((s) => s.source).sort(), ['gradient', 'noise']);
 });
 
