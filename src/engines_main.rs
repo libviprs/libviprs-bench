@@ -118,11 +118,11 @@ fn main() -> ExitCode {
     }
 
     let document = engines::run_sweep(profile);
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("engines: cannot make {}: {e}", parent.display());
-            return ExitCode::FAILURE;
-        }
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("engines: cannot make {}: {e}", parent.display());
+        return ExitCode::FAILURE;
     }
     if let Err(e) = std::fs::write(&path, document.to_json()) {
         eprintln!("engines: cannot write {}: {e}", path.display());
