@@ -16,6 +16,9 @@ use libviprs::{
 use serde::{Deserialize, Serialize};
 
 pub mod emulation;
+/// Monolithic against streaming against mapreduce, with repetitions and an
+/// archivable document (issue #75).
+pub mod engines;
 pub mod family;
 pub mod flame;
 /// How to read `git status` run twice, shared with `build.rs` by `include!`.
@@ -511,10 +514,18 @@ impl Drop for TempOutDir {
 /// engines and libvips `dzsave` write their tiles as real files under
 /// `TMPDIR/libviprs-bench/…`, so neither side gets an in-RAM sink advantage
 /// (issue #153). The directory is removed when the returned guard drops.
+/// The directory under `$TMPDIR` every engine's tile sink is rooted in.
+///
+/// Public and named, because the `engines` family has to record which
+/// filesystem its tiles were written to, and a provenance block that probed
+/// some other directory would describe a benchmark nobody ran: overlayfs, a
+/// virtiofs bind mount and a real ext4 are three different measurements.
+pub fn engine_sink_root() -> std::path::PathBuf {
+    std::env::temp_dir().join("libviprs-bench")
+}
+
 fn fs_sink_dir(label: &str) -> TempOutDir {
-    let dir = std::env::temp_dir()
-        .join("libviprs-bench")
-        .join(format!("engine_{}_{label}", std::process::id()));
+    let dir = engine_sink_root().join(format!("engine_{}_{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     // A writable `$TMPDIR` is a precondition for running any benchmark at all,
     // so this is an accepted environmental panic — the right loud failure if the
