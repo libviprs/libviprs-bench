@@ -160,57 +160,89 @@ fn a_directory_that_is_not_there_yet_names_the_filesystem_it_will_be_created_on(
 /// The two families disagreed because each carried its own copy of "pick a
 /// directory, then ask what it is on", and only one copy made the directory
 /// first. Fixing the copies without removing them leaves the next lane free to
-/// add a third, so this is the structural half: every
-/// `Provenance::capture_for_document` call in `src/` has to take its path from
-/// `Family::scratch_root`, which is the one place that knows both halves of the
-/// rule.
+/// add a third, and there already was a third: `storage-aggregate
+/// --provenance`, the mode you run *before* a sweep to find out what the sweep
+/// will record, defaulted to bare `$TMPDIR` while the sweep it previews writes
+/// under `$TMPDIR/libviprs-storage`. This test is what found it.
 ///
-/// A source scan and not a behaviour test, because the thing being held is that
-/// there is exactly one implementation, and a behaviour test cannot see a second
-/// one that happens to agree today.
+/// A source scan and not a behaviour test, because the property is that there
+/// is exactly one source for the path, and a behaviour test cannot see a second
+/// source that happens to agree on the host it runs on.
 #[test]
 fn every_provenance_probe_takes_its_path_from_the_family_scratch_root() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut checked = 0;
+    // Every place in `src/` that asks what filesystem a directory is on, and
+    // the line each one has to get its directory from. Spelled out rather than
+    // pattern-matched: a fourth prober is a thing to look at, not a thing to
+    // wave through because it happens to contain the right substring somewhere.
+    const PROBE_SITES: [(&str, &str); 3] = [
+        (
+            "src/engines/mod.rs",
+            "let scratch = crate::family::Family::Engines.scratch_root();",
+        ),
+        (
+            "src/storage/mod.rs",
+            "let scratch = crate::family::Family::Storage.scratch_root();",
+        ),
+        (
+            "src/storage_aggregate_main.rs",
+            "let mut scratch = Family::Storage.scratch_root();",
+        ),
+    ];
+
+    let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    collect_rs(&root, &mut files);
-    // A positive control on the walk. `capture_for_document` is called twice in
-    // `src/`, and a walk that found nothing would pass this test by seeing
-    // nothing rather than by the calls being right.
+    collect_rs(&src, &mut files);
+    // A positive control on the walk. A walk that found nothing would pass every
+    // assertion below by finding nothing, which is not the same as passing.
     assert!(
         !files.is_empty(),
         "the walk over {} found no Rust files at all",
-        root.display()
+        src.display()
     );
 
+    let mut callers: Vec<String> = Vec::new();
     for path in &files {
         let text = std::fs::read_to_string(path).expect("a source file in this repository reads");
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if !line.contains("capture_for_document(") || line.trim_start().starts_with("///") {
-                continue;
-            }
-            checked += 1;
-            let from = i.saturating_sub(8);
-            let window = lines[from..i].join("\n");
-            assert!(
-                window.contains("scratch_root()"),
-                "{}:{} calls capture_for_document with a path that did not come from \
-                 Family::scratch_root. The path and the `create_dir_all` that has to precede it \
-                 belong together in one place; this is the second copy that produced \
-                 `fsType: \"unknown\"` against `ext4` on one host.\n{window}",
-                path.display(),
-                i + 1
-            );
+        // The definition in `provenance.rs` is not a call, and neither is a doc
+        // comment mentioning one. Both matched on the first run of this test,
+        // which is the ordinary way a source scan turns into a scan of prose.
+        let calls = text.lines().any(|l| {
+            l.contains("capture_for_document(")
+                && !l.contains("fn capture_for_document(")
+                && !l.trim_start().starts_with("///")
+                && !l.trim_start().starts_with("//")
+        });
+        if calls {
+            let rel = path
+                .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                .unwrap_or(path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            callers.push(rel);
         }
     }
+    callers.sort();
 
+    let mut expected: Vec<String> = PROBE_SITES.iter().map(|(f, _)| (*f).to_string()).collect();
+    expected.sort();
     assert_eq!(
-        checked, 2,
-        "expected the two family producers to be the only callers of capture_for_document in \
-         src/, found {checked}. A third caller is fine, but it has to be looked at rather than \
-         counted"
+        callers, expected,
+        "the set of files that probe the scratch filesystem has changed. Every one of them has \
+         to take its directory from Family::scratch_root, which is the one place that knows both \
+         the path and that the directory has to exist before anything asks what it is on"
     );
+
+    for (file, from) in PROBE_SITES {
+        let text = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(file))
+            .expect("a probe site reads");
+        assert!(
+            text.contains(from),
+            "{file} no longer takes its probe directory from `{from}`. A path spelled out at the \
+             call site is the second copy of the rule, and the copy that forgets the \
+             `create_dir_all` is the one that published `fsType: \"unknown\"` against `ext4` for \
+             one host"
+        );
+    }
 }
 
 /// Every `.rs` file under `dir`, recursively.

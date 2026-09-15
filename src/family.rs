@@ -156,18 +156,28 @@ impl Family {
     /// `tests/family_filesystem_agreement.rs` is what holds the two families to
     /// the same answer.
     pub fn scratch_root(self) -> std::path::PathBuf {
-        let root = match self {
-            // The `vips` family runs through the same engine sink as `engines`
-            // (`crate::fs_sink_dir`), so it measures the same filesystem.
-            Family::Engines | Family::Vips => crate::engine_sink_root(),
-            Family::Storage => crate::storage::storage_scratch_root(),
-        };
+        let root = self.scratch_root_path();
         // Deliberately not a panic. A `$TMPDIR` that cannot be written fails
         // the sweep itself a few lines later with a far better message than a
         // provenance probe can give, and a probe that aborts the run is worse
         // than one that records what it found.
         let _ = std::fs::create_dir_all(&root);
         root
+    }
+
+    /// Where [`Family::scratch_root`] points, without making anything.
+    ///
+    /// For the places that only want to *say* the path: a `--help` text that
+    /// created a directory as a side effect of being printed would be its own
+    /// small surprise. Anything about to probe the directory wants
+    /// [`Family::scratch_root`], because existing is the half the probe needs.
+    pub fn scratch_root_path(self) -> std::path::PathBuf {
+        match self {
+            // The `vips` family runs through the same engine sink as `engines`
+            // (`crate::fs_sink_dir`), so it measures the same filesystem.
+            Family::Engines | Family::Vips => crate::engine_sink_root(),
+            Family::Storage => crate::storage::storage_scratch_root(),
+        }
     }
 
     /// The engines this family measures.
