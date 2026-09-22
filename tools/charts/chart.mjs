@@ -470,12 +470,18 @@ export function renderHistoryTrend(points, opts = {}) {
  * legend swatch so the reader can tell it was benchmarked.
  *
  * @param {ReadonlyArray<{engine:string, megapixels:number, value:number}>} points
+ *   (the series field follows `opts.theme.seriesKey`, the x field `opts.xKey`)
  * @param {{title?:string, xLabel?:string, yLabel?:string, unitSuffix?:string, width?:number, height?:number, logScale?:boolean, xMin?:number}} opts
  * @returns {string} deterministic SVG
  */
 export function renderScalabilityChart(points, opts = {}) {
   const theme = opts.theme ?? ENGINE_THEME;
   const seriesKey = theme.seriesKey;
+  // The independent variable is a caller's concern: libviprs sweeps image size
+  // in `megapixels`, another library sweeps rows, nodes or bytes. Nothing in
+  // the geometry below cares which, so it is a field name rather than a
+  // hard-coded read (#104).
+  const xKey = opts.xKey ?? 'megapixels';
   const width = opts.width ?? 700;
   const height = opts.height ?? 450;
   const padding = 64;
@@ -499,19 +505,19 @@ export function renderScalabilityChart(points, opts = {}) {
   const windowed =
     xMin === null
       ? points
-      : points.filter((p) => Number.isFinite(p.megapixels) && p.megapixels >= xMin);
+      : points.filter((p) => Number.isFinite(p[xKey]) && p[xKey] >= xMin);
   if (windowed.length === 0) return svgPlaceholder(width, height, title || 'scalability');
 
   // A point is plottable when both coordinates are finite and (in log mode)
   // strictly positive. Non-plottable points break the line, never bridge it.
   const plottable = (p) =>
-    Number.isFinite(p.megapixels) &&
+    Number.isFinite(p[xKey]) &&
     Number.isFinite(p.value) &&
-    (!logScale || (p.megapixels > 0 && p.value > 0));
+    (!logScale || (p[xKey] > 0 && p.value > 0));
   const usable = windowed.filter(plottable);
   if (usable.length === 0) return svgPlaceholder(width, height, title || 'scalability');
 
-  const xs = usable.map((p) => p.megapixels);
+  const xs = usable.map((p) => p[xKey]);
   const ys = usable.map((p) => p.value);
   const plotL = padding;
   const plotR = width - padding;
@@ -578,8 +584,8 @@ export function renderScalabilityChart(points, opts = {}) {
     .map((engine) => {
       // Size-sorted points that can be POSITIONED on the x-axis (finite MP).
       const eng = windowed
-        .filter((p) => p[seriesKey] === engine && Number.isFinite(p.megapixels))
-        .sort((a, b) => a.megapixels - b.megapixels);
+        .filter((p) => p[seriesKey] === engine && Number.isFinite(p[xKey]))
+        .sort((a, b) => a[xKey] - b[xKey]);
       if (eng.length === 0) return '';
       const color = colorFor(engine, ordered, theme);
       // Break the line into segments of consecutive plottable points; a
@@ -599,7 +605,7 @@ export function renderScalabilityChart(points, opts = {}) {
       const polylines = segments
         .map((seg) => {
           const pts = seg
-            .map((p) => `${fmtCoord(xFor(p.megapixels))},${fmtCoord(yFor(p.value))}`)
+            .map((p) => `${fmtCoord(xFor(p[xKey]))},${fmtCoord(yFor(p.value))}`)
             .join(' ');
           return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2"/>`;
         })
@@ -608,7 +614,7 @@ export function renderScalabilityChart(points, opts = {}) {
         .flat()
         .map(
           (p) =>
-            `<circle cx="${fmtCoord(xFor(p.megapixels))}" cy="${fmtCoord(yFor(p.value))}" r="3" fill="${color}"/>`,
+            `<circle cx="${fmtCoord(xFor(p[xKey]))}" cy="${fmtCoord(yFor(p.value))}" r="3" fill="${color}"/>`,
         )
         .join('');
       return polylines + dots;
