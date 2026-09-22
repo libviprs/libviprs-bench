@@ -180,3 +180,51 @@ test('a renderer with no theme still draws engines exactly as before', () => {
   assert.equal(withoutTheme, withEngineTheme, 'the default theme IS the engines theme');
   assert.match(withoutTheme, /Monolithic/);
 });
+
+/* -------------------------------------------------------------------------- */
+/* The scalability x-axis: `megapixels` is an image thing, not a chart thing.  */
+/* -------------------------------------------------------------------------- */
+
+test('renderScalabilityChart can sweep an x-field other than megapixels', () => {
+  // A non-image library sweeps rows, nodes, bytes... the renderer should not
+  // care what the independent variable is called.
+  const points = [
+    { engine: 'streaming', nodeCount: 100, value: 10 },
+    { engine: 'streaming', nodeCount: 1000, value: 95 },
+    { engine: 'monolithic', nodeCount: 100, value: 12 },
+    { engine: 'monolithic', nodeCount: 1000, value: 130 },
+  ];
+  const svg = renderScalabilityChart(points, {
+    title: 'parse scaling',
+    xLabel: 'Nodes',
+    xKey: 'nodeCount',
+  });
+
+  assert.equal((svg.match(/<polyline /g) ?? []).length, 2, 'one line per engine');
+  assert.doesNotMatch(svg, /NaN/, 'no NaN coordinates leak into the path data');
+  assert.match(svg, /Nodes/);
+});
+
+test('the default x-field is still megapixels', () => {
+  const mp = [
+    { engine: 'streaming', megapixels: 1, value: 10 },
+    { engine: 'streaming', megapixels: 16, value: 95 },
+  ];
+  const withDefault = renderScalabilityChart(mp, { title: 's' });
+  const withExplicit = renderScalabilityChart(mp, { title: 's', xKey: 'megapixels' });
+  assert.equal(withDefault, withExplicit);
+  assert.match(withDefault, /<polyline /);
+});
+
+test('the zoom window applies to whatever the x-field is', () => {
+  // #43's xMin filter read p.megapixels directly, so on a renamed x-field it
+  // would have compared undefined >= xMin and dropped every point.
+  const points = [
+    { engine: 'streaming', nodeCount: 10, value: 1 },
+    { engine: 'streaming', nodeCount: 100, value: 10 },
+    { engine: 'streaming', nodeCount: 1000, value: 95 },
+  ];
+  const zoomed = renderScalabilityChart(points, { title: 'z', xKey: 'nodeCount', xMin: 100 });
+  assert.match(zoomed, /<polyline /, 'the retained points still draw');
+  assert.doesNotMatch(zoomed, /NaN/);
+});
