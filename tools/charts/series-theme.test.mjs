@@ -28,6 +28,9 @@ import {
   ENGINE_ORDER,
   COLORS,
   ENGINE_LABELS,
+  renderMetricGroupedBars,
+  renderHistoryTrend,
+  renderScalabilityChart,
 } from './chart.mjs';
 
 test('the default theme is the engines one, and the old exports still name it', () => {
@@ -105,4 +108,75 @@ test('the engines theme still resolves its own series exactly as before', () => 
   assert.deepEqual(ENGINE_THEME.ordered(points), ENGINE_ORDER);
   assert.equal(ENGINE_THEME.colorFor('libvips', ENGINE_ORDER), '#9c27b0');
   assert.equal(ENGINE_THEME.labelFor('streaming'), 'Streaming');
+});
+
+/* -------------------------------------------------------------------------- */
+/* The renderers themselves — a theme is only useful if it reaches the SVG.    */
+/* -------------------------------------------------------------------------- */
+
+const STORAGE_THEME = createSeriesTheme({
+  seriesKey: 'backend',
+  series: [
+    { key: 'fs', label: 'Filesystem', color: '#4285f4' },
+    { key: 'pmtiles', label: 'PMTiles', color: '#34a853' },
+  ],
+});
+
+test('renderMetricGroupedBars draws a non-engine series when given its theme', () => {
+  const rows = [
+    { config: '1', backend: 'fs', value: 10 },
+    { config: '1', backend: 'pmtiles', value: 14 },
+    { config: '4', backend: 'fs', value: 40 },
+    { config: '4', backend: 'pmtiles', value: 52 },
+  ];
+  const svg = renderMetricGroupedBars(rows, { title: 'storage', theme: STORAGE_THEME });
+
+  // Four rows, four bars: without a theme these rows have no `engine` field at
+  // all, so the old code drew an empty chart rather than failing loudly.
+  assert.equal((svg.match(/<rect /g) ?? []).length - 2, 4, 'one bar per row (minus 2 legend swatches)');
+  assert.match(svg, /Filesystem/, 'the theme label reaches the legend');
+  assert.match(svg, /PMTiles/);
+  assert.match(svg, /#4285f4/, 'the theme colour reaches the marks');
+  assert.match(svg, /#34a853/);
+});
+
+test('renderHistoryTrend keys its polylines on the theme field', () => {
+  const points = [
+    { runIndex: 0, version: '0.1.0', backend: 'fs', value: 10 },
+    { runIndex: 1, version: '0.2.0', backend: 'fs', value: 12 },
+    { runIndex: 0, version: '0.1.0', backend: 'pmtiles', value: 20 },
+    { runIndex: 1, version: '0.2.0', backend: 'pmtiles', value: 18 },
+  ];
+  const svg = renderHistoryTrend(points, { title: 'history', theme: STORAGE_THEME });
+
+  assert.equal((svg.match(/<polyline /g) ?? []).length, 2, 'one line per backend');
+  assert.match(svg, /Filesystem/);
+  assert.match(svg, /PMTiles/);
+});
+
+test('renderScalabilityChart keys its series on the theme field', () => {
+  const points = [
+    { megapixels: 1, backend: 'fs', value: 10 },
+    { megapixels: 4, backend: 'fs', value: 40 },
+    { megapixels: 1, backend: 'pmtiles', value: 12 },
+    { megapixels: 4, backend: 'pmtiles', value: 46 },
+  ];
+  const svg = renderScalabilityChart(points, { title: 'scale', theme: STORAGE_THEME });
+
+  assert.equal((svg.match(/<polyline /g) ?? []).length, 2, 'one line per backend');
+  assert.match(svg, /Filesystem/);
+});
+
+test('a renderer with no theme still draws engines exactly as before', () => {
+  // The back-compat guard: every existing caller passes no `theme`, and the
+  // byte output must not move. Comparing two renders of the same data is the
+  // cheap half; the fixture tests in render.test.mjs cover the rest.
+  const rows = [
+    { config: '1', engine: 'monolithic', value: 10 },
+    { config: '1', engine: 'streaming', value: 12 },
+  ];
+  const withoutTheme = renderMetricGroupedBars(rows, { title: 't' });
+  const withEngineTheme = renderMetricGroupedBars(rows, { title: 't', theme: ENGINE_THEME });
+  assert.equal(withoutTheme, withEngineTheme, 'the default theme IS the engines theme');
+  assert.match(withoutTheme, /Monolithic/);
 });
