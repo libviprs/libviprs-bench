@@ -1,7 +1,19 @@
 /**
- * SVG chart renderers for the libviprs benchmark report — the JS port of
- * causl-bench's `packages/bench/src/chart.ts` (the proven, article-grade SVG
- * code), adapted to libviprs's engines and JSON shapes.
+ * SVG chart renderers for a benchmark report — the JS port of causl-bench's
+ * `packages/bench/src/chart.ts` (the proven, article-grade SVG code).
+ *
+ * WHAT A SERIES IS, IS A PARAMETER (#104). The renderers were written against
+ * libviprs's four engines and read `p.engine` off every point, which meant they
+ * could draw exactly one family. `storage` has eleven scenarios keyed on
+ * `backend` and got no chart at all, because a renderer handed those rows drew
+ * an empty grid rather than failing. Every renderer now takes an optional
+ * `opts.theme` from {@link createSeriesTheme}, carrying the draw order, the
+ * palette, the labels AND the field the key lives in. No theme means
+ * {@link ENGINE_THEME}, so every existing caller is byte-unchanged.
+ *
+ * That is also what makes this file reusable outside libviprs: the only
+ * libviprs-specific things left in it are the `ENGINES` list and the default
+ * chart titles, both of which a caller can replace without touching a renderer.
  *
  * Ported pieces (same structure, helpers, and rendering approach as the
  * original — not a fresh reimplementation):
@@ -70,27 +82,88 @@ const ENGINES = [
   { key: 'mapreduce', label: 'MapReduce', color: '#ea4335' }, // RGB(234, 67, 53) — red
 ];
 
+/**
+ * Deterministic fallback strokes for a series that appears in the data but is
+ * not in the theme (a new engine, an unlisted backend). Assigned by the
+ * series' sorted position so output stays byte-stable.
+ */
+const FALLBACK_COLORS = ['#607d8b', '#795548', '#5c6bc0', '#00838f', '#c2185b', '#558b2f'];
+
+/**
+ * Build a series theme: what to draw, in what order, in what colour, under
+ * what label, keyed off which field.
+ *
+ * This used to be four module-level constants and three functions closing over
+ * them, which meant this generator could draw exactly one thing: the libviprs
+ * engines. That was fine while `engines` was the only family. It stopped being
+ * fine when `storage` grew eleven scenarios with no chart, and it blocked the
+ * `format` family (#102) outright.
+ *
+ * Two things were baked in and both are parameters now. `series` is the
+ * identity (order, colour, label). `seriesKey` is the FIELD the key lives in:
+ * an engines point carries `engine`, a storage sample carries `backend`, a
+ * format sample would carry `format`. The old code read `p.engine` directly,
+ * so a storage sample could not be drawn at all no matter what colours you
+ * handed it.
+ *
+ * @param {{series: {key:string,label:string,color:string}[], seriesKey?: string, fallbackColors?: string[]}} spec
+ */
+export function createSeriesTheme({ series, seriesKey = 'engine', fallbackColors = FALLBACK_COLORS }) {
+  if (!Array.isArray(series) || series.length === 0) {
+    throw new TypeError('createSeriesTheme: `series` must be a non-empty array');
+  }
+  const order = Object.freeze(series.map((s) => s.key));
+  const colors = Object.freeze(Object.fromEntries(series.map((s) => [s.key, s.color])));
+  const labels = Object.freeze(Object.fromEntries(series.map((s) => [s.key, s.label])));
+  const canonical = new Set(order);
+
+  return Object.freeze({
+    seriesKey,
+    order,
+    colors,
+    labels,
+
+    /**
+     * Theme series first, then any series SEEN IN THE DATA that the theme does
+     * not name, in sorted order. Renderers iterate this rather than `order`
+     * directly, so a series present in the JSON but missing from the theme is
+     * drawn with a fallback colour rather than silently dropped.
+     */
+    ordered(points) {
+      const present = new Set((points ?? []).map((p) => p?.[seriesKey]));
+      const extras = [...present].filter((k) => k != null && !canonical.has(k)).sort();
+      return [...order, ...extras];
+    },
+
+    /** Stroke colour, falling back deterministically for an unthemed series. */
+    colorFor(key, ordered) {
+      if (colors[key]) return colors[key];
+      const extraIndex = (ordered ?? order).indexOf(key) - order.length;
+      const i = extraIndex < 0 ? 0 : extraIndex % fallbackColors.length;
+      return fallbackColors[i];
+    },
+
+    /** Display label, falling back to the raw key so a series is never blank. */
+    labelFor(key) {
+      return labels[key] ?? key;
+    },
+  });
+}
+
+/** The libviprs engines, the default theme and the one every existing caller gets. */
+export const ENGINE_THEME = createSeriesTheme({ series: ENGINES, seriesKey: 'engine' });
+
 /** Canonical engine order — every renderer iterates this for stable output. */
-export const ENGINE_ORDER = Object.freeze(ENGINES.map((e) => e.key));
+export const ENGINE_ORDER = ENGINE_THEME.order;
 
 /** Engine → stroke colour (frozen so the palette contract can't be mutated). */
-export const COLORS = Object.freeze(Object.fromEntries(ENGINES.map((e) => [e.key, e.color])));
+export const COLORS = ENGINE_THEME.colors;
 
 /**
  * Engine → title-cased display label, wired into both legends so the series
  * names match the prior Rust artifacts ('Monolithic'/'Streaming'/'MapReduce').
  */
-export const ENGINE_LABELS = Object.freeze(Object.fromEntries(ENGINES.map((e) => [e.key, e.label])));
-
-/** Set membership test for the canonical engines (drives the fallback path). */
-const CANONICAL = new Set(ENGINE_ORDER);
-
-/**
- * Deterministic fallback strokes for engines that appear in the JSON but are
- * not canonical (e.g. a future engine). Assigned by the engine's sorted
- * position so output stays byte-stable.
- */
-const FALLBACK_COLORS = ['#607d8b', '#795548', '#5c6bc0', '#00838f', '#c2185b', '#558b2f'];
+export const ENGINE_LABELS = ENGINE_THEME.labels;
 
 /**
  * Canonical engines first, then any non-canonical engine SEEN IN THE DATA in
@@ -98,23 +171,18 @@ const FALLBACK_COLORS = ['#607d8b', '#795548', '#5c6bc0', '#00838f', '#c2185b', 
  * an engine present in the JSON but missing from the canonical list is drawn
  * with a fallback colour rather than silently dropped.
  */
-function orderedEngines(points) {
-  const present = new Set(points.map((p) => p.engine));
-  const extras = [...present].filter((e) => !CANONICAL.has(e)).sort();
-  return [...ENGINE_ORDER, ...extras];
+function orderedEngines(points, theme = ENGINE_THEME) {
+  return theme.ordered(points);
 }
 
-/** Stroke colour for an engine, falling back for non-canonical engines. */
-function colorFor(engine, ordered) {
-  if (COLORS[engine]) return COLORS[engine];
-  const extraIndex = ordered.indexOf(engine) - ENGINE_ORDER.length;
-  const i = extraIndex < 0 ? 0 : extraIndex % FALLBACK_COLORS.length;
-  return FALLBACK_COLORS[i];
+/** Stroke colour for a series, falling back for one the theme does not name. */
+function colorFor(engine, ordered, theme = ENGINE_THEME) {
+  return theme.colorFor(engine, ordered, theme);
 }
 
-/** Display label for an engine (title-cased for canonical, raw key otherwise). */
-function labelFor(engine) {
-  return ENGINE_LABELS[engine] ?? engine;
+/** Display label for a series (from the theme, raw key otherwise). */
+function labelFor(engine, theme = ENGINE_THEME) {
+  return theme.labelFor(engine);
 }
 
 /**
@@ -301,6 +369,8 @@ function consecutiveSegments(series, orderOf) {
  * @returns {string} deterministic SVG
  */
 export function renderHistoryTrend(points, opts = {}) {
+  const theme = opts.theme ?? ENGINE_THEME;
+  const seriesKey = theme.seriesKey;
   const width = opts.width ?? 720;
   const height = opts.height ?? 260;
   const padding = 50;
@@ -325,14 +395,14 @@ export function renderHistoryTrend(points, opts = {}) {
   };
   const yFor = (v) => height - padding - (v / maxV) * (height - 2 * padding);
 
-  const ordered = orderedEngines(points);
+  const ordered = orderedEngines(points, theme);
   const lines = ordered
     .map((engine) => {
       const series = points
-        .filter((p) => p.engine === engine && Number.isFinite(p.value))
+        .filter((p) => p[seriesKey] === engine && Number.isFinite(p.value))
         .sort((a, b) => a.runIndex - b.runIndex);
       if (series.length === 0) return '';
-      const color = colorFor(engine, ordered);
+      const color = colorFor(engine, ordered, theme);
       // One polyline per adjacent-snapshot segment → gaps break the line.
       const polylines = consecutiveSegments(series, orderOf)
         .map((seg) => {
@@ -366,10 +436,10 @@ export function renderHistoryTrend(points, opts = {}) {
   // Legend: only engines actually present in this config's data (shared
   // convention with renderScalabilityChart), title-cased display labels.
   const legend = ordered
-    .filter((engine) => points.some((p) => p.engine === engine))
+    .filter((engine) => points.some((p) => p[seriesKey] === engine))
     .map((engine, i) => {
       const x = padding + i * 150;
-      return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(height - 16)}" width="10" height="10" fill="${colorFor(engine, ordered)}"/><text x="${fmtCoord(x + 14)}" y="${fmtCoord(height - 7)}" font-size="10" fill="#333">${escapeXml(labelFor(engine))}</text></g>`;
+      return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(height - 16)}" width="10" height="10" fill="${colorFor(engine, ordered, theme)}"/><text x="${fmtCoord(x + 14)}" y="${fmtCoord(height - 7)}" font-size="10" fill="#333">${escapeXml(labelFor(engine, theme))}</text></g>`;
     })
     .join('');
 
@@ -404,6 +474,8 @@ export function renderHistoryTrend(points, opts = {}) {
  * @returns {string} deterministic SVG
  */
 export function renderScalabilityChart(points, opts = {}) {
+  const theme = opts.theme ?? ENGINE_THEME;
+  const seriesKey = theme.seriesKey;
   const width = opts.width ?? 700;
   const height = opts.height ?? 450;
   const padding = 64;
@@ -501,15 +573,15 @@ export function renderScalabilityChart(points, opts = {}) {
     })
     .join('');
 
-  const ordered = orderedEngines(windowed);
+  const ordered = orderedEngines(windowed, theme);
   const seriesSvg = ordered
     .map((engine) => {
       // Size-sorted points that can be POSITIONED on the x-axis (finite MP).
       const eng = windowed
-        .filter((p) => p.engine === engine && Number.isFinite(p.megapixels))
+        .filter((p) => p[seriesKey] === engine && Number.isFinite(p.megapixels))
         .sort((a, b) => a.megapixels - b.megapixels);
       if (eng.length === 0) return '';
-      const color = colorFor(engine, ordered);
+      const color = colorFor(engine, ordered, theme);
       // Break the line into segments of consecutive plottable points; a
       // dropped size (<=0 / non-finite value in log mode) ends the segment so
       // the line never interpolates across it.
@@ -556,11 +628,11 @@ export function renderScalabilityChart(points, opts = {}) {
   // Legend keeps every engine with INPUT points in the window (even none
   // plottable), so a benchmarked-but-unplottable engine is still disclosed.
   const legend = ordered
-    .filter((engine) => windowed.some((p) => p.engine === engine))
+    .filter((engine) => windowed.some((p) => p[seriesKey] === engine))
     .map((engine, i) => {
       const x = plotL + i * 130;
       const y = height - 14;
-      return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(y - 9)}" width="10" height="10" fill="${colorFor(engine, ordered)}"/><text x="${fmtCoord(x + 14)}" y="${fmtCoord(y)}" font-size="10" fill="#333">${escapeXml(labelFor(engine))}</text></g>`;
+      return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(y - 9)}" width="10" height="10" fill="${colorFor(engine, ordered, theme)}"/><text x="${fmtCoord(x + 14)}" y="${fmtCoord(y)}" font-size="10" fill="#333">${escapeXml(labelFor(engine, theme))}</text></g>`;
     })
     .join('');
 
@@ -614,6 +686,8 @@ export function renderScalabilityChart(points, opts = {}) {
  * @returns {string} deterministic SVG
  */
 export function renderMetricGroupedBars(rows, opts = {}) {
+  const theme = opts.theme ?? ENGINE_THEME;
+  const seriesKey = theme.seriesKey;
   const height = opts.height ?? 320;
   const padding = 56;
   const legendH = 26;
@@ -633,12 +707,12 @@ export function renderMetricGroupedBars(rows, opts = {}) {
       configs.push(r.config);
     }
   }
-  const ordered = orderedEngines(rows);
-  const engines = ordered.filter((engine) => rows.some((r) => r.engine === engine));
+  const ordered = orderedEngines(rows, theme);
+  const engines = ordered.filter((engine) => rows.some((r) => r[seriesKey] === engine));
   // Keep the whole row so `.has()` distinguishes an ABSENT cell from a measured
   // zero, and the optional `error` half-width rides along for the whisker.
   const byKey = new Map();
-  for (const r of rows) byKey.set(`${r.config}|${r.engine}`, r);
+  for (const r of rows) byKey.set(`${r.config}|${r[seriesKey]}`, r);
 
   // Content-sized canvas: reserve a nominal per-engine slot inside each group so
   // groupW never falls below the point where bars go thin/negative. Below the
@@ -710,7 +784,7 @@ export function renderMetricGroupedBars(rows, opts = {}) {
             present && showLabels
               ? `<text x="${fmtCoord(x + barW / 2)}" y="${fmtCoord(topY - 3)}" text-anchor="middle" font-size="9" fill="#444">${formatNumber(v)}${escapeXml(unitSuffix)}</text>`
               : '';
-          return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(y)}" width="${fmtCoord(barW)}" height="${fmtCoord(h)}" fill="${colorFor(engine, ordered)}"/>${whisker}${label}</g>`;
+          return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(y)}" width="${fmtCoord(barW)}" height="${fmtCoord(h)}" fill="${colorFor(engine, ordered, theme)}"/>${whisker}${label}</g>`;
         })
         .join('');
       const sx = gx + groupW / 2;
@@ -723,7 +797,7 @@ export function renderMetricGroupedBars(rows, opts = {}) {
   const legend = engines
     .map((engine, i) => {
       const x = padding + i * 150;
-      return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(legendY - 10)}" width="10" height="10" fill="${colorFor(engine, ordered)}"/><text x="${fmtCoord(x + 14)}" y="${fmtCoord(legendY - 1)}" font-size="10" fill="#333">${escapeXml(labelFor(engine))}</text></g>`;
+      return `<g><rect x="${fmtCoord(x)}" y="${fmtCoord(legendY - 10)}" width="10" height="10" fill="${colorFor(engine, ordered, theme)}"/><text x="${fmtCoord(x + 14)}" y="${fmtCoord(legendY - 1)}" font-size="10" fill="#333">${escapeXml(labelFor(engine, theme))}</text></g>`;
     })
     .join('');
 
