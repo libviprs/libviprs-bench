@@ -14,6 +14,6 @@
     "comparability": "node tools/charts/comparability.mjs"
   },
   "dependencies": {
-    "bencharts": "^0.1.0"
+    "@spdrman/bencharts": "^0.1.0"
   }
 }

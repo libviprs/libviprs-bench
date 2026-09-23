@@ -11,7 +11,7 @@
  * stable for a given set of undeclared series.
  */
 
-import { defineSeries } from 'bencharts';
+import { defineSeries } from '@spdrman/bencharts';
 
 /**
  * Draw order matters. Putting blue between green and red is what keeps the

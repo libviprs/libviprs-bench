@@ -33,7 +33,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { renderGroupedBars, renderTrend, renderSweep } from 'bencharts';
+import { renderGroupedBars, renderTrend, renderSweep } from '@spdrman/bencharts';
 import { series } from './series.mjs';
 import { loadContract, assessComparison, chartableRuns, CONTRACT_PATH } from './comparability.mjs';
 

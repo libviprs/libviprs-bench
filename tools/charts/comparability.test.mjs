@@ -143,8 +143,49 @@ test('chartableRuns drops exactly the held-out cells and keeps the rest', () => 
   assert.ok(kept.every((r) => r.width === 1024));
 });
 
+test('a per-cell override holds out one cell while the scenario stays comparable', () => {
+  const contract = loadContract({
+    ...CONTRACT,
+    scenarios: {
+      pyramid: {
+        ...CONTRACT.scenarios.pyramid,
+        cells: { '512x512': { status: 'unknown', reason: 'nobody measured the output equivalence here' } },
+      },
+    },
+  });
+  const runs = [...FOUR, ...FOUR.map((r) => ({ ...r, width: 512, height: 512, equivalence_psnr_db: null }))];
+  const { cells, violations } = assessComparison(runs, contract);
+  assert.deepEqual(violations, [], 'a declared hold-out is not a violation');
+  assert.equal(cells.find((c) => c.config === '1024x1024').chartable, true);
+  assert.equal(cells.find((c) => c.config === '512x512').chartable, false);
+  assert.equal(cells.find((c) => c.config === '512x512').status, 'unknown');
+});
+
+test('a per-cell override needs a reason, exactly like a scenario one', () => {
+  assert.throws(() => loadContract({
+    ...CONTRACT,
+    scenarios: { pyramid: { ...CONTRACT.scenarios.pyramid, cells: { '512x512': { status: 'unknown' } } } },
+  }), /reason/i);
+  assert.throws(() => loadContract({
+    ...CONTRACT,
+    scenarios: { pyramid: { ...CONTRACT.scenarios.pyramid, cells: { '512x512': { status: 'maybe' } } } },
+  }), /status/i);
+});
+
+/* The gate was made green by declaring the gap it found, so the control that
+ * matters is that it can still go red. A gate nobody has seen fail is not a
+ * gate. */
+test('an UNDECLARED cell with missing evidence still fails, so the gate is not silenced', () => {
+  const contract = loadContract(JSON.parse(readFileSync(join(here, 'comparability.json'), 'utf8')));
+  const fresh = FOUR.map((r) => ({ ...r, width: 8192, height: 8192, equivalence_psnr_db: null }));
+  const { cells, violations } = assessComparison(fresh, contract, { scenario: 'pyramid' });
+  assert.ok(violations.some((v) => v.rule === 'comparable-cells-prove-equivalence'),
+    'a new config with no PSNR must still be refused');
+  assert.equal(cells[0].chartable, false);
+});
+
 /* The point of the gate, against the data actually in the repo. */
-test('the checked-in comparison report is assessed, and names its own gap', () => {
+test('the checked-in comparison report passes, with its known gap declared', () => {
   const runs = JSON.parse(readFileSync(join(repo, 'report', 'benchmark_results.json'), 'utf8'));
   const contract = loadContract(JSON.parse(readFileSync(join(here, 'comparability.json'), 'utf8')));
   const { cells, violations } = assessComparison(runs, contract, { scenario: 'pyramid' });
@@ -153,9 +194,12 @@ test('the checked-in comparison report is assessed, and names its own gap', () =
     assert.ok(cell.work.ratio <= contract.comparabilityTolerance,
       `${cell.config} work ratio ${cell.work.ratio}`);
   }
-  const gap = cells.find((c) => c.config.startsWith('512x512'));
-  assert.ok(gap, 'the 512x512 config is in the report');
-  assert.equal(gap.chartable, false,
-    'it is charted today with no output-equivalence measurement behind it');
-  assert.ok(violations.length > 0, 'and the gate says so rather than passing quietly');
+  assert.deepEqual(violations, [], 'every hold-out is declared, so the gate is green');
+  const gaps = cells.filter((c) => c.config.startsWith('512x512'));
+  assert.equal(gaps.length, 2, 'both 512x512 cells are present');
+  for (const gap of gaps) {
+    assert.equal(gap.chartable, false, 'and neither is raced against libvips');
+    assert.equal(gap.status, 'unknown', 'held out as unknown, which is a to-do with a name on it (#108)');
+  }
+  assert.equal(cells.filter((c) => c.chartable).length, 6);
 });

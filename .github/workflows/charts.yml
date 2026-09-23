@@ -32,7 +32,7 @@ jobs:
           node-version: '22'
 
       # `npm install` rather than `npm ci` until a lockfile is committed, which
-      # waits on bencharts being published.
+      # waits on @spdrman/bencharts being published.
       - name: Install
         run: npm install --no-audit --no-fund
 

@@ -19,17 +19,42 @@
   "scenarios": {
     "pyramid": {
       "status": "comparable",
-      "work": ["tiles_produced", "levels_processed"],
-      "equivalence": { "kind": "psnr", "floorDb": 40 },
+      "work": [
+        "tiles_produced",
+        "levels_processed"
+      ],
+      "equivalence": {
+        "kind": "psnr",
+        "floorDb": 40
+      },
       "note": [
         "libvips against the three libviprs engines. Every run reports the tile and level counts, so",
         "work equivalence is measured rather than asserted, and the libviprs engines report PSNR",
         "against the libvips output. The reference technology carries no PSNR against itself."
-      ]
+      ],
+      "cells": {
+        "512x512_c0": {
+          "status": "unknown",
+          "reason": [
+            "The harness records no equivalence_psnr_db at this size, for any engine, so the output",
+            "equivalence was never established. Work equivalence is fine (13 tiles, 10 levels, ratio",
+            "1.000); it is only the output check that did not run. Tracked as libviprs-bench#108.",
+            "Delete this override once the measurement exists."
+          ]
+        },
+        "512x512_c4": {
+          "status": "unknown",
+          "reason": [
+            "As 512x512_c0: no equivalence_psnr_db at this size. Tracked as libviprs-bench#108."
+          ]
+        }
+      }
     },
     "generate": {
       "status": "comparable",
-      "work": ["tiles_produced"],
+      "work": [
+        "tiles_produced"
+      ],
       "equivalence": {
         "kind": "not-available",
         "reason": [
@@ -40,22 +65,105 @@
         ]
       }
     },
-    "open": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "first_lookup": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "read_random": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "read_plan_order": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "read_tileid_order": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "read_concurrent@1": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "read_concurrent@2": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "read_concurrent@4": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
-    "read_concurrent@8": { "status": "comparable", "work": ["tiles_produced"], "equivalence": { "kind": "not-available", "reason": "See generate: the digest cannot cross container formats." } },
+    "open": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "first_lookup": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "read_random": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "read_plan_order": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "read_tileid_order": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "read_concurrent@1": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "read_concurrent@2": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "read_concurrent@4": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
+    "read_concurrent@8": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": "See generate: the digest cannot cross container formats."
+      }
+    },
     "decode_root": {
       "status": "non-comparable",
       "reason": [
         "pmtiles only. A directory tree has no root directory to decode, so there is no second",
         "measurement and nothing to compare against. Measured and published on its own."
       ],
-      "work": ["tiles_produced"]
+      "work": [
+        "tiles_produced"
+      ]
     },
     "requests": {
       "status": "non-comparable",
@@ -65,7 +173,9 @@
         "the other a measurement, and charting them against each other under one scenario name",
         "compares a declaration to an observation. Measured 94 declared against 96 observed."
       ],
-      "work": ["tiles_produced"]
+      "work": [
+        "tiles_produced"
+      ]
     }
   }
 }

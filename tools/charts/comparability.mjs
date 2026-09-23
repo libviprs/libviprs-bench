@@ -55,6 +55,14 @@ export function loadContract(raw) {
         + 'unknown is not a synonym for non-comparable: one says we know these differ and here is how, '
         + 'the other says nobody has established what this cell counts.');
     }
+    for (const [cellKey, override] of Object.entries(decl.cells ?? {})) {
+      if (!STATUSES.has(override?.status)) {
+        throw new Error(`${name}.cells.${cellKey}: status must be one of ${[...STATUSES].join(', ')}`);
+      }
+      if (override.status !== 'comparable' && !flat(override.reason)) {
+        throw new Error(`${name}.cells.${cellKey}: ${override.status} needs a reason`);
+      }
+    }
     if (decl.status === 'comparable') {
       if (!Array.isArray(decl.work) || decl.work.length === 0) {
         throw new Error(`${name}: comparable needs a work list to check against`);
@@ -108,7 +116,12 @@ export function assessComparison(runs, contract, opts = {}) {
 
   const cells = [];
   for (const { scenario, config, runs: members } of grouped.values()) {
-    const decl = loaded.scenarios[scenario];
+    const scenarioDecl = loaded.scenarios[scenario];
+    // A scenario can be comparable in general and still have a cell nobody has
+    // established. That is an honest `unknown`: a to-do with a name on it,
+    // rather than a status invented to keep a chart.
+    const override = scenarioDecl?.cells?.[config];
+    const decl = override ? { ...scenarioDecl, ...override } : scenarioDecl;
     if (!decl) {
       violations.push({
         rule: 'every-scenario-is-declared',

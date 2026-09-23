@@ -23,7 +23,7 @@
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderTrend } from 'bencharts';
+import { renderTrend } from '@spdrman/bencharts';
 import { series, labelFor, betterOf } from './series.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
