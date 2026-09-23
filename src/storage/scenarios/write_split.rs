@@ -107,28 +107,35 @@ pub const WRITE_PHASES: [&str; 2] = ["generate_ingest", "generate_finalize"];
 /// How far the two phases may drift from the combined row before the split is
 /// measuring something else.
 ///
-/// 20%, and deliberately tighter than the read side's 25%. That allowance is
+/// 15%, and deliberately tighter than the read side's 25%. That allowance is
 /// wide for a structural reason this split does not have: the cold split runs
 /// two opens per iteration against a combined row that runs one, so a real
 /// difference is built into it. Here the split runs one generation and the
 /// combined row runs one generation, and the only thing between them is
-/// dispersion. Measured drifts on this protocol, medians over seven
-/// interleaved repetitions: -7.7% to +5.3% over five runs on an arm64 laptop
-/// with another job on it, +0.8% on an x86_64 CI runner, and -0.5% to -3.9%
-/// across the four `(backend, source)` combinations of the 21851-tile cell.
+/// dispersion.
 ///
-/// The two numbers this sits between pull opposite ways. Too wide and the
-/// check stops catching anything; too tight and it reds on dispersion, which
-/// is the failure nobody investigates and everybody reruns. 20% is about two
-/// and a half times the worst drift measured, and the counterfactual on the
-/// cell the check runs on is about two and a half times the other side of it.
+/// The two numbers this sits between pull opposite ways. Too wide and
+/// [`reconciliation_is_meaningful`] starts refusing the cells the check could
+/// have run on, because the counterfactual has to clear the allowance to mean
+/// anything. Too tight and it reds on dispersion, which is the failure nobody
+/// investigates and everybody reruns.
+///
+/// Measured on this protocol, medians over seven interleaved repetitions. On
+/// the x86_64 runner that actually runs the job, the drift is -0.8% and the
+/// counterfactual is -29.2%, so 15% sits about twenty times over one and
+/// twice under the other. On an arm64 laptop with another build on it, twelve
+/// runs drifted between -7.7% and +9.6% with the counterfactual between -44%
+/// and -58%, which is 1.6 times over and about three times under. The
+/// 21851-tile cell drifts -0.5% to -3.9% across its four
+/// `(backend, source)` combinations and is refused by the guard, as it should
+/// be.
 ///
 /// One thing it deliberately does not have to absorb. In a sweep the two
 /// phases arm the counting allocator and `generate` does not, so the
 /// reconciliation arms across all three itself and the drift is a difference
 /// between two measurements made the same way rather than partly an artefact
 /// of instrumenting one side.
-pub const RECONCILIATION_ALLOWANCE_PCT: f64 = 20.0;
+pub const RECONCILIATION_ALLOWANCE_PCT: f64 = 15.0;
 
 // ---------------------------------------------------------------------------
 // Reconciliation
