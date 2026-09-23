@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use libviprs::planner::TileCoord;
 use libviprs::sink::TileFormat;
@@ -22,16 +23,17 @@ use libviprs::sink_pmtiles::PmTilesSink;
 use libviprs::{EngineBuilder, FsSink};
 
 use libviprs_bench::storage::cells::{
-    self, Backend, Cell, LARGEST_FLAT_ROOT, ROOT_ONLY_MAX_ENTRIES, Regime, SEED, SOURCES, Source,
+    self, Backend, Cell, LARGEST_FLAT_ROOT, Profile, ROOT_ONLY_MAX_ENTRIES, Regime, SEED, SOURCES,
+    Source,
 };
 use libviprs_bench::storage::document::Origin;
 use libviprs_bench::storage::model::{Modelled, RemoteModel, SyncModel};
 use libviprs_bench::storage::scenarios::counting::CountingFactory;
 use libviprs_bench::storage::scenarios::{
-    ReaderFactory, concurrent_curve, decode_root, first_lookup, open, plan_order, replicate,
-    requests, tileid_order,
+    Coordinates, ReaderFactory, ScenarioContext, TileReader, concurrent_curve, decode_root,
+    first_lookup, open, plan_order, replicate, requests, tileid_order,
 };
-use libviprs_bench::storage::{FileReaderFactory, raster};
+use libviprs_bench::storage::{FileReaderFactory, raster, scenario_named};
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -513,6 +515,154 @@ fn the_cold_split_accounts_for_the_whole_combined_row() {
         open::RECONCILIATION_ALLOWANCE_PCT
     );
     assert_eq!(pass.by_phase().len(), open::COLD_PHASES.len());
+}
+
+// ---------------------------------------------------------------------------
+// The write split
+// ---------------------------------------------------------------------------
+//
+// The read side was taken apart because one `read_cold` number carried a file
+// open, a header read, a ranged read, an inflate, a varint loop and a lookup,
+// and the fixes for a slow inflate and a slow `pread` are different pieces of
+// work. `generate` is in exactly that state and nobody has said so: one number
+// over the PNG encode, every `add_tile` and `finish`, against a directory
+// backend it loses to by 1.15x to 1.83x, and no way to tell whether that gap
+// is ingestion or finalization (libviprs#1136).
+
+/// A factory for a scenario that has nothing to read.
+///
+/// The write phases make their own artefact, so the one thing this must not do
+/// is hand back a working reader: a phase that quietly opened one would be
+/// measuring the read side and nothing here would see it.
+struct NoReaders;
+
+impl ReaderFactory for NoReaders {
+    fn fresh(&self) -> Result<Arc<dyn TileReader>, String> {
+        Err("a write scenario has nothing to read".to_string())
+    }
+}
+
+/// Run one write-side scenario by the name the document keys it on, and hand
+/// back its `wall` samples in milliseconds.
+///
+/// By name through `scenario_named`, and not by constructing the type, because
+/// the name is what a child process resolves and what the page reads off a row.
+/// A phase that exists as a struct nobody can reach by name is a phase the
+/// sweep never runs, which is the failure `tests/storage_registry.rs` was
+/// written for.
+fn wall_of(name: &str, backend: Backend, cell: Cell, scratch: &Path, reps: u32) -> Vec<f64> {
+    let scenario = scenario_named(name)
+        .unwrap_or_else(|| panic!("the registry has no `{name}`, so no row can carry it"));
+    let coords = Coordinates::default();
+    let factory = NoReaders;
+    let ctx = ScenarioContext {
+        backend,
+        cell,
+        profile: Profile::Ci,
+        seed: SEED,
+        scratch_root: Some(scratch),
+        artefact: None,
+        coords: &coords,
+        readers: &factory,
+    };
+    let run = scenario
+        .run(&ctx, reps)
+        .unwrap_or_else(|skip| panic!("`{name}` did not run: {}", skip.reason));
+    run.series
+        .iter()
+        .find(|s| s.metric.name == "wall")
+        .unwrap_or_else(|| panic!("`{name}` publishes no `wall` series"))
+        .samples
+        .clone()
+}
+
+fn median_of(samples: &[f64]) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN in a wall sample"));
+    sorted[sorted.len() / 2]
+}
+
+/// The two write phases add up to the combined `generate` row.
+///
+/// RED against the sweep as it stands, because there is no `generate_ingest`
+/// and no `generate_finalize` to sum: `scenario_named` answers `None` and the
+/// panic names the phase that is missing. That is the whole point of running it
+/// first. Every other issue in the epic would otherwise be sized against a
+/// guess about which half of `generate` is expensive.
+///
+/// Once the phases exist it is RED against a split that measures some other
+/// piece of work: an ingest that stops before the last tile, a finalize timed
+/// around a `finish` the engine had already called, a hand walk that builds its
+/// raster inside the timed section when the combined row builds it outside.
+///
+/// The share assertion is the half that is easy to leave out and the one that
+/// makes the drift assertion mean anything. A split that dropped the finalize
+/// entirely drifts by exactly the finalize's own share, so on a cell where the
+/// finalize is 3% of the pass the sum reconciles whether or not the finalize
+/// was ever measured. This cell's finalize is over half the pass, optimised.
+///
+/// `#[ignore]`d and release-only, in the shape
+/// `the_cold_split_accounts_for_the_whole_combined_row` settled on:
+/// `storage-measured.yml` runs it. An unoptimised PNG encode is about thirty
+/// times slower while the finalize is disk-bound and barely moves, so in a
+/// debug build the finalize collapses to 3% of the pass and there is nothing
+/// left to reconcile against.
+#[test]
+#[ignore = "generates the 728-tile cell and needs release timings; run with --release --ignored"]
+fn the_write_split_accounts_for_the_whole_generate_row() {
+    if cfg!(debug_assertions) {
+        panic!(
+            "this reconciliation is a ratio between two timings in the same binary, and debug \
+             slows the encode about thirty times while leaving the disk-bound finalize alone; \
+             run it with --release"
+        );
+    }
+
+    let dir = tempdir();
+    // 1024x1024 at a 46 pixel tile: 728 planned tiles, every one a distinct
+    // payload on the gradient, and about forty milliseconds a pass optimised,
+    // so seven of them cost nothing. The published cells are all far larger and
+    // the split is the same shape on them; this is the cheapest cell that has a
+    // finalize worth reconciling against.
+    let cell = distinct_tiny(Source::Gradient);
+    let backend = Backend::PmTiles;
+
+    // One discarded pass, thrown away. The first generation in the process pays
+    // for a cold page cache and an allocator that has never grown, and whichever
+    // of the three below ran first would otherwise carry it into the ratio.
+    let _ = wall_of("generate", backend, cell, dir.path(), 1);
+
+    let reps = 5;
+    let ingest = median_of(&wall_of("generate_ingest", backend, cell, dir.path(), reps));
+    let finalize = median_of(&wall_of(
+        "generate_finalize",
+        backend,
+        cell,
+        dir.path(),
+        reps,
+    ));
+    let combined = median_of(&wall_of("generate", backend, cell, dir.path(), reps));
+
+    let split = ingest + finalize;
+    let share = finalize / split * 100.0;
+    let drift = (split - combined) / combined * 100.0;
+    println!(
+        "{} tiles on {}: ingest {ingest:.2} ms, finalize {finalize:.2} ms, split {split:.2} ms, \
+         combined {combined:.2} ms, drift {drift:+.1}%, finalize {share:.1}% of the pass",
+        cell.declared_tiles,
+        backend.as_str()
+    );
+
+    assert!(
+        share >= 30.0,
+        "the finalize is {share:.1}% of the pass, and a split that never measured it at all would \
+         drift by exactly that much, so this cell cannot tell the two apart"
+    );
+    assert!(
+        drift.abs() <= 25.0,
+        "the phases sum to {split:.2} ms against a combined row of {combined:.2}, a drift of \
+         {drift:+.1}%"
+    );
 }
 
 // ---------------------------------------------------------------------------
