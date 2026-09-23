@@ -126,22 +126,28 @@ fn the_heap_gauge_counts_live_bytes_and_not_a_high_water_mark() {
     );
 }
 
-/// An unarmed gauge answers nothing, and a window inside a window leaves the
-/// outer one open.
+/// Nesting a window leaves the outer one counting.
 ///
-/// RED against a `peak_bytes` that returns `Some(0)` off the back of counters
-/// nothing has written: zero is the best possible number on a lower-is-better
-/// column, so a binary that forgot the `#[global_allocator]` line would
-/// publish the best memory result in the sweep. And RED against a window that
-/// clears the flag on its way out instead of restoring it, which is the shape
-/// the reconciliation needs: it arms around three scenarios, two of which arm
-/// again inside it.
+/// The shape the reconciliation needs: it arms around three scenarios and two
+/// of them arm again inside it, so a window that clears the flag on its way
+/// out rather than restoring it would turn the measurement off halfway
+/// through and the combined row would be the only one not instrumented, which
+/// is the asymmetry the arming is there to remove.
+///
+/// The other half is that a window answers `Some` from the allocator's own
+/// flag rather than from a counter. There is no way to exercise the
+/// uninstalled case from a binary that installs it, so what is asserted is
+/// that the two answers come from one fact: `installed` and a number being
+/// there never disagree. The failure that matters is a `peak_bytes` that
+/// returns `Some(0)` off counters nothing has written, and zero is the best
+/// possible number on a lower-is-better column.
 #[test]
-fn the_heap_gauge_reports_nothing_it_did_not_measure() {
+fn nesting_a_window_leaves_the_outer_one_counting() {
     {
         let armed = heap::arm();
-        assert!(armed.peak_bytes().is_some());
-        assert!(armed.live_bytes().is_some());
+        assert_eq!(armed.installed(), armed.peak_bytes().is_some());
+        assert_eq!(armed.installed(), armed.live_bytes().is_some());
+        assert!(armed.installed(), "this binary installs the allocator");
     }
     let outer = heap::arm();
     {
