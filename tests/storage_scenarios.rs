@@ -31,16 +31,19 @@ use libviprs_bench::storage::model::{Modelled, RemoteModel, SyncModel};
 use libviprs_bench::storage::scenarios::counting::CountingFactory;
 use libviprs_bench::storage::scenarios::{
     Coordinates, ReaderFactory, ScenarioContext, TileReader, concurrent_curve, decode_root,
-    first_lookup, open, plan_order, replicate, requests, tileid_order,
+    first_lookup, open, plan_order, replicate, requests, tileid_order, write_split,
 };
 use libviprs_bench::storage::{FileReaderFactory, heap, raster, scenario_named};
 
 /// The same counting allocator the `storage` binary installs.
 ///
-/// Here too, and for the same reason: the write phases read their heap peak
-/// out of it, and a test binary without it would run them and see `None`. Off
-/// until something arms it, so the rest of this file pays a relaxed load per
-/// allocation and nothing else.
+/// Nothing in this file reads a heap number: the claims about what the phases
+/// hold are in `tests/storage_write_heap.rs`, which is a binary of nothing but
+/// measuring tests because the counters are one per process. It is here so the
+/// reconciliation can arm across the combined row as well as the two phases,
+/// and have all three carry the same allocator. Off until something arms it,
+/// so the rest of this file pays a relaxed load per allocation and nothing
+/// else.
 #[global_allocator]
 static HEAP: heap::Counting = heap::Counting;
 
@@ -538,95 +541,6 @@ fn the_cold_split_accounts_for_the_whole_combined_row() {
 // backend it loses to by 1.15x to 1.83x, and no way to tell whether that gap
 // is ingestion or finalization (libviprs#1136).
 
-/// The gauge falls when memory is given back, which is what makes it live heap.
-///
-/// RED against a high-water counter that only ever climbs, which is what RSS
-/// is and which is why the engine repository's two memory figures cannot be
-/// reconciled with each other: `tests/pmtiles_bounded_memory.rs` measures live
-/// heap and gets 72 bytes a distinct payload, and `src/pmtiles/writer.rs`'s
-/// table measures RSS and implies 105.8 across its five rows. This is the
-/// assertion that says which of the two quantities the heap numbers this file
-/// publishes are.
-#[test]
-fn the_heap_gauge_counts_live_bytes_and_not_a_high_water_mark() {
-    /// The block this test watches go up and come back down.
-    const BLOCK: u64 = 4 << 20;
-    /// Slack on the block's own size. A window measures the change in live
-    /// heap, not this test's own allocations, so memory that was live when the
-    /// window opened and is freed inside it moves the reading by a few hundred
-    /// bytes in the other direction.
-    const SLACK: u64 = 64 << 10;
-
-    let armed = heap::arm();
-    assert!(
-        armed.installed(),
-        "this test binary did not install the counting allocator, so every heap number in it \
-         would be a zero wearing a measurement's clothes"
-    );
-
-    let block = vec![0u8; BLOCK as usize];
-    let held = armed.live_bytes().expect("an armed gauge answers");
-    let peak = armed.peak_bytes().expect("an armed gauge answers");
-    assert!(
-        held + SLACK >= BLOCK,
-        "four mebibytes went live and the gauge reads {held}"
-    );
-
-    drop(block);
-    let after = armed.live_bytes().expect("an armed gauge answers");
-    assert!(
-        held.saturating_sub(after) + SLACK >= BLOCK,
-        "the four mebibytes were freed and live heap only fell from {held} to {after}, so this is \
-         a high-water mark and not a live gauge"
-    );
-    assert!(
-        armed.peak_bytes().expect("an armed gauge answers") >= peak,
-        "the peak is the one number here that must not fall"
-    );
-    assert!(
-        armed.peak_bytes().expect("an armed gauge answers") >= after,
-        "the peak is below what is still live"
-    );
-}
-
-/// An unarmed gauge answers nothing, and a window inside a window leaves the
-/// outer one open.
-///
-/// RED against a `peak_bytes` that returns `Some(0)` off the back of counters
-/// nothing has written: zero is the best possible number on a lower-is-better
-/// column, so a binary that forgot the `#[global_allocator]` line would
-/// publish the best memory result in the sweep. And RED against a window that
-/// clears the flag on its way out instead of restoring it, which is the shape
-/// the reconciliation needs: it arms around three scenarios, two of which arm
-/// again inside it.
-#[test]
-fn the_heap_gauge_reports_nothing_it_did_not_measure() {
-    {
-        let armed = heap::arm();
-        assert!(armed.peak_bytes().is_some());
-        assert!(armed.live_bytes().is_some());
-    }
-    let outer = heap::arm();
-    {
-        let inner = heap::arm();
-        assert!(
-            inner.installed(),
-            "a nested window could not find the allocator the window around it is using"
-        );
-    }
-    assert!(
-        outer.installed(),
-        "an inner window closing disarmed the outer one, so a phase inside a measurement turns \
-         the measurement off on its way out"
-    );
-    let block = vec![0u8; 1 << 20];
-    assert!(
-        outer.live_bytes().expect("an armed gauge answers") > 0,
-        "the outer window stopped counting once the inner one closed"
-    );
-    drop(block);
-}
-
 /// A factory for a scenario that has nothing to read.
 ///
 /// The write phases make their own artefact, so the one thing this must not do
@@ -730,6 +644,12 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
     // of the three below ran first would otherwise carry it into the ratio.
     let _ = wall_of("generate", backend, cell, dir.path(), 1);
 
+    // Armed across all three, so the combined row carries the counting
+    // allocator the two phases carry. It is inside the noise floor either way,
+    // and a drift that is partly an artefact of instrumenting one side is a
+    // drift nobody can read.
+    let _armed = heap::arm();
+
     let reps = 5;
     let ingest = median_of(&wall_of("generate_ingest", backend, cell, dir.path(), reps));
     let finalize = median_of(&wall_of(
@@ -742,8 +662,8 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
     let combined = median_of(&wall_of("generate", backend, cell, dir.path(), reps));
 
     let split = ingest + finalize;
-    let share = finalize / split * 100.0;
-    let drift = (split - combined) / combined * 100.0;
+    let share = write_split::finalize_share_pct(ingest, finalize);
+    let drift = write_split::drift_pct(split, combined);
     println!(
         "{} tiles on {}: ingest {ingest:.2} ms, finalize {finalize:.2} ms, split {split:.2} ms, \
          combined {combined:.2} ms, drift {drift:+.1}%, finalize {share:.1}% of the pass",
@@ -751,16 +671,140 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
         backend.as_str()
     );
 
+    write_split::reconciliation_is_meaningful(share)
+        .expect("this cell's finalize is big enough for the sum to be able to fail");
     assert!(
-        share >= 30.0,
-        "the finalize is {share:.1}% of the pass, and a split that never measured it at all would \
-         drift by exactly that much, so this cell cannot tell the two apart"
-    );
-    assert!(
-        drift.abs() <= 25.0,
+        write_split::reconciles(split, combined),
         "the phases sum to {split:.2} ms against a combined row of {combined:.2}, a drift of \
-         {drift:+.1}%"
+         {drift:+.1}% and the allowance is {}%",
+        write_split::RECONCILIATION_ALLOWANCE_PCT
     );
+}
+
+/// The reconciliation guard says no to a pass whose finalize is too small to
+/// prove anything.
+///
+/// RED against a guard that accepts every pass, which is what this becomes the
+/// moment somebody points the reconciliation at the directory backend and
+/// widens it until it goes green. `FsSink`'s finish on an XYZ layout with
+/// dedupe off is a few microseconds, so the directory backend's finalize is
+/// about 0% of its pass and the sum there reconciles whether or not the
+/// finalize was measured at all.
+#[test]
+fn the_write_split_guard_refuses_a_finalize_too_small_to_reconcile() {
+    let refusal = write_split::reconciliation_is_meaningful(0.04)
+        .expect_err("a finalize that is a twenty-fifth of a percent proves nothing");
+    assert!(
+        refusal.contains("0.0%"),
+        "the refusal has to name the share it refused: {refusal}"
+    );
+    // The debug build's PMTiles share, which is the other way a real pass
+    // lands under the floor: an unoptimised encode is about thirty times
+    // slower and the disk-bound finalize is not.
+    assert!(write_split::reconciliation_is_meaningful(3.4).is_err());
+
+    // The positive control: the guard is not simply a `no`. The optimised
+    // PMTiles pass on the cell the reconciliation runs on is over half
+    // finalize, and the floor itself passes.
+    write_split::reconciliation_is_meaningful(54.0)
+        .expect("an optimised PMTiles pass is over half finalize");
+    write_split::reconciliation_is_meaningful(write_split::MIN_RECONCILABLE_FINALIZE_PCT)
+        .expect("the floor itself is meaningful");
+    // At compile time, because it is a relationship between two constants and
+    // not a fact about a run: the floor has to sit above the allowance or a
+    // split that dropped the finalize entirely still reconciles.
+    const {
+        assert!(
+            write_split::MIN_RECONCILABLE_FINALIZE_PCT > write_split::RECONCILIATION_ALLOWANCE_PCT
+        )
+    };
+
+    // And the two phases the guard is about are the two the registry has.
+    assert_eq!(
+        write_split::WRITE_PHASES,
+        ["generate_ingest", "generate_finalize"]
+    );
+    for name in write_split::WRITE_PHASES {
+        assert!(
+            scenario_named(name).is_some(),
+            "`{name}` is a declared phase and `scenario_named` cannot find it"
+        );
+    }
+}
+
+/// The drift arithmetic is signed and the allowance is two-sided.
+///
+/// RED against a `reconciles` that compares a raw difference, or a one-sided
+/// one. The split comes out under the combined row as often as over it: the
+/// measured drifts on this machine were -5.5%, +5.6% and +14.4% on three runs
+/// of the same shape, so a check written for one sign passes half its
+/// failures.
+#[test]
+fn the_write_reconciliation_allowance_is_two_sided() {
+    assert!(write_split::reconciles(100.0, 100.0));
+    assert!(write_split::reconciles(120.0, 100.0));
+    assert!(write_split::reconciles(80.0, 100.0));
+    assert!(!write_split::reconciles(126.0, 100.0));
+    assert!(!write_split::reconciles(74.0, 100.0));
+    assert!(write_split::drift_pct(76.0, 100.0) < 0.0);
+    assert!(write_split::drift_pct(124.0, 100.0) > 0.0);
+
+    // A share is a share of the pass, not of the combined row, and a pass of
+    // nothing has no share rather than an infinite one.
+    assert_eq!(write_split::finalize_share_pct(75.0, 25.0), 25.0);
+    assert_eq!(write_split::finalize_share_pct(0.0, 0.0), 0.0);
+}
+
+/// The hand walk leaves behind the archive the combined pass leaves behind.
+///
+/// This is the assertion the timing reconciliation cannot make. A drift inside
+/// the allowance says the two passes cost about the same; it does not say they
+/// did the same thing, and a hand walk that dropped a level, encoded at a
+/// different quality or laid the tiles out in another order would be timing a
+/// cheaper piece of work under the same name. The digest says they are the
+/// same bytes in the same places, on both backends, which is what
+/// `artefact_digest` is for.
+///
+/// RED against a split that drives the sink itself instead of letting the
+/// engine drive it, which is the obvious way to write this and produces a
+/// different archive the moment the engine's resample or blank-tile policy
+/// moves.
+#[test]
+fn the_hand_walked_write_produces_the_archive_the_combined_pass_does() {
+    let cell = tiny(Source::Gradient);
+    let plan = cell.plan().expect("the cell plans");
+    for backend in Backend::ALL {
+        let dir = tempdir();
+        let by_hand = dir.path().join("hand");
+        let by_engine = dir.path().join("engine");
+        std::fs::create_dir_all(&by_hand).expect("a scratch directory");
+        std::fs::create_dir_all(&by_engine).expect("a scratch directory");
+
+        let walked =
+            write_split::hand_walk(backend, cell, &plan, &by_hand).expect("the hand walk writes");
+        let combined = libviprs_bench::storage::write_pyramid(backend, cell, &plan, &by_engine)
+            .expect("the combined pass writes");
+
+        assert_eq!(
+            walked.tiles_produced,
+            combined.tiles_produced,
+            "{} produced {} tiles by hand and {} through the engine",
+            backend.as_str(),
+            walked.tiles_produced,
+            combined.tiles_produced
+        );
+        let hand_digest = libviprs_bench::storage::artefact_digest(&walked.output)
+            .expect("the hand-walked artefact hashes");
+        let engine_digest = libviprs_bench::storage::artefact_digest(&combined.output)
+            .expect("the combined artefact hashes");
+        assert_eq!(
+            hand_digest,
+            engine_digest,
+            "on {} the hand walk and the combined pass produced different artefacts, so the two \
+             halves are not a split of the row they reconcile against",
+            backend.as_str()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
