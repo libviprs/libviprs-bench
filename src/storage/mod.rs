@@ -54,6 +54,9 @@ pub mod archive;
 pub mod attest;
 pub mod cells;
 pub mod document;
+/// Live heap bytes, counted by a global allocator a binary opts into
+/// (libviprs#1136).
+pub mod heap;
 /// Canonical JSON and the four digests a sealed document carries (issue #66).
 pub mod integrity;
 /// The two declared cost models (issue #67). Not measurements, and never

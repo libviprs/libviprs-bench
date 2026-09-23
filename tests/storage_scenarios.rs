@@ -33,7 +33,16 @@ use libviprs_bench::storage::scenarios::{
     Coordinates, ReaderFactory, ScenarioContext, TileReader, concurrent_curve, decode_root,
     first_lookup, open, plan_order, replicate, requests, tileid_order,
 };
-use libviprs_bench::storage::{FileReaderFactory, raster, scenario_named};
+use libviprs_bench::storage::{FileReaderFactory, heap, raster, scenario_named};
+
+/// The same counting allocator the `storage` binary installs.
+///
+/// Here too, and for the same reason: the write phases read their heap peak
+/// out of it, and a test binary without it would run them and see `None`. Off
+/// until something arms it, so the rest of this file pays a relaxed load per
+/// allocation and nothing else.
+#[global_allocator]
+static HEAP: heap::Counting = heap::Counting;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -528,6 +537,95 @@ fn the_cold_split_accounts_for_the_whole_combined_row() {
 // over the PNG encode, every `add_tile` and `finish`, against a directory
 // backend it loses to by 1.15x to 1.83x, and no way to tell whether that gap
 // is ingestion or finalization (libviprs#1136).
+
+/// The gauge falls when memory is given back, which is what makes it live heap.
+///
+/// RED against a high-water counter that only ever climbs, which is what RSS
+/// is and which is why the engine repository's two memory figures cannot be
+/// reconciled with each other: `tests/pmtiles_bounded_memory.rs` measures live
+/// heap and gets 72 bytes a distinct payload, and `src/pmtiles/writer.rs`'s
+/// table measures RSS and implies 105.8 across its five rows. This is the
+/// assertion that says which of the two quantities the heap numbers this file
+/// publishes are.
+#[test]
+fn the_heap_gauge_counts_live_bytes_and_not_a_high_water_mark() {
+    /// The block this test watches go up and come back down.
+    const BLOCK: u64 = 4 << 20;
+    /// Slack on the block's own size. A window measures the change in live
+    /// heap, not this test's own allocations, so memory that was live when the
+    /// window opened and is freed inside it moves the reading by a few hundred
+    /// bytes in the other direction.
+    const SLACK: u64 = 64 << 10;
+
+    let armed = heap::arm();
+    assert!(
+        armed.installed(),
+        "this test binary did not install the counting allocator, so every heap number in it \
+         would be a zero wearing a measurement's clothes"
+    );
+
+    let block = vec![0u8; BLOCK as usize];
+    let held = armed.live_bytes().expect("an armed gauge answers");
+    let peak = armed.peak_bytes().expect("an armed gauge answers");
+    assert!(
+        held + SLACK >= BLOCK,
+        "four mebibytes went live and the gauge reads {held}"
+    );
+
+    drop(block);
+    let after = armed.live_bytes().expect("an armed gauge answers");
+    assert!(
+        held.saturating_sub(after) + SLACK >= BLOCK,
+        "the four mebibytes were freed and live heap only fell from {held} to {after}, so this is \
+         a high-water mark and not a live gauge"
+    );
+    assert!(
+        armed.peak_bytes().expect("an armed gauge answers") >= peak,
+        "the peak is the one number here that must not fall"
+    );
+    assert!(
+        armed.peak_bytes().expect("an armed gauge answers") >= after,
+        "the peak is below what is still live"
+    );
+}
+
+/// An unarmed gauge answers nothing, and a window inside a window leaves the
+/// outer one open.
+///
+/// RED against a `peak_bytes` that returns `Some(0)` off the back of counters
+/// nothing has written: zero is the best possible number on a lower-is-better
+/// column, so a binary that forgot the `#[global_allocator]` line would
+/// publish the best memory result in the sweep. And RED against a window that
+/// clears the flag on its way out instead of restoring it, which is the shape
+/// the reconciliation needs: it arms around three scenarios, two of which arm
+/// again inside it.
+#[test]
+fn the_heap_gauge_reports_nothing_it_did_not_measure() {
+    {
+        let armed = heap::arm();
+        assert!(armed.peak_bytes().is_some());
+        assert!(armed.live_bytes().is_some());
+    }
+    let outer = heap::arm();
+    {
+        let inner = heap::arm();
+        assert!(
+            inner.installed(),
+            "a nested window could not find the allocator the window around it is using"
+        );
+    }
+    assert!(
+        outer.installed(),
+        "an inner window closing disarmed the outer one, so a phase inside a measurement turns \
+         the measurement off on its way out"
+    );
+    let block = vec![0u8; 1 << 20];
+    assert!(
+        outer.live_bytes().expect("an armed gauge answers") > 0,
+        "the outer window stopped counting once the inner one closed"
+    );
+    drop(block);
+}
 
 /// A factory for a scenario that has nothing to read.
 ///
