@@ -335,6 +335,12 @@ fn walk<S: TileSink>(
 
 /// Milliseconds for one phase, the unit and direction `generate.wall` already
 /// uses, so the three rows sit on one axis.
+///
+/// The only series either phase publishes. `generate` also carries
+/// `tiles_per_s`, and neither half of it should: a rate over the ingest alone
+/// invites a reader to compare it with the whole pass's rate as though the two
+/// answered the same question, and a finalize has no per-tile rate worth the
+/// name. The generation rate belongs to the generation.
 pub const WALL: MetricSpec = MetricSpec {
     name: "wall",
     unit: Unit::Milliseconds,
@@ -352,8 +358,8 @@ enum Phase {
 /// back.
 pub struct GenerateIngest;
 
-/// `generate_finalize`: the `finish` on its own, after an ingestion that is
-/// run but not timed.
+/// `generate_finalize`: the `finish` on its own, after an ingestion this
+/// scenario runs and does not publish.
 ///
 /// The ingestion is paid for again rather than shared with
 /// [`GenerateIngest`], and it has to be: each repetition of each phase owns a
