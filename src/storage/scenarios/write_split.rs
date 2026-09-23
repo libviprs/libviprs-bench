@@ -38,13 +38,18 @@
 //! The guard therefore refuses a share under [`MIN_RECONCILABLE_FINALIZE_PCT`]
 //! instead of being loosened until every cell passes.
 //!
-//! Two things put a cell under it. The directory backend is one: `FsSink`'s
-//! finish canonicalises a dedupe layout that is off by default and writes a
-//! DZI sidecar that the XYZ layout does not have, so it is a few microseconds
-//! and the answer to which half of `generate` it spends its time in is "all of
-//! it, in ingestion". An unoptimised build is the other: debug slows the
-//! encode about thirty times and leaves the disk-bound finalize alone, so the
-//! PMTiles finalize falls from over half a pass to three percent of one.
+//! Two things put a cell under it. The directory backend is one. Everything
+//! `FsSink::finish` does is conditional and this sweep meets none of the
+//! conditions: it canonicalises a dedupe layout only when dedupe is on and it
+//! is off by default, writes a DZI sidecar only for a DeepZoom plan and a
+//! properties sidecar only for Zoomify or IIIF while these cells are XYZ,
+//! re-hashes the tree only under `ChecksumMode::Verify`, and writes a manifest
+//! only when one was asked for. So the tree's finish is a few microseconds,
+//! and the answer to which half of `generate` the directory backend spends its
+//! time in is "all of it, in ingestion". An unoptimised build is the other:
+//! debug slows the encode about thirty times and leaves the disk-bound
+//! finalize alone, so the PMTiles finalize falls from over half a pass to
+//! three percent of one.
 //!
 //! # What the heap numbers are
 //!
@@ -96,10 +101,15 @@ pub const WRITE_PHASES: [&str; 2] = ["generate_ingest", "generate_finalize"];
 ///
 /// 25%, the allowance the read side's guard settled on, and for the same
 /// reason: the split and the combined row are two separate generations, so the
-/// whole of a generation's run-to-run dispersion is in the drift, and the
-/// split carries a counting allocator the combined row does not. It is still
+/// whole of a generation's run-to-run dispersion is in the drift. It is still
 /// tight enough for the failure it exists for, because a split that dropped
 /// the finalize on a cell this check will run on drifts by 35% to 56%.
+///
+/// One thing it deliberately does not have to absorb. In a sweep the two
+/// phases arm the counting allocator and `generate` does not, so the
+/// reconciliation arms across all three itself and the drift is a difference
+/// between two measurements made the same way rather than partly an artefact
+/// of instrumenting one side.
 pub const RECONCILIATION_ALLOWANCE_PCT: f64 = 25.0;
 
 /// The smallest share of a pass the finalize may be for a reconciliation to
