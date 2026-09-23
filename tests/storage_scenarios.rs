@@ -631,19 +631,26 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
     }
 
     let dir = tempdir();
-    // 1024x1024 at a 46 pixel tile: 728 planned tiles, every one a distinct
-    // payload on the gradient, and about forty milliseconds a pass optimised,
-    // so five of them cost nothing.
+    // 1024x1024 at a 23 pixel tile: 2752 planned tiles over one megapixel, so
+    // the encode is small and the index work is not, which is what makes the
+    // finalize a large share of the pass. About fifty milliseconds a pass
+    // optimised, so seven of them cost nothing.
     //
     // It is not a small version of a published cell and it is not meant to be.
     // The published cells are mostly the other shape: the 21851-tile one is
     // 3.3% finalize, and the guard refuses it for the reason the guard exists.
-    // This cell is over half finalize, which is what lets the sum fail, and a
-    // reconciliation has to run where it can fail. The method it proves is
-    // then the same method on every other cell, where the digest agreement and
-    // the engine-asked-once check still hold and only the summing does not
-    // prove itself.
-    let cell = distinct_tiny(Source::Gradient);
+    // A reconciliation has to run where it can fail, so it runs on the cell
+    // with the most finalize in it that still costs nothing. The method it
+    // proves is then the same method on every other cell, where the digest
+    // agreement and the engine-asked-once check still hold and only the
+    // summing does not prove itself.
+    //
+    // 46 pixels was the first choice, at 49% finalize here. On the CI runner,
+    // whose disk is quicker and whose cores are slower, the same cell came out
+    // at 28%, and a floor written from this machine's number refused it. The
+    // guard asks the two measured numbers now, and this cell is 59% here for
+    // the same reason it will be more than 28% there.
+    let cell = cell_at(1024, 1024, 23, Source::Gradient);
     let backend = Backend::PmTiles;
 
     // One discarded pass, thrown away. The first generation in the process pays
@@ -657,16 +664,34 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
     // drift nobody can read.
     let _armed = heap::arm();
 
-    let reps = 5;
-    let ingest = median_of(&wall_of("generate_ingest", backend, cell, dir.path(), reps));
-    let finalize = median_of(&wall_of(
-        "generate_finalize",
-        backend,
-        cell,
-        dir.path(),
-        reps,
-    ));
-    let combined = median_of(&wall_of("generate", backend, cell, dir.path(), reps));
+    // Interleaved, a repetition at a time, and the order reversed on every
+    // other one. Seven of one scenario then seven of the next then seven of
+    // the last is the shape that made the split look 10.8% cheap on this
+    // laptop: fourteen generations of sustained load before the combined row
+    // is measured is a thermal ramp, and whichever scenario goes last wears
+    // it. `run_sweep` alternates its backends scenario by scenario for the
+    // same reason.
+    let reps = 7;
+    let mut ingest_samples = Vec::new();
+    let mut finalize_samples = Vec::new();
+    let mut combined_samples = Vec::new();
+    let one = |name: &str, into: &mut Vec<f64>| {
+        into.extend(wall_of(name, backend, cell, dir.path(), 1));
+    };
+    for rep in 0..reps {
+        if rep % 2 == 0 {
+            one("generate_ingest", &mut ingest_samples);
+            one("generate_finalize", &mut finalize_samples);
+            one("generate", &mut combined_samples);
+        } else {
+            one("generate", &mut combined_samples);
+            one("generate_finalize", &mut finalize_samples);
+            one("generate_ingest", &mut ingest_samples);
+        }
+    }
+    let ingest = median_of(&ingest_samples);
+    let finalize = median_of(&finalize_samples);
+    let combined = median_of(&combined_samples);
 
     let split = ingest + finalize;
     let share = write_split::finalize_share_pct(ingest, finalize);
@@ -678,7 +703,7 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
         backend.as_str()
     );
 
-    write_split::reconciliation_is_meaningful(share)
+    write_split::reconciliation_is_meaningful(ingest, combined)
         .expect("this cell's finalize is big enough for the sum to be able to fail");
     assert!(
         write_split::reconciles(split, combined),
@@ -694,37 +719,47 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
 /// RED against a guard that accepts every pass, which is what this becomes the
 /// moment somebody points the reconciliation at the directory backend and
 /// widens it until it goes green. `FsSink`'s finish on an XYZ layout with
-/// dedupe off is a few microseconds, so the directory backend's finalize is
-/// about 0% of its pass and the sum there reconciles whether or not the
-/// finalize was measured at all.
+/// dedupe off is a microsecond and a half, so the tree's ingest alone is the
+/// tree's whole pass and the sum reconciles whether or not the finalize was
+/// measured at all.
+///
+/// It asks the counterfactual with two measured numbers rather than checking
+/// the finalize's share of the pass against a floor. The floor was the same
+/// test with the drift assumed to be zero, and it cost a red build: the cell I
+/// first picked was 54% finalize on this laptop and 28.3% on the CI runner,
+/// under a floor of 30%, on a run whose split reconciled to within 0.8%.
 #[test]
 fn the_write_split_guard_refuses_a_finalize_too_small_to_reconcile() {
-    let refusal = write_split::reconciliation_is_meaningful(0.04)
-        .expect_err("a finalize that is a twenty-fifth of a percent proves nothing");
+    // The 21851-tile cell, measured: the archive's ingest is 6687.2 ms against
+    // a combined row of 6945.2, which is 3.7% apart, so its 225.8 ms of
+    // finalize is not enough for the sum to be able to fail.
+    let refusal = write_split::reconciliation_is_meaningful(6687.2, 6945.2)
+        .expect_err("a finalize that is 3.3% of the pass proves nothing");
     assert!(
-        refusal.contains("0.0%"),
-        "the refusal has to name the share it refused: {refusal}"
+        refusal.contains("6687.20") && refusal.contains("6945.20"),
+        "the refusal has to name the two numbers it refused: {refusal}"
     );
-    // The debug build's PMTiles share, which is the other way a real pass
-    // lands under the floor: an unoptimised encode is about thirty times
-    // slower and the disk-bound finalize is not.
-    assert!(write_split::reconciliation_is_meaningful(3.4).is_err());
+    // And the tree on the same cell, whose finalize is a microsecond and a
+    // half against a pass of four seconds.
+    assert!(write_split::reconciliation_is_meaningful(4051.2, 4102.2).is_err());
 
-    // The positive control: the guard is not simply a `no`. The optimised
-    // PMTiles pass on the cell the reconciliation runs on is over half
-    // finalize, and the floor itself passes.
-    write_split::reconciliation_is_meaningful(54.0)
-        .expect("an optimised PMTiles pass is over half finalize");
-    write_split::reconciliation_is_meaningful(write_split::MIN_RECONCILABLE_FINALIZE_PCT)
-        .expect("the floor itself is meaningful");
-    // At compile time, because it is a relationship between two constants and
-    // not a fact about a run: the floor has to sit above the allowance or a
-    // split that dropped the finalize entirely still reconciles.
-    const {
-        assert!(
-            write_split::MIN_RECONCILABLE_FINALIZE_PCT > write_split::RECONCILIATION_ALLOWANCE_PCT
-        )
-    };
+    // The positive control: the guard is not simply a `no`. The cell the
+    // reconciliation runs on came out at -50.3% on this laptop and -27.7% on
+    // the CI runner, both outside the allowance, so a split that dropped the
+    // finalize there is caught.
+    write_split::reconciliation_is_meaningful(24.42, 49.10)
+        .expect("an ingest half the size of the combined row can fail the check");
+    write_split::reconciliation_is_meaningful(30.67, 42.45)
+        .expect("the CI runner's numbers on the same cell can fail the check too");
+
+    // The boundary is the allowance itself, and nothing else.
+    let combined = 100.0;
+    let allowance = write_split::RECONCILIATION_ALLOWANCE_PCT;
+    assert!(
+        write_split::reconciliation_is_meaningful(combined - allowance + 1.0, combined).is_err()
+    );
+    write_split::reconciliation_is_meaningful(combined - allowance - 1.0, combined)
+        .expect("an ingest just outside the allowance can fail the check");
 
     // And the two phases the guard is about are the two the registry has.
     assert_eq!(
@@ -742,17 +777,16 @@ fn the_write_split_guard_refuses_a_finalize_too_small_to_reconcile() {
 /// The drift arithmetic is signed and the allowance is two-sided.
 ///
 /// RED against a `reconciles` that compares a raw difference, or a one-sided
-/// one. The split comes out under the combined row as often as over it: the
-/// measured drifts on this machine were -5.5%, +5.6% and +14.4% on three runs
-/// of the same shape, so a check written for one sign passes half its
-/// failures.
+/// one. The split comes out under the combined row as often as over it: five
+/// runs of the same shape on this machine drifted +2.9%, -7.7%, -1.5%, +1.3%
+/// and +5.3%, so a check written for one sign passes half its failures.
 #[test]
 fn the_write_reconciliation_allowance_is_two_sided() {
     assert!(write_split::reconciles(100.0, 100.0));
-    assert!(write_split::reconciles(120.0, 100.0));
-    assert!(write_split::reconciles(80.0, 100.0));
-    assert!(!write_split::reconciles(126.0, 100.0));
-    assert!(!write_split::reconciles(74.0, 100.0));
+    assert!(write_split::reconciles(115.0, 100.0));
+    assert!(write_split::reconciles(85.0, 100.0));
+    assert!(!write_split::reconciles(121.0, 100.0));
+    assert!(!write_split::reconciles(79.0, 100.0));
     assert!(write_split::drift_pct(76.0, 100.0) < 0.0);
     assert!(write_split::drift_pct(124.0, 100.0) > 0.0);
 

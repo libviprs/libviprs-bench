@@ -31,12 +31,11 @@
 //!
 //! [`reconciles`] is the check. [`reconciliation_is_meaningful`] is the part
 //! worth reading twice, and it is the write side's version of the read side's
-//! too-small-a-root guard. A split that never measured the finalize at all
-//! drifts by exactly the finalize's own share of the pass, so on a cell where
-//! the finalize is three percent the sum reconciles whether or not the
-//! finalize was ever measured, and a green reconciliation there means nothing.
-//! The guard therefore refuses a share under [`MIN_RECONCILABLE_FINALIZE_PCT`]
-//! instead of being loosened until every cell passes.
+//! too-small-a-root guard. A split that never measured the finalize at all is
+//! the ingest on its own, so on a cell where the finalize is three percent of
+//! the pass that failure reconciles too, and a green check there means
+//! nothing. The guard asks that counterfactual outright rather than being
+//! loosened until every cell passes.
 //!
 //! Most of the published cells are refused by it, and that is the honest
 //! answer rather than a gap. The 21851-tile cell is 3.3% finalize on the
@@ -44,8 +43,8 @@
 //! finalize from an unmeasured one. What holds on every cell is the rest: the
 //! hand walk's artefact hashes to the same digest as the combined pass's, and
 //! the wrapper refuses a pass in which the engine did not ask to finish
-//! exactly once. The reconciliation runs where it can fail, on a cell that is
-//! over half finalize, and what it proves is the method.
+//! exactly once. The reconciliation runs where it can fail, and what it proves
+//! is the method.
 //!
 //! Two things put a cell under it. The directory backend is one. Everything
 //! `FsSink::finish` does is conditional and this sweep meets none of the
@@ -108,27 +107,28 @@ pub const WRITE_PHASES: [&str; 2] = ["generate_ingest", "generate_finalize"];
 /// How far the two phases may drift from the combined row before the split is
 /// measuring something else.
 ///
-/// 25%, the allowance the read side's guard settled on, and for the same
-/// reason: the split and the combined row are two separate generations, so the
-/// whole of a generation's run-to-run dispersion is in the drift. It is still
-/// tight enough for the failure it exists for, because a split that dropped
-/// the finalize on a cell this check will run on drifts by 35% to 56%.
+/// 20%, and deliberately tighter than the read side's 25%. That allowance is
+/// wide for a structural reason this split does not have: the cold split runs
+/// two opens per iteration against a combined row that runs one, so a real
+/// difference is built into it. Here the split runs one generation and the
+/// combined row runs one generation, and the only thing between them is
+/// dispersion. Measured drifts on this protocol, medians over seven
+/// interleaved repetitions: -7.7% to +5.3% over five runs on an arm64 laptop
+/// with another job on it, +0.8% on an x86_64 CI runner, and -0.5% to -3.9%
+/// across the four `(backend, source)` combinations of the 21851-tile cell.
+///
+/// The two numbers this sits between pull opposite ways. Too wide and the
+/// check stops catching anything; too tight and it reds on dispersion, which
+/// is the failure nobody investigates and everybody reruns. 20% is about two
+/// and a half times the worst drift measured, and the counterfactual on the
+/// cell the check runs on is about two and a half times the other side of it.
 ///
 /// One thing it deliberately does not have to absorb. In a sweep the two
 /// phases arm the counting allocator and `generate` does not, so the
 /// reconciliation arms across all three itself and the drift is a difference
 /// between two measurements made the same way rather than partly an artefact
 /// of instrumenting one side.
-pub const RECONCILIATION_ALLOWANCE_PCT: f64 = 25.0;
-
-/// The smallest share of a pass the finalize may be for a reconciliation to
-/// say anything.
-///
-/// Derived from the allowance rather than picked, because the relationship is
-/// the point: a split that never measured the finalize drifts by exactly the
-/// finalize's own share, so under the allowance that failure reconciles. The
-/// factor is the margin.
-pub const MIN_RECONCILABLE_FINALIZE_PCT: f64 = RECONCILIATION_ALLOWANCE_PCT * 1.2;
+pub const RECONCILIATION_ALLOWANCE_PCT: f64 = 20.0;
 
 // ---------------------------------------------------------------------------
 // Reconciliation
@@ -154,22 +154,34 @@ pub fn finalize_share_pct(ingest_ms: f64, finalize_ms: f64) -> f64 {
     finalize_ms / split * 100.0
 }
 
-/// Whether a pass with this finalize share is one a reconciliation check can
-/// say anything about.
+/// Whether this pass is one a reconciliation check can say anything about.
+///
+/// It asks the counterfactual outright: had the finalize never been measured,
+/// the split would have been the ingest alone, so the check is only able to
+/// fail when the ingest alone does **not** reconcile with the combined row.
+///
+/// This used to be a floor on the finalize's share of the pass, at 1.2 times
+/// the allowance, which is the same test with the drift assumed to be zero.
+/// The drift is not zero, and the proxy is calibrated on whichever machine
+/// wrote it down: the cell I picked was 54% finalize on this laptop and 28.3%
+/// on the CI runner, whose disk is quicker and whose cores are slower, so the
+/// floor refused a pass that reconciled to within 0.8%. Asking the two
+/// measured numbers needs no calibration.
 ///
 /// `Err` carries the reason, in the shape
 /// [`super::open::reconciliation_is_meaningful`] carries its own: a cell that
 /// cannot reconcile still publishes its phases, it just does not claim they
 /// were checked.
-pub fn reconciliation_is_meaningful(finalize_share: f64) -> Result<(), String> {
-    if finalize_share >= MIN_RECONCILABLE_FINALIZE_PCT {
+pub fn reconciliation_is_meaningful(ingest_ms: f64, combined_ms: f64) -> Result<(), String> {
+    if !reconciles(ingest_ms, combined_ms) {
         return Ok(());
     }
     Err(format!(
-        "a finalize that is {finalize_share:.1}% of the pass is under the \
-         {MIN_RECONCILABLE_FINALIZE_PCT:.0}% this check needs: a split that never measured the \
-         finalize at all drifts by exactly that share, so the sum here reconciles whether or not \
-         the finalize was measured"
+        "an ingest of {ingest_ms:.2} ms on its own is within {RECONCILIATION_ALLOWANCE_PCT}% of \
+         the combined row's {combined_ms:.2} ms, a drift of {:+.1}%, so a split that never \
+         measured the finalize at all would reconcile here and this cell cannot tell that failure \
+         from a correct split",
+        drift_pct(ingest_ms, combined_ms)
     ))
 }
 
