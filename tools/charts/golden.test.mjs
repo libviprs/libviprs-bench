@@ -103,12 +103,16 @@ test('render.mjs actually consumes the RunMetrics value fields (proof of reads)'
   const outDir = freshOut();
   renderAll({ resultsPath: G_RESULTS, outDir });
   // wall_time {secs:0, nanos:85000000} → 85 ms label; libvips 140 ms.
+  // The unit now rides in the subtitle rather than glued to every bar label, so
+  // the value and the unit are asserted separately: both still have to be there.
   const wall = readFileSync(join(outDir, 'chart_wall_time.svg'), 'utf8');
-  assert.ok(wall.includes('85ms'), 'monolithic wall time (from the nested Duration) is charted');
-  assert.ok(wall.includes('140ms'), 'libvips wall time is charted');
+  assert.ok(wall.includes('>85<'), 'monolithic wall time (from the nested Duration) is charted');
+  assert.ok(wall.includes('>140<'), 'libvips wall time is charted');
+  assert.match(wall, /ms &#183;|ms \u00b7|>ms/, 'and the chart still says what unit that is');
   // peak_rss_bytes 209_715_200 / 1 MiB = 200 MB.
   const mem = readFileSync(join(outDir, 'chart_peak_memory.svg'), 'utf8');
-  assert.ok(mem.includes('200MB'), 'peak RSS is derived from peak_rss_bytes and charted');
+  assert.ok(mem.includes('>200<'), 'peak RSS is derived from peak_rss_bytes and charted');
+  assert.ok(mem.includes('MB'), 'and its unit is stated');
 });
 
 // Value oracle for the DERIVED extractors (throughput / efficiency / resource
@@ -132,20 +136,22 @@ test('the golden round-trip pins the DERIVED metric values (arithmetic oracle)',
   label('chart_throughput.svg', '1000'); // 85 / 0.085
   label('chart_efficiency.svg', '5'); //     1000 / 200
   label('chart_resource_cost.svg', '0.2'); //(200 * 0.085) / 85
-  label('chart_tracked_memory.svg', '16MB'); // 16 MiB
+  label('chart_tracked_memory.svg', '16'); // 16 MiB, unit now in the subtitle
+  assert.ok(readFileSync(join(outDir, 'chart_tracked_memory.svg'), 'utf8').includes('MB'),
+    'and the chart still states the unit');
 });
 
 test('wall-time / peak-RSS charts carry the 95%-CI whisker; ratio charts do not', () => {
   const outDir = freshOut();
   renderAll({ resultsPath: G_RESULTS, outDir });
   // RunStats.wall_ms_ci95 / rss_mb_ci95 are non-zero in the golden → a whisker
-  // (a #333 stroke line) must appear on wall time and peak RSS…
+  // must appear on wall time and peak RSS…
   for (const file of ['chart_wall_time.svg', 'chart_peak_memory.svg']) {
-    assert.match(readFileSync(join(outDir, file), 'utf8'), /stroke="#333"/, `${file} has CI whiskers`);
+    assert.match(readFileSync(join(outDir, file), 'utf8'), /class="bc-whisker"/, `${file} has CI whiskers`);
   }
   // …but the ratio metrics have no CI, so no whisker.
   for (const file of ['chart_throughput.svg', 'chart_efficiency.svg', 'chart_resource_cost.svg']) {
-    assert.ok(!readFileSync(join(outDir, file), 'utf8').includes('stroke="#333"'), `${file} has no whisker`);
+    assert.ok(!readFileSync(join(outDir, file), 'utf8').includes('class="bc-whisker"'), `${file} has no whisker`);
   }
 });
 

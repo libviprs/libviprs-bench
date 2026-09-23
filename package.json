@@ -1,0 +1,19 @@
+{
+  "name": "libviprs-bench-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Node tooling for the libviprs benchmark harness: charts, the comparability gate, and the contract sync.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tools/charts tools/contract tools",
+    "charts": "node tools/charts/render.mjs",
+    "comparability": "node tools/charts/comparability.mjs"
+  },
+  "dependencies": {
+    "bencharts": "^0.1.0"
+  }
+}
