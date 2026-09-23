@@ -38,6 +38,15 @@
 //! The guard therefore refuses a share under [`MIN_RECONCILABLE_FINALIZE_PCT`]
 //! instead of being loosened until every cell passes.
 //!
+//! Most of the published cells are refused by it, and that is the honest
+//! answer rather than a gap. The 21851-tile cell is 3.3% finalize on the
+//! archive and about 0.0% on the tree, so its sum cannot tell a measured
+//! finalize from an unmeasured one. What holds on every cell is the rest: the
+//! hand walk's artefact hashes to the same digest as the combined pass's, and
+//! the wrapper refuses a pass in which the engine did not ask to finish
+//! exactly once. The reconciliation runs where it can fail, on a cell that is
+//! over half finalize, and what it proves is the method.
+//!
 //! Two things put a cell under it. The directory backend is one. Everything
 //! `FsSink::finish` does is conditional and this sweep meets none of the
 //! conditions: it canonicalises a dedupe layout only when dedupe is on and it
