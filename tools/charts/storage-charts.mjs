@@ -47,6 +47,60 @@ export function attachWorkCounts(document) {
 const slug = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '-');
 
 /**
+ * The half-width of a confidence interval, whatever shape the document carries.
+ *
+ * `ci95` is `[lo, hi]`, not a scalar. The first version of this file tested it
+ * with `Number.isFinite`, which is false for an array, so NO storage chart ever
+ * drew a whisker while the chart cheerfully carried a "95% CI" label. The test
+ * fixture used a scalar, so the suite agreed with the code and neither agreed
+ * with the data.
+ *
+ * The interval is not symmetric about the median, and a whisker is. I take the
+ * longer arm, so the whisker always covers the interval rather than cutting it
+ * short, and say so here because a symmetric drawing of an asymmetric interval
+ * is a small lie either way and the honest choice is the conservative one.
+ *
+ * @param {unknown} ci95
+ * @param {number} median
+ * @returns {number|null}
+ */
+export function halfWidth(ci95, median) {
+  if (Number.isFinite(ci95)) return /** @type {number} */ (ci95);
+  if (!Array.isArray(ci95) || ci95.length !== 2) return null;
+  const [lo, hi] = ci95;
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || !Number.isFinite(median)) return null;
+  const arm = Math.max(median - lo, hi - median);
+  return arm > 0 ? arm : null;
+}
+
+/** The median of a list, for collapsing repeated placements of one cell. */
+export function medianOf(values) {
+  const v = [...values].sort((a, b) => a - b);
+  if (v.length === 0) return null;
+  const mid = v.length >> 1;
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
+/**
+ * Rows the harness itself does not stand behind.
+ *
+ * The document flags every one of these and the first version of this renderer
+ * read none of them: 210 of 528 rows in the current archive are
+ * `confidence: low`, 40 are `timerSaturated` and 44 are `oversubscribed`, and
+ * all of them were drawn identically to a high-confidence row. A saturated
+ * timer in particular is not a slow measurement, it is a measurement of the
+ * clock, and racing it against a row that clears the floor compares two
+ * different things.
+ */
+export function unfitToRace(cell) {
+  const why = [];
+  if (cell.timerSaturated) why.push('timer saturated');
+  if (cell.oversubscribed) why.push('oversubscribed');
+  if (cell.confidence === 'low') why.push(`low confidence: ${(cell.lowConfidenceReasons ?? []).join('; ') || 'unstated'}`);
+  return why;
+}
+
+/**
  * @param {object} document a storage family report
  * @param {{ contract?: object }} [opts]
  */
@@ -98,14 +152,40 @@ export function buildStorageCharts(document, opts = {}) {
       // Every backend gets a slot in every cell it could have run, so one that
       // did not run reads as absent rather than vanishing from the chart.
       const groups = [...new Set(metricCells.map((c) => c.cell))].sort();
-      const index = new Map(metricCells.map((c) => [`${c.cell}\u0000${c.backend}`, c]));
+      // A Map keyed on cell and backend KEEPS THE LAST ROW AND DROPS THE REST.
+      // The control cell is deliberately measured six times per sweep to show
+      // drift, so that collapsed 22 rows to 12 and charted one arbitrary sixth
+      // of the evidence. Its six placements span 10.67x to 16.89x on open.p50,
+      // and which one you saw depended on iteration order.
+      const placements = new Map();
+      for (const c of metricCells) {
+        const key = `${c.cell}\u0000${c.backend}`;
+        if (!placements.has(key)) placements.set(key, []);
+        placements.get(key).push(c);
+      }
       const rows = [];
       for (const group of groups) {
         for (const backend of backends) {
-          const hit = index.get(`${group}\u0000${backend}`);
-          if (!hit) continue;
-          const row = { group, series: backend, value: hit.median };
-          if (Number.isFinite(hit.ci95) && hit.ci95 > 0) row.error = hit.ci95;
+          const hits = placements.get(`${group}\u0000${backend}`) ?? [];
+          const fit = hits.filter((h) => unfitToRace(h).length === 0);
+          if (fit.length === 0) {
+            if (hits.length > 0) {
+              held.push({
+                scenario, metric, cell: group, backend,
+                status: 'unfit-to-race',
+                reasons: [...new Set(hits.flatMap(unfitToRace))],
+              });
+            }
+            continue;
+          }
+          const value = medianOf(fit.map((h) => h.median));
+          const row = { group, series: backend, value };
+          // One placement gets its own interval; several get the spread across
+          // them, which is the wider and more honest number.
+          const arm = fit.length === 1
+            ? halfWidth(fit[0].ci95, fit[0].median)
+            : (Math.max(...fit.map((h) => h.median)) - Math.min(...fit.map((h) => h.median))) / 2;
+          if (Number.isFinite(arm) && arm > 0) row.error = arm;
           rows.push(row);
         }
       }
@@ -120,7 +200,7 @@ export function buildStorageCharts(document, opts = {}) {
           title: `${labelFor(metric)} · ${scenario}`,
           unit: sample.unit,
           better: betterOf(sample.direction),
-          errorLabel: '95% CI',
+          errorLabel: '95% CI or placement spread',
         }),
       });
     }
