@@ -79,7 +79,13 @@ export function loadContract(raw) {
   return { ...contract, comparabilityTolerance: tolerance, scenarios };
 }
 
-const configOf = (run) =>
+/**
+ * A cell's config key. The engines families key on image size and concurrency;
+ * the storage family keys on its cell id, which is one pyramid shape at one
+ * source. The caller says which, because guessing from the fields present is
+ * how a family with neither would get an `undefinedxundefined` group.
+ */
+const defaultConfigOf = (run) =>
   `${run.width}x${run.height}${run.concurrency === undefined || run.concurrency === null ? '' : `_c${run.concurrency}`}`;
 
 const technologyOf = (run) => run.engine ?? run.backend;
@@ -93,6 +99,7 @@ const technologyOf = (run) => run.engine ?? run.backend;
  */
 export function assessComparison(runs, contract, opts = {}) {
   const loaded = contract.scenarios && contract.comparabilityTolerance ? contract : loadContract(contract);
+  const configOf = opts.configOf ?? defaultConfigOf;
   const tolerance = loaded.comparabilityTolerance;
   const reference = loaded.equivalenceDefaults?.referenceTechnology ?? null;
 
@@ -250,6 +257,7 @@ function assessEquivalence(members, decl, contract, reference) {
 
 /** The runs a cross-technology chart may draw. */
 export function chartableRuns(runs, assessment, opts = {}) {
+  const configOf = opts.configOf ?? defaultConfigOf;
   const ok = new Set(assessment.cells.filter((c) => c.chartable).map((c) => `${c.scenario}\u0000${c.config}`));
   return runs.filter((r) => ok.has(`${r.scenario ?? opts.scenario}\u0000${configOf(r)}`));
 }
