@@ -1,12 +1,16 @@
 name: Storage measured claims
 
-# The two assertions that open an archive and read what it came out as are
+# The assertions that open an archive and read what it came out as are
 # `#[ignore]`d, because between them they generate a fifty megabyte archive and
 # a two hundred megabyte one and nobody wants that in the lint job. `ci.yml`
 # runs `cargo test --lib --tests` with no `--ignored` in either cell, so until
 # this file existed the brink cell's "16369 entries, no leaf pointers, fourteen
 # under the cutoff" and the six-phase reconciliation were guarded by tests that
 # never executed.
+#
+# The write split's reconciliation joined them (libviprs#1136). It is here for
+# the second of the two reasons below rather than the first: its cell is a 3 MB
+# raster, and what it needs is the optimiser.
 #
 # Shrinking the fixtures was the other option and it is not available: the brink
 # cell *is* the cell whose root stops under the writer's cutoff, so a smaller one
@@ -20,8 +24,12 @@ name: Storage measured claims
 # it is mirrored in the same wave, and a new file does not.
 #
 # Release, not debug: the brink archive takes minutes to generate unoptimised
-# and about half a second optimised, and the reconciliation is a ratio between
-# two timings in the same binary, which debug's uneven slowdowns distort.
+# and about half a second optimised, and a reconciliation is a ratio between
+# two timings in the same binary, which debug's uneven slowdowns distort. The
+# write split is the sharpest case of that. Debug slows the PNG encode about
+# thirty times and leaves the disk-bound finalize alone, so the finalize falls
+# from over half a pass to three percent of one and the split's own guard
+# refuses the cell as too small to reconcile on.
 
 on:
   push:
@@ -54,6 +62,6 @@ jobs:
           workspaces: libviprs-bench
       # The measured claims. `--ignored` is the whole point of this job: these
       # two tests open the archives and ask them, and nothing else in CI does.
-      - name: Brink and leaf cells, and the cold-split reconciliation
+      - name: Brink and leaf cells, and the two split reconciliations
         working-directory: libviprs-bench
         run: cargo test --release --test storage_scenarios -- --ignored --nocapture
