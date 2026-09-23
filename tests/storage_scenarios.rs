@@ -633,9 +633,16 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
     let dir = tempdir();
     // 1024x1024 at a 46 pixel tile: 728 planned tiles, every one a distinct
     // payload on the gradient, and about forty milliseconds a pass optimised,
-    // so seven of them cost nothing. The published cells are all far larger and
-    // the split is the same shape on them; this is the cheapest cell that has a
-    // finalize worth reconciling against.
+    // so five of them cost nothing.
+    //
+    // It is not a small version of a published cell and it is not meant to be.
+    // The published cells are mostly the other shape: the 21851-tile one is
+    // 3.3% finalize, and the guard refuses it for the reason the guard exists.
+    // This cell is over half finalize, which is what lets the sum fail, and a
+    // reconciliation has to run where it can fail. The method it proves is
+    // then the same method on every other cell, where the digest agreement and
+    // the engine-asked-once check still hold and only the summing does not
+    // prove itself.
     let cell = distinct_tiny(Source::Gradient);
     let backend = Backend::PmTiles;
 
