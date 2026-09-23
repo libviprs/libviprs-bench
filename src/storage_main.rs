@@ -25,6 +25,19 @@ use std::process::ExitCode;
 use libviprs_bench::family::Family;
 use libviprs_bench::storage::{self, cells::Profile};
 
+/// The counting allocator, installed here rather than in the library, because
+/// a `#[global_allocator]` is a property of a binary and this is the binary
+/// whose scenarios ask for heap numbers.
+///
+/// Off until a phase arms it, so every scenario that does not want counting
+/// pays one relaxed load per allocation and nothing writes the counters. The
+/// two write phases publish the peak; everything else is unaffected, which
+/// matters most for the `read_concurrent@T` ladder, where eight threads
+/// sharing a counter would be contention this harness invented and then
+/// published as the archive's.
+#[global_allocator]
+static HEAP: storage::heap::Counting = storage::heap::Counting;
+
 fn main() -> ExitCode {
     // The child path first: a child must never fall through into a sweep.
     if let Some(code) = storage::maybe_run_single_subcommand() {
