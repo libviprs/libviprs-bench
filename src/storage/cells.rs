@@ -542,17 +542,21 @@ pub fn replicate_cell(profile: Profile) -> Option<Cell> {
     }
 }
 
-/// The scenarios a profile walks, by name, in registry order.
+/// The scenarios a profile walks, by name, in the order a reader meets them.
 ///
 /// `ci` walks the cheap end and says so here rather than skipping quietly at
 /// run time. What it leaves out is the thread ladder, which is four scenarios
 /// over two backends and measures contention that one cell on a shared runner
 /// cannot see anyway, and `replicate`, which needs a schedule `ci` does not
 /// have. Everything else runs, because the point of `ci` is that the harness
-/// produces every row shape the full profile does.
+/// produces every row shape the full profile does, and that includes the two
+/// write phases even though they make `ci` pay for three generations a cell
+/// instead of one (libviprs#1136).
 pub fn scenario_names_for(profile: Profile) -> Vec<String> {
     let all = [
         "generate",
+        "generate_ingest",
+        "generate_finalize",
         "open",
         "first_lookup",
         "decode_root",
