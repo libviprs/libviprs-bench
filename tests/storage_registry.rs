@@ -63,8 +63,10 @@ fn ci_document() -> Document {
 /// A literal list on purpose. The point of this test is that dropping a
 /// scenario out of `registry()` fails by name here rather than by a quietly
 /// shorter document, so the list cannot be derived from the thing it checks.
-const DECLARED: [&str; 12] = [
+const DECLARED: [&str; 14] = [
     "generate",
+    "generate_ingest",
+    "generate_finalize",
     "open",
     "first_lookup",
     "decode_root",
@@ -318,8 +320,13 @@ fn a_sweep_publishes_the_declared_models_with_their_parameters() {
 fn the_ci_profile_stays_the_size_it_says_it_is() {
     assert_eq!(Profile::Ci.cells().len(), 1);
     let names = Profile::Ci.scenario_names();
+    // Ten. It was eight until the write split, which adds `generate_ingest`
+    // and `generate_finalize`, and `ci` walks them because its job is to
+    // produce every row shape the full profile does. They are the expensive
+    // kind: `ci` now pays for three generations of its one cell per backend
+    // rather than one, which on the 93-tile cell is a second or so.
     assert!(
-        names.len() <= 8,
+        names.len() <= 10,
         "the ci profile walks {} scenarios: {names:?}",
         names.len()
     );
@@ -443,9 +450,13 @@ fn a_failing_lookup_is_a_skip_and_never_a_panic() {
         );
     }
 
-    // And through the scenario surface, which is what the sweep calls.
+    // And through the scenario surface, which is what the sweep calls. The
+    // write scenarios are skipped by what they declare rather than by name:
+    // they make their own artefact, so `needs_artefact` is already the
+    // question "does this scenario read anything", and a list of names goes
+    // stale the next time one is added. It already had, twice.
     for scenario in registry() {
-        if scenario.name() == "generate" {
+        if !scenario.needs_artefact() {
             continue;
         }
         let result = scenario.run(&ctx, 2);
@@ -480,7 +491,7 @@ fn a_reader_that_will_not_open_is_a_skip_and_never_a_panic() {
         readers: &factory,
     };
     for scenario in registry() {
-        if scenario.name() == "generate" {
+        if !scenario.needs_artefact() {
             continue;
         }
         let name = scenario.name();
