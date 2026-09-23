@@ -648,8 +648,10 @@ fn the_write_split_accounts_for_the_whole_generate_row() {
     // 46 pixels was the first choice, at 49% finalize here. On the CI runner,
     // whose disk is quicker and whose cores are slower, the same cell came out
     // at 28%, and a floor written from this machine's number refused it. The
-    // guard asks the two measured numbers now, and this cell is 59% here for
-    // the same reason it will be more than 28% there.
+    // guard asks the two measured numbers now, which is what actually fixed
+    // that. This cell is 51% here and 28.6% there, so the tile size bought
+    // nothing on the runner: the share is a property of the host at this end
+    // of the cell table, and the guard has to be the kind that does not care.
     let cell = cell_at(1024, 1024, 23, Source::Gradient);
     let backend = Backend::PmTiles;
 
@@ -777,16 +779,17 @@ fn the_write_split_guard_refuses_a_finalize_too_small_to_reconcile() {
 /// The drift arithmetic is signed and the allowance is two-sided.
 ///
 /// RED against a `reconciles` that compares a raw difference, or a one-sided
-/// one. The split comes out under the combined row as often as over it: five
-/// runs of the same shape on this machine drifted +2.9%, -7.7%, -1.5%, +1.3%
-/// and +5.3%, so a check written for one sign passes half its failures.
+/// one. The split comes out under the combined row as often as over it: over
+/// twelve runs of the same shape on this machine the drift was negative seven
+/// times and positive five, between -7.7% and +9.6%, so a check written for
+/// one sign passes half its failures.
 #[test]
 fn the_write_reconciliation_allowance_is_two_sided() {
     assert!(write_split::reconciles(100.0, 100.0));
-    assert!(write_split::reconciles(115.0, 100.0));
-    assert!(write_split::reconciles(85.0, 100.0));
-    assert!(!write_split::reconciles(121.0, 100.0));
-    assert!(!write_split::reconciles(79.0, 100.0));
+    assert!(write_split::reconciles(110.0, 100.0));
+    assert!(write_split::reconciles(90.0, 100.0));
+    assert!(!write_split::reconciles(116.0, 100.0));
+    assert!(!write_split::reconciles(84.0, 100.0));
     assert!(write_split::drift_pct(76.0, 100.0) < 0.0);
     assert!(write_split::drift_pct(124.0, 100.0) > 0.0);
 
