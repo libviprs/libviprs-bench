@@ -15,6 +15,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use libviprs::planner::TileCoord;
 use libviprs::sink::TileFormat;
@@ -22,16 +23,29 @@ use libviprs::sink_pmtiles::PmTilesSink;
 use libviprs::{EngineBuilder, FsSink};
 
 use libviprs_bench::storage::cells::{
-    self, Backend, Cell, LARGEST_FLAT_ROOT, ROOT_ONLY_MAX_ENTRIES, Regime, SEED, SOURCES, Source,
+    self, Backend, Cell, LARGEST_FLAT_ROOT, Profile, ROOT_ONLY_MAX_ENTRIES, Regime, SEED, SOURCES,
+    Source,
 };
 use libviprs_bench::storage::document::Origin;
 use libviprs_bench::storage::model::{Modelled, RemoteModel, SyncModel};
 use libviprs_bench::storage::scenarios::counting::CountingFactory;
 use libviprs_bench::storage::scenarios::{
-    ReaderFactory, concurrent_curve, decode_root, first_lookup, open, plan_order, replicate,
-    requests, tileid_order,
+    Coordinates, ReaderFactory, ScenarioContext, TileReader, concurrent_curve, decode_root,
+    first_lookup, open, plan_order, replicate, requests, tileid_order, write_split,
 };
-use libviprs_bench::storage::{FileReaderFactory, raster};
+use libviprs_bench::storage::{FileReaderFactory, heap, raster, scenario_named};
+
+/// The same counting allocator the `storage` binary installs.
+///
+/// Nothing in this file reads a heap number: the claims about what the phases
+/// hold are in `tests/storage_write_heap.rs`, which is a binary of nothing but
+/// measuring tests because the counters are one per process. It is here so the
+/// reconciliation can arm across the combined row as well as the two phases,
+/// and have all three carry the same allocator. Off until something arms it,
+/// so the rest of this file pays a relaxed load per allocation and nothing
+/// else.
+#[global_allocator]
+static HEAP: heap::Counting = heap::Counting;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -513,6 +527,328 @@ fn the_cold_split_accounts_for_the_whole_combined_row() {
         open::RECONCILIATION_ALLOWANCE_PCT
     );
     assert_eq!(pass.by_phase().len(), open::COLD_PHASES.len());
+}
+
+// ---------------------------------------------------------------------------
+// The write split
+// ---------------------------------------------------------------------------
+//
+// The read side was taken apart because one `read_cold` number carried a file
+// open, a header read, a ranged read, an inflate, a varint loop and a lookup,
+// and the fixes for a slow inflate and a slow `pread` are different pieces of
+// work. `generate` is in exactly that state and nobody has said so: one number
+// over the PNG encode, every `add_tile` and `finish`, against a directory
+// backend it loses to by 1.15x to 1.83x, and no way to tell whether that gap
+// is ingestion or finalization (libviprs#1136).
+
+/// A factory for a scenario that has nothing to read.
+///
+/// The write phases make their own artefact, so the one thing this must not do
+/// is hand back a working reader: a phase that quietly opened one would be
+/// measuring the read side and nothing here would see it.
+struct NoReaders;
+
+impl ReaderFactory for NoReaders {
+    fn fresh(&self) -> Result<Arc<dyn TileReader>, String> {
+        Err("a write scenario has nothing to read".to_string())
+    }
+}
+
+/// Run one write-side scenario by the name the document keys it on, and hand
+/// back its `wall` samples in milliseconds.
+///
+/// By name through `scenario_named`, and not by constructing the type, because
+/// the name is what a child process resolves and what the page reads off a row.
+/// A phase that exists as a struct nobody can reach by name is a phase the
+/// sweep never runs, which is the failure `tests/storage_registry.rs` was
+/// written for.
+fn wall_of(name: &str, backend: Backend, cell: Cell, scratch: &Path, reps: u32) -> Vec<f64> {
+    let scenario = scenario_named(name)
+        .unwrap_or_else(|| panic!("the registry has no `{name}`, so no row can carry it"));
+    let coords = Coordinates::default();
+    let factory = NoReaders;
+    let ctx = ScenarioContext {
+        backend,
+        cell,
+        profile: Profile::Ci,
+        seed: SEED,
+        scratch_root: Some(scratch),
+        artefact: None,
+        coords: &coords,
+        readers: &factory,
+    };
+    let run = scenario
+        .run(&ctx, reps)
+        .unwrap_or_else(|skip| panic!("`{name}` did not run: {}", skip.reason));
+    run.series
+        .iter()
+        .find(|s| s.metric.name == "wall")
+        .unwrap_or_else(|| panic!("`{name}` publishes no `wall` series"))
+        .samples
+        .clone()
+}
+
+fn median_of(samples: &[f64]) -> f64 {
+    let mut sorted = samples.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).expect("no NaN in a wall sample"));
+    sorted[sorted.len() / 2]
+}
+
+/// The two write phases add up to the combined `generate` row.
+///
+/// RED against the sweep as it stands, because there is no `generate_ingest`
+/// and no `generate_finalize` to sum: `scenario_named` answers `None` and the
+/// panic names the phase that is missing. That is the whole point of running it
+/// first. Every other issue in the epic would otherwise be sized against a
+/// guess about which half of `generate` is expensive.
+///
+/// Once the phases exist it is RED against a split that measures some other
+/// piece of work: an ingest that stops before the last tile, a finalize timed
+/// around a `finish` the engine had already called, a hand walk that builds its
+/// raster inside the timed section when the combined row builds it outside.
+///
+/// The share assertion is the half that is easy to leave out and the one that
+/// makes the drift assertion mean anything. A split that dropped the finalize
+/// entirely drifts by exactly the finalize's own share, so on a cell where the
+/// finalize is 3% of the pass the sum reconciles whether or not the finalize
+/// was ever measured. This cell's finalize is over half the pass, optimised.
+///
+/// `#[ignore]`d and release-only, in the shape
+/// `the_cold_split_accounts_for_the_whole_combined_row` settled on:
+/// `storage-measured.yml` runs it. An unoptimised PNG encode is about thirty
+/// times slower while the finalize is disk-bound and barely moves, so in a
+/// debug build the finalize collapses to 3% of the pass and there is nothing
+/// left to reconcile against.
+#[test]
+#[ignore = "generates the 728-tile cell and needs release timings; run with --release --ignored"]
+fn the_write_split_accounts_for_the_whole_generate_row() {
+    if cfg!(debug_assertions) {
+        panic!(
+            "this reconciliation is a ratio between two timings in the same binary, and debug \
+             slows the encode about thirty times while leaving the disk-bound finalize alone; \
+             run it with --release"
+        );
+    }
+
+    let dir = tempdir();
+    // 1024x1024 at a 23 pixel tile: 2752 planned tiles over one megapixel, so
+    // the encode is small and the index work is not, which is what makes the
+    // finalize a large share of the pass. About fifty milliseconds a pass
+    // optimised, so seven of them cost nothing.
+    //
+    // It is not a small version of a published cell and it is not meant to be.
+    // The published cells are mostly the other shape: the 21851-tile one is
+    // 3.3% finalize, and the guard refuses it for the reason the guard exists.
+    // A reconciliation has to run where it can fail, so it runs on the cell
+    // with the most finalize in it that still costs nothing. The method it
+    // proves is then the same method on every other cell, where the digest
+    // agreement and the engine-asked-once check still hold and only the
+    // summing does not prove itself.
+    //
+    // 46 pixels was the first choice, at 49% finalize here. On the CI runner,
+    // whose disk is quicker and whose cores are slower, the same cell came out
+    // at 28%, and a floor written from this machine's number refused it. The
+    // guard asks the two measured numbers now, which is what actually fixed
+    // that. This cell is 51% here and 28.6% there, so the tile size bought
+    // nothing on the runner: the share is a property of the host at this end
+    // of the cell table, and the guard has to be the kind that does not care.
+    let cell = cell_at(1024, 1024, 23, Source::Gradient);
+    let backend = Backend::PmTiles;
+
+    // One discarded pass, thrown away. The first generation in the process pays
+    // for a cold page cache and an allocator that has never grown, and whichever
+    // of the three below ran first would otherwise carry it into the ratio.
+    let _ = wall_of("generate", backend, cell, dir.path(), 1);
+
+    // Armed across all three, so the combined row carries the counting
+    // allocator the two phases carry. It is inside the noise floor either way,
+    // and a drift that is partly an artefact of instrumenting one side is a
+    // drift nobody can read.
+    let _armed = heap::arm();
+
+    // Interleaved, a repetition at a time, and the order reversed on every
+    // other one. Seven of one scenario then seven of the next then seven of
+    // the last is the shape that made the split look 10.8% cheap on this
+    // laptop: fourteen generations of sustained load before the combined row
+    // is measured is a thermal ramp, and whichever scenario goes last wears
+    // it. `run_sweep` alternates its backends scenario by scenario for the
+    // same reason.
+    let reps = 7;
+    let mut ingest_samples = Vec::new();
+    let mut finalize_samples = Vec::new();
+    let mut combined_samples = Vec::new();
+    let one = |name: &str, into: &mut Vec<f64>| {
+        into.extend(wall_of(name, backend, cell, dir.path(), 1));
+    };
+    for rep in 0..reps {
+        if rep % 2 == 0 {
+            one("generate_ingest", &mut ingest_samples);
+            one("generate_finalize", &mut finalize_samples);
+            one("generate", &mut combined_samples);
+        } else {
+            one("generate", &mut combined_samples);
+            one("generate_finalize", &mut finalize_samples);
+            one("generate_ingest", &mut ingest_samples);
+        }
+    }
+    let ingest = median_of(&ingest_samples);
+    let finalize = median_of(&finalize_samples);
+    let combined = median_of(&combined_samples);
+
+    let split = ingest + finalize;
+    let share = write_split::finalize_share_pct(ingest, finalize);
+    let drift = write_split::drift_pct(split, combined);
+    println!(
+        "{} tiles on {}: ingest {ingest:.2} ms, finalize {finalize:.2} ms, split {split:.2} ms, \
+         combined {combined:.2} ms, drift {drift:+.1}%, finalize {share:.1}% of the pass",
+        cell.declared_tiles,
+        backend.as_str()
+    );
+
+    write_split::reconciliation_is_meaningful(ingest, combined)
+        .expect("this cell's finalize is big enough for the sum to be able to fail");
+    assert!(
+        write_split::reconciles(split, combined),
+        "the phases sum to {split:.2} ms against a combined row of {combined:.2}, a drift of \
+         {drift:+.1}% and the allowance is {}%",
+        write_split::RECONCILIATION_ALLOWANCE_PCT
+    );
+}
+
+/// The reconciliation guard says no to a pass whose finalize is too small to
+/// prove anything.
+///
+/// RED against a guard that accepts every pass, which is what this becomes the
+/// moment somebody points the reconciliation at the directory backend and
+/// widens it until it goes green. `FsSink`'s finish on an XYZ layout with
+/// dedupe off is a microsecond and a half, so the tree's ingest alone is the
+/// tree's whole pass and the sum reconciles whether or not the finalize was
+/// measured at all.
+///
+/// It asks the counterfactual with two measured numbers rather than checking
+/// the finalize's share of the pass against a floor. The floor was the same
+/// test with the drift assumed to be zero, and it cost a red build: the cell I
+/// first picked was 54% finalize on this laptop and 28.3% on the CI runner,
+/// under a floor of 30%, on a run whose split reconciled to within 0.8%.
+#[test]
+fn the_write_split_guard_refuses_a_finalize_too_small_to_reconcile() {
+    // The 21851-tile cell, measured: the archive's ingest is 6687.2 ms against
+    // a combined row of 6945.2, which is 3.7% apart, so its 225.8 ms of
+    // finalize is not enough for the sum to be able to fail.
+    let refusal = write_split::reconciliation_is_meaningful(6687.2, 6945.2)
+        .expect_err("a finalize that is 3.3% of the pass proves nothing");
+    assert!(
+        refusal.contains("6687.20") && refusal.contains("6945.20"),
+        "the refusal has to name the two numbers it refused: {refusal}"
+    );
+    // And the tree on the same cell, whose finalize is a microsecond and a
+    // half against a pass of four seconds.
+    assert!(write_split::reconciliation_is_meaningful(4051.2, 4102.2).is_err());
+
+    // The positive control: the guard is not simply a `no`. The cell the
+    // reconciliation runs on came out at -50.3% on this laptop and -27.7% on
+    // the CI runner, both outside the allowance, so a split that dropped the
+    // finalize there is caught.
+    write_split::reconciliation_is_meaningful(24.42, 49.10)
+        .expect("an ingest half the size of the combined row can fail the check");
+    write_split::reconciliation_is_meaningful(30.67, 42.45)
+        .expect("the CI runner's numbers on the same cell can fail the check too");
+
+    // The boundary is the allowance itself, and nothing else.
+    let combined = 100.0;
+    let allowance = write_split::RECONCILIATION_ALLOWANCE_PCT;
+    assert!(
+        write_split::reconciliation_is_meaningful(combined - allowance + 1.0, combined).is_err()
+    );
+    write_split::reconciliation_is_meaningful(combined - allowance - 1.0, combined)
+        .expect("an ingest just outside the allowance can fail the check");
+
+    // And the two phases the guard is about are the two the registry has.
+    assert_eq!(
+        write_split::WRITE_PHASES,
+        ["generate_ingest", "generate_finalize"]
+    );
+    for name in write_split::WRITE_PHASES {
+        assert!(
+            scenario_named(name).is_some(),
+            "`{name}` is a declared phase and `scenario_named` cannot find it"
+        );
+    }
+}
+
+/// The drift arithmetic is signed and the allowance is two-sided.
+///
+/// RED against a `reconciles` that compares a raw difference, or a one-sided
+/// one. The split comes out under the combined row as often as over it: over
+/// twelve runs of the same shape on this machine the drift was negative seven
+/// times and positive five, between -7.7% and +9.6%, so a check written for
+/// one sign passes half its failures.
+#[test]
+fn the_write_reconciliation_allowance_is_two_sided() {
+    assert!(write_split::reconciles(100.0, 100.0));
+    assert!(write_split::reconciles(110.0, 100.0));
+    assert!(write_split::reconciles(90.0, 100.0));
+    assert!(!write_split::reconciles(116.0, 100.0));
+    assert!(!write_split::reconciles(84.0, 100.0));
+    assert!(write_split::drift_pct(76.0, 100.0) < 0.0);
+    assert!(write_split::drift_pct(124.0, 100.0) > 0.0);
+
+    // A share is a share of the pass, not of the combined row, and a pass of
+    // nothing has no share rather than an infinite one.
+    assert_eq!(write_split::finalize_share_pct(75.0, 25.0), 25.0);
+    assert_eq!(write_split::finalize_share_pct(0.0, 0.0), 0.0);
+}
+
+/// The hand walk leaves behind the archive the combined pass leaves behind.
+///
+/// This is the assertion the timing reconciliation cannot make. A drift inside
+/// the allowance says the two passes cost about the same; it does not say they
+/// did the same thing, and a hand walk that dropped a level, encoded at a
+/// different quality or laid the tiles out in another order would be timing a
+/// cheaper piece of work under the same name. The digest says they are the
+/// same bytes in the same places, on both backends, which is what
+/// `artefact_digest` is for.
+///
+/// RED against a split that drives the sink itself instead of letting the
+/// engine drive it, which is the obvious way to write this and produces a
+/// different archive the moment the engine's resample or blank-tile policy
+/// moves.
+#[test]
+fn the_hand_walked_write_produces_the_archive_the_combined_pass_does() {
+    let cell = tiny(Source::Gradient);
+    let plan = cell.plan().expect("the cell plans");
+    for backend in Backend::ALL {
+        let dir = tempdir();
+        let by_hand = dir.path().join("hand");
+        let by_engine = dir.path().join("engine");
+        std::fs::create_dir_all(&by_hand).expect("a scratch directory");
+        std::fs::create_dir_all(&by_engine).expect("a scratch directory");
+
+        let walked =
+            write_split::hand_walk(backend, cell, &plan, &by_hand).expect("the hand walk writes");
+        let combined = libviprs_bench::storage::write_pyramid(backend, cell, &plan, &by_engine)
+            .expect("the combined pass writes");
+
+        assert_eq!(
+            walked.tiles_produced,
+            combined.tiles_produced,
+            "{} produced {} tiles by hand and {} through the engine",
+            backend.as_str(),
+            walked.tiles_produced,
+            combined.tiles_produced
+        );
+        let hand_digest = libviprs_bench::storage::artefact_digest(&walked.output)
+            .expect("the hand-walked artefact hashes");
+        let engine_digest = libviprs_bench::storage::artefact_digest(&combined.output)
+            .expect("the combined artefact hashes");
+        assert_eq!(
+            hand_digest,
+            engine_digest,
+            "on {} the hand walk and the combined pass produced different artefacts, so the two \
+             halves are not a split of the row they reconcile against",
+            backend.as_str()
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
