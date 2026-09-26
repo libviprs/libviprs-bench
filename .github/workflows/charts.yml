@@ -1,0 +1,43 @@
+name: Charts
+
+# A separate workflow file on purpose: adding a job to an existing org workflow
+# reds libviprs-tests' Hook Mirror until it is mirrored, and a new workflow file
+# does not.
+#
+# Two things run here. The chart tooling's own tests, and the comparability gate
+# over the checked-in comparison report: a benchmark that compares two
+# technologies which did not do the same work is not a benchmark, and the gate
+# is what refuses those cells before they reach a chart.
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'tools/charts/**'
+      - 'package.json'
+      - '.github/workflows/charts.yml'
+  pull_request:
+    paths:
+      - 'tools/charts/**'
+      - 'package.json'
+      - '.github/workflows/charts.yml'
+
+jobs:
+  charts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # `npm install` rather than `npm ci` until a lockfile is committed, which
+      # waits on @spdrman/bencharts being published.
+      - name: Install
+        run: npm install --no-audit --no-fund
+
+      - name: Chart tooling tests
+        run: node --test tools/charts
+
+      - name: Comparability gate over the checked-in comparison report
+        run: node tools/charts/comparability.mjs report/benchmark_results.json --scenario=pyramid
