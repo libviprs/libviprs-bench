@@ -8,7 +8,9 @@
 // Every edit below is ANCHORED on an exact string from `upstream/dashboard.js`
 // and must match exactly once. If upstream changes that string, this refuses
 // rather than patching the wrong place, which is the difference between a
-// vendored copy and the port in `tools/charts/chart.mjs` that quietly diverged.
+// vendored copy and the hand port that quietly diverged from it. That port has
+// since been replaced by the `bencharts` package, which is the same code as a
+// dependency rather than as a copy.
 // `sync-contract.sh --check` catches the same drift one step earlier; this is
 // the second line.
 //

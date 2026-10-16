@@ -12,12 +12,11 @@
  * `--report-dir report/engines` draws that family and nothing else (#64).
  *
  * The SVG generation used to live in the Rust `report` / `scalability`
- * binaries (plotters); it now lives here entirely, reusing the proven
- * causl-bench chart code (see chart.mjs) — the grouped-bar comparison charts
- * were the last plotters user and are now rendered here too (#42), so the Rust
- * side emits JSON only and the plotters dependency is gone. `run-bench.sh`
- * invokes this after the harness produces the JSON, so charts regenerate on
- * every run.
+ * binaries (plotters), then in a hand-ported copy of causl-bench's chart code
+ * in `tools/charts/chart.mjs`. That port is the divergence this repo kept
+ * citing as the reason not to port things, so it is gone: the drawing is
+ * `bencharts` now, and what is left here is the adapter. `run-bench.sh` invokes
+ * this after the harness produces the JSON, so charts regenerate on every run.
  *
  * Output is deterministic (no timestamps, no rng) — the same JSON always
  * yields byte-identical SVGs. Missing input is skipped, not fatal: a single
@@ -34,16 +33,20 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import {
-  renderHistoryTrend,
-  renderScalabilityChart,
-  renderWallTimeBars,
-  renderPeakMemoryBars,
-  renderTrackedMemoryBars,
-  renderThroughputBars,
-  renderEfficiencyBars,
-  renderResourceCostBars,
-} from './chart.mjs';
+import { renderGroupedBars, renderTrend, renderSweep } from '@spdrman/bencharts';
+import { series } from './series.mjs';
+import { loadContract, assessComparison, chartableRuns, CONTRACT_PATH } from './comparability.mjs';
+
+/* The charts are drawn by `bencharts`, which knows nothing about tiles,
+ * engines or megapixels. Everything below this line that does is the adapter,
+ * and the adapter is the only layer entitled to the vocabulary: a library that
+ * knows what a tile is has failed at being extracted (bencharts D4).
+ *
+ * Each family costs one `.map()` into a fixed record shape, which is the map
+ * this file was already writing by hand. */
+
+/** Does this metric have anything to draw? An empty chart is a refusal, not a picture. */
+const plottable = (rows) => rows.some((r) => Number.isFinite(r.value));
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Crate-root `report/` dir, relative to tools/charts/. */
@@ -184,10 +187,15 @@ export function buildHistoryCharts(snapshots) {
       const points = historyPointsFor(snapshots, config, metric.valueOf);
       const runs = new Set(points.map((p) => p.runIndex));
       if (runs.size < 2) continue; // need >= 2 snapshots for a trend
-      const svg = renderHistoryTrend(points, {
-        title: `${metric.label} History — ${config.width}x${config.height} c${config.concurrency} (${metric.direction})`,
-        unitSuffix: metric.unitSuffix,
-      });
+      const svg = renderTrend(
+        points.map((p) => ({ step: p.runIndex, series: p.engine, value: p.value, label: p.version })),
+        {
+          series,
+          title: `${metric.label} history \u00b7 ${config.width}x${config.height} c${config.concurrency}`,
+          unit: metric.unitSuffix,
+          better: 'lower',
+        },
+      );
       out.push({ filename: `chart_history_${config.key}_${metric.suffix}.svg`, svg });
     }
   }
@@ -206,18 +214,30 @@ export function buildHistoryCharts(snapshots) {
  * `RunStats.wall_ms_ci95 / rss_mb_ci95` (the ratio metrics have no CI, as in
  * the Rust emitter).
  */
-export function buildComparisonCharts(results) {
+export function buildComparisonCharts(results, opts = {}) {
   const out = [];
   if (!Array.isArray(results) || results.length === 0) return out;
+
+  /* A benchmark that compares two technologies which did not do the same work
+   * is not a benchmark. Before anything is drawn, the runs go through the
+   * comparability contract, and only the cells it clears are charted across
+   * technologies. Held-out cells are still measured and still censused; they
+   * are just not raced against each other. */
+  const contract = opts.contract ?? loadContract(CONTRACT_PATH);
+  const assessment = assessComparison(results, contract, { scenario: opts.scenario ?? 'pyramid' });
+  if (Array.isArray(opts.violations)) opts.violations.push(...assessment.violations);
+  const charted = chartableRuns(results, assessment, { scenario: opts.scenario ?? 'pyramid' });
+  if (charted.length === 0) return out;
+  results = charted;
   // `errorOf` is the 95%-CI half-width for the two metrics the Rust charts
   // whiskered; the ratio metrics leave it undefined (no whisker).
   const metrics = [
-    { suffix: 'wall_time', render: renderWallTimeBars, valueOf: runWallTimeMs, errorOf: (r) => r.stats?.wall_ms_ci95 },
-    { suffix: 'peak_memory', render: renderPeakMemoryBars, valueOf: runPeakRssMb, errorOf: (r) => r.stats?.rss_mb_ci95 },
-    { suffix: 'tracked_memory', render: renderTrackedMemoryBars, valueOf: runTrackedMemoryMb },
-    { suffix: 'throughput', render: renderThroughputBars, valueOf: runTilesPerSecond },
-    { suffix: 'efficiency', render: renderEfficiencyBars, valueOf: runTilesPerSecondPerMb },
-    { suffix: 'resource_cost', render: renderResourceCostBars, valueOf: runResourceCostPerTile },
+    { suffix: 'wall_time', title: 'Wall time', unit: 'ms', better: 'lower', valueOf: runWallTimeMs, errorOf: (r) => r.stats?.wall_ms_ci95 },
+    { suffix: 'peak_memory', title: 'Peak RSS', unit: 'MB', better: 'lower', valueOf: runPeakRssMb, errorOf: (r) => r.stats?.rss_mb_ci95 },
+    { suffix: 'tracked_memory', title: 'Tracked working set', unit: 'MB', better: 'lower', valueOf: runTrackedMemoryMb },
+    { suffix: 'throughput', title: 'Throughput', unit: 'tiles/s', better: 'higher', valueOf: runTilesPerSecond },
+    { suffix: 'efficiency', title: 'Throughput per RSS-MB', unit: 'tiles/s/MB', better: 'higher', valueOf: runTilesPerSecondPerMb },
+    { suffix: 'resource_cost', title: 'Resource cost', unit: 'MB\u00b7s/tile', better: 'lower', valueOf: runResourceCostPerTile },
   ];
   // Config groups run along the x-axis in the shared numeric config order.
   // Bucket the runs by config ONCE (not once per metric) so the row assembly is
@@ -230,14 +250,22 @@ export function buildComparisonCharts(results) {
   for (const metric of metrics) {
     const rows = [];
     for (const config of configs) {
-      for (const run of byConfig.get(config.key)) {
-        const row = { config: config.key, engine: run.engine, value: metric.valueOf(run) };
+      for (const run of byConfig.get(config.key) ?? []) {
+        const row = { group: config.key, series: run.engine, value: metric.valueOf(run) };
         const err = metric.errorOf?.(run);
         if (Number.isFinite(err) && err > 0) row.error = err;
         rows.push(row);
       }
     }
-    out.push({ filename: `chart_${metric.suffix}.svg`, svg: metric.render(rows) });
+    if (!plottable(rows)) continue;
+    const svg = renderGroupedBars(rows, {
+      series,
+      title: metric.title,
+      unit: metric.unit,
+      better: metric.better,
+      errorLabel: '95% CI',
+    });
+    out.push({ filename: `chart_${metric.suffix}.svg`, svg });
   }
   return out;
 }
@@ -258,14 +286,14 @@ export function buildScalabilityCharts(points, { linear = false, xMin = null } =
   // whether a rising line is good or bad. The primary throughput metric is
   // TILES/s (pyramid tiles), never pixels/s.
   const metrics = [
-    { suffix: 'wall_time', title: 'Wall Time Scalability (lower is better)', yLabel: 'Time (ms)', unitSuffix: 'ms', valueOf: (p) => p.wall_time_ms },
+    { suffix: 'wall_time', title: 'Wall time scalability', yLabel: 'Time (ms)', unitSuffix: 'ms', better: 'lower', valueOf: (p) => p.wall_time_ms },
     // `peak_rss_mb ?? peak_memory_mb` mirrors the Rust
     // `#[serde(alias = "peak_memory_mb")]` so pre-#153 scalability JSON that
     // still uses the old field name is read, not silently dropped.
-    { suffix: 'peak_memory', title: 'Peak RSS Scalability (lower is better)', yLabel: 'Peak RSS (MB)', unitSuffix: 'MB', valueOf: (p) => p.peak_rss_mb ?? p.peak_memory_mb },
-    { suffix: 'throughput', title: 'Throughput Scalability — Tiles/s (higher is better)', yLabel: 'Tiles/s', unitSuffix: '', valueOf: (p) => p.tiles_per_second },
-    { suffix: 'efficiency', title: 'Memory Efficiency — Tiles/s per RSS-MB (higher is better)', yLabel: 'Tiles/s/RSS-MB', unitSuffix: '', valueOf: (p) => p.tiles_per_second_per_mb },
-    { suffix: 'resource_cost', title: 'Resource Cost — RSS-MB·s per Tile (lower is better)', yLabel: 'RSS-MB·s/tile', unitSuffix: '', valueOf: (p) => p.resource_cost },
+    { suffix: 'peak_memory', title: 'Peak RSS scalability', yLabel: 'Peak RSS (MB)', unitSuffix: 'MB', better: 'lower', valueOf: (p) => p.peak_rss_mb ?? p.peak_memory_mb },
+    { suffix: 'throughput', title: 'Throughput scalability', yLabel: 'Tiles/s', unitSuffix: 'tiles/s', better: 'higher', valueOf: (p) => p.tiles_per_second },
+    { suffix: 'efficiency', title: 'Memory efficiency', yLabel: 'Tiles/s/RSS-MB', unitSuffix: 'tiles/s/MB', better: 'higher', valueOf: (p) => p.tiles_per_second_per_mb },
+    { suffix: 'resource_cost', title: 'Resource cost', yLabel: 'RSS-MB\u00b7s/tile', unitSuffix: 'MB\u00b7s/tile', better: 'lower', valueOf: (p) => p.resource_cost },
   ];
   const zoomed = Number.isFinite(xMin);
   const suffix = zoomed ? '_zoom' : '';
@@ -273,18 +301,19 @@ export function buildScalabilityCharts(points, { linear = false, xMin = null } =
   for (const conc of concs) {
     const subset = points.filter((p) => (p.concurrency ?? 0) === conc);
     for (const metric of metrics) {
-      const chartPoints = subset.map((p) => ({
-        engine: p.engine,
-        megapixels: p.megapixels,
-        value: metric.valueOf(p),
-      }));
-      const svg = renderScalabilityChart(chartPoints, {
-        title: `${metric.title} — synthetic gradient (${threadCap(conc)}${zoomed ? `, >= ${xMin} MP` : ''})`,
+      const chartPoints = subset
+        .map((p) => ({ x: p.megapixels, series: p.engine, value: metric.valueOf(p) }))
+        .filter((p) => Number.isFinite(p.x));
+      if (!plottable(chartPoints)) continue;
+      const svg = renderSweep(chartPoints, {
+        series,
+        title: `${metric.title} \u00b7 synthetic gradient \u00b7 ${threadCap(conc)}${zoomed ? ` \u00b7 >= ${xMin} MP` : ''}`,
         xLabel: 'Image size (megapixels)',
         yLabel: metric.yLabel,
-        unitSuffix: metric.unitSuffix,
-        logScale: !linear,
-        xMin: zoomed ? xMin : undefined,
+        unit: metric.unitSuffix || undefined,
+        better: metric.better,
+        scale: linear ? 'linear' : 'log',
+        ...(zoomed ? { xMin } : {}),
       });
       out.push({ filename: `scalability_${metric.suffix}_c${conc}${suffix}.svg`, svg });
     }

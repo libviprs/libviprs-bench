@@ -1,6 +1,6 @@
 {
   "$schema": "./config.schema.json",
-  "description": "Every libviprs difference from causl's frozen dashboard, import and render stack. Nothing libviprs-specific is edited into tools/contract/upstream/. Every series id, scenario, metric and field path in this file was checked against the archived run named in contract.provenance; none of it is invented.",
+  "description": "Every libviprs difference from causl's frozen dashboard, import and render stack. Nothing libviprs-specific is edited into tools/contract/upstream/. Every series id, scenario, metric and field path in this file was checked against the archived run named in contract.provenance; none of it is invented. The series block covers every library the history feed carries, not only the storage pair: tools/contract/series-coverage.test.mjs fails the build on a library the config does not name.",
   "contract": {
     "upstreamRev": "cd65c76",
     "configVersion": 1,
@@ -9,15 +9,27 @@
   "series": {
     "order": [
       "pmtiles",
-      "directory"
+      "directory",
+      "libvips",
+      "streaming",
+      "monolithic",
+      "mapreduce"
     ],
     "label": {
       "pmtiles": "PMTiles archive",
-      "directory": "directory tree"
+      "directory": "directory tree",
+      "libvips": "libvips",
+      "streaming": "Streaming",
+      "monolithic": "Monolithic",
+      "mapreduce": "MapReduce"
     },
     "color": {
-      "pmtiles": "#4285f4",
-      "directory": "#795548"
+      "pmtiles": "#ab47bc",
+      "directory": "#bd2a6b",
+      "libvips": "#0097a7",
+      "streaming": "#34a853",
+      "monolithic": "#2196f3",
+      "mapreduce": "#c62828"
     },
     "dash": {
       "directory": "6 3"
@@ -132,7 +144,12 @@
       "libviprs-engines",
       "libviprs-vips"
     ],
-    "rowIdentityFrom": ["backend", "cell", "source", "key"],
+    "rowIdentityFrom": [
+      "backend",
+      "cell",
+      "source",
+      "key"
+    ],
     "seriesFrom": "backend",
     "runnerToSeries": {},
     "outcomes": {
@@ -191,7 +208,10 @@
     "invariantsFilesystemDependent": [
       "allocated_bytes"
     ],
-    "schemaVersion": [1, 2],
+    "schemaVersion": [
+      1,
+      2
+    ],
     "ungateableMetrics": [
       "p99",
       "p99_us",
