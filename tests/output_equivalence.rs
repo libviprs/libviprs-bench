@@ -260,3 +260,55 @@ fn corrupted_tile_trips_the_gate() {
         MIN_TILE_PSNR_DB
     );
 }
+
+// ---------------------------------------------------------------------------
+// #108: a 512x512 image has no multi-tile mid level, and was never scored
+// ---------------------------------------------------------------------------
+
+/// A 512x512 gradient at tile size 256: 2x2 tiles at full resolution, then a
+/// single tile at every level below. The only multi-tile level is the full
+/// resolution one, which the spot-check skips by design, so the comparison
+/// used to return `NoComparableMidLevel` and the row carried no PSNR while the
+/// chart raced it against libvips. Needs no libvips: both sides are libviprs
+/// pyramids, which is enough to prove the check runs and that it can fail.
+fn small_pair(tag: &str) -> Pyramids {
+    let (w, h) = (512u32, 512u32);
+    let mut data = Vec::with_capacity((w * h * 3) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            data.extend_from_slice(&[(x / 2) as u8, (y / 2) as u8, ((x ^ y) & 0xff) as u8]);
+        }
+    }
+    let raster = Raster::new(w, h, PixelFormat::Rgb8, data).unwrap();
+    let plan = PyramidPlanner::new(w, h, TILE, 0, Layout::DeepZoom)
+        .unwrap()
+        .plan();
+    let root = std::env::temp_dir().join(format!("libviprs_equiv_small_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let reference_files =
+        write_libviprs_pyramid(&raster, &plan, EngineKind::Monolithic, 0, 1_000_000, &root.join("a"))
+            .expect("reference builds");
+    let candidate_files =
+        write_libviprs_pyramid(&raster, &plan, EngineKind::Streaming, 0, 1_000_000, &root.join("b"))
+            .expect("candidate builds");
+    Pyramids { root, reference_files, candidate_files }
+}
+
+#[test]
+fn a_512_image_is_scored_instead_of_skipped() {
+    let pair = small_pair("pos");
+    let check = spot_check_tile_psnr(&pair.reference_files, &pair.candidate_files)
+        .expect("512x512 must be scored, not skipped for want of a multi-tile mid level");
+    assert!(check.tiles_compared >= 1);
+    assert!(check.passes(), "identical output must clear the threshold: {check:?}");
+}
+
+#[test]
+fn a_512_image_score_can_still_fail() {
+    let pair = small_pair("neg");
+    let clean = spot_check_tile_psnr(&pair.reference_files, &pair.candidate_files).expect("scored");
+    corrupt_tile(&pair.candidate_files, clean.candidate_level, 0, 0);
+    let dirty = spot_check_tile_psnr(&pair.reference_files, &pair.candidate_files).expect("scored");
+    assert!(!dirty.passes(), "the fallback level must trip the gate when corrupted: {dirty:?}");
+}
