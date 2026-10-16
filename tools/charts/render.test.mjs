@@ -38,11 +38,21 @@ function freshOut() {
   return mkdtempSync(join(tmpdir(), 'libviprs-charts-'));
 }
 
+/**
+ * Drawn pieces of one series' line.
+ *
+ * bencharts emits a `polyline` for a run of two or more points and a `circle`
+ * for an isolated one, so a gap that strands single points produces markers
+ * rather than segments. Counting only polylines would read a correctly broken
+ * line as an undrawn one.
+ */
 function segmentsFor(svg, color) {
-  const re = new RegExp(`<polyline points="([^"]*)"[^>]*stroke="${color}"`, 'g');
   const out = [];
+  const line = new RegExp(`<polyline class="bc-line" points="([^"]*)"[^>]*stroke="${color}"`, 'g');
+  const dot = new RegExp(`<circle class="bc-dot" cx="([^"]*)" cy="([^"]*)"[^>]*fill="${color}"`, 'g');
   let m;
-  while ((m = re.exec(svg)) !== null) out.push(m[1].trim());
+  while ((m = line.exec(svg)) !== null) out.push(m[1].trim());
+  while ((m = dot.exec(svg)) !== null) out.push(`${m[1]},${m[2]}`);
   return out;
 }
 
@@ -92,8 +102,8 @@ test('the history time chart reflects the fixture gap (streaming broken)', () =>
     assert.ok(svg.toLowerCase().includes(engine), `history chart legends ${engine}`);
   }
   assert.ok(svg.includes('0.3.0') && svg.includes('0.3.3'), 'version ticks present');
-  // streaming is absent from snapshot 2 → its line is broken (>1 segment).
-  // (#4285f4=mono, #34a853=streaming — colours come from the shared map.)
+  // streaming is absent from snapshot 2 → its line is broken (>1 piece).
+  // (#2196f3=mono, #34a853=streaming — colours come from tools/charts/series.mjs.)
   const streamingSegs = segmentsFor(svg, '#34a853');
   assert.ok(streamingSegs.length >= 2, 'streaming polyline is broken at the gap');
 });
