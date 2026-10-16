@@ -283,16 +283,33 @@ fn small_pair(tag: &str) -> Pyramids {
     let plan = PyramidPlanner::new(w, h, TILE, 0, Layout::DeepZoom)
         .unwrap()
         .plan();
-    let root = std::env::temp_dir().join(format!("libviprs_equiv_small_{tag}_{}", std::process::id()));
+    let root =
+        std::env::temp_dir().join(format!("libviprs_equiv_small_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    let reference_files =
-        write_libviprs_pyramid(&raster, &plan, EngineKind::Monolithic, 0, 1_000_000, &root.join("a"))
-            .expect("reference builds");
-    let candidate_files =
-        write_libviprs_pyramid(&raster, &plan, EngineKind::Streaming, 0, 1_000_000, &root.join("b"))
-            .expect("candidate builds");
-    Pyramids { root, reference_files, candidate_files }
+    let reference_files = write_libviprs_pyramid(
+        &raster,
+        &plan,
+        EngineKind::Monolithic,
+        0,
+        1_000_000,
+        &root.join("a"),
+    )
+    .expect("reference builds");
+    let candidate_files = write_libviprs_pyramid(
+        &raster,
+        &plan,
+        EngineKind::Streaming,
+        0,
+        1_000_000,
+        &root.join("b"),
+    )
+    .expect("candidate builds");
+    Pyramids {
+        root,
+        reference_files,
+        candidate_files,
+    }
 }
 
 #[test]
@@ -301,7 +318,10 @@ fn a_512_image_is_scored_instead_of_skipped() {
     let check = spot_check_tile_psnr(&pair.reference_files, &pair.candidate_files)
         .expect("512x512 must be scored, not skipped for want of a multi-tile mid level");
     assert!(check.tiles_compared >= 1);
-    assert!(check.passes(), "identical output must clear the threshold: {check:?}");
+    assert!(
+        check.passes(),
+        "identical output must clear the threshold: {check:?}"
+    );
 }
 
 #[test]
@@ -310,5 +330,8 @@ fn a_512_image_score_can_still_fail() {
     let clean = spot_check_tile_psnr(&pair.reference_files, &pair.candidate_files).expect("scored");
     corrupt_tile(&pair.candidate_files, clean.candidate_level, 0, 0);
     let dirty = spot_check_tile_psnr(&pair.reference_files, &pair.candidate_files).expect("scored");
-    assert!(!dirty.passes(), "the fallback level must trip the gate when corrupted: {dirty:?}");
+    assert!(
+        !dirty.passes(),
+        "the fallback level must trip the gate when corrupted: {dirty:?}"
+    );
 }
