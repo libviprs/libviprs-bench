@@ -61,6 +61,57 @@ pub const BENCH_TILE_FORMAT: TileFormat = TileFormat::Png;
 /// dzsave `--suffix` (and file extension) matching [`BENCH_TILE_FORMAT`].
 pub const BENCH_TILE_SUFFIX: &str = ".png";
 
+/// A tile format and the suffix its files are written under, as one value.
+///
+/// [`BENCH_TILE_FORMAT`] and [`BENCH_TILE_SUFFIX`] stay what the engines and vips
+/// families share, on purpose (#153): changing them moves the PNG baseline both
+/// sides are compared against. The `format` family has to write a pyramid in some
+/// other codec *beside* that baseline, so the codec is a parameter of the writer
+/// and [`TileCodec::BENCH`] is the default value of it (#124).
+///
+/// The suffix is derived from the format's own extension rather than typed next
+/// to it, so a file called `.jpeg` cannot hold PNG bytes by an edit to one half.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileCodec {
+    pub format: TileFormat,
+    pub suffix: &'static str,
+}
+
+impl TileCodec {
+    /// The codec the engines and vips families share.
+    pub const BENCH: TileCodec = TileCodec {
+        format: BENCH_TILE_FORMAT,
+        suffix: BENCH_TILE_SUFFIX,
+    };
+    pub const PNG: TileCodec = TileCodec {
+        format: TileFormat::Png,
+        suffix: ".png",
+    };
+    pub const WEBP_LOSSLESS: TileCodec = TileCodec {
+        format: TileFormat::Webp,
+        suffix: ".webp",
+    };
+
+    /// JPEG at `quality` (1 to 100).
+    pub fn jpeg(quality: u8) -> TileCodec {
+        TileCodec::new(TileFormat::Jpeg { quality })
+    }
+
+    /// A codec for any format, with its suffix taken from the format.
+    pub fn new(format: TileFormat) -> TileCodec {
+        // `&'static str` keeps the type `Copy` and usable in a const.
+        let suffix: &'static str = match format {
+            TileFormat::Png => ".png",
+            TileFormat::Jpeg { .. } => ".jpeg",
+            TileFormat::Webp => ".webp",
+            // Unencoded tiles are not a codec this crate benchmarks, and
+            // `tests/vips_ffi.rs` guards this file against writing them.
+            other => panic!("{other:?} is not a benchmarked tile codec"),
+        };
+        TileCodec { format, suffix }
+    }
+}
+
 /// The one sentence that says what the measured pipeline does with its tiles.
 ///
 /// The README and the site article disagreed about this: the README said every
@@ -620,7 +671,16 @@ pub(crate) fn skip_on_engine_fault(
 /// encoding test green while the sweep behind the published tables wrote
 /// unencoded tiles. One sink, one constant, one thing to change.
 pub fn engine_fs_sink(out_dir: &std::path::Path, plan: &PyramidPlan) -> FsSink {
-    FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(BENCH_TILE_FORMAT)
+    engine_fs_sink_as(out_dir, plan, TileCodec::BENCH)
+}
+
+/// [`engine_fs_sink`] for a codec other than the shared one (#124).
+pub fn engine_fs_sink_as(
+    out_dir: &std::path::Path,
+    plan: &PyramidPlan,
+    codec: TileCodec,
+) -> FsSink {
+    FsSink::new(out_dir.join("pyramid"), plan.clone()).with_format(codec.format)
 }
 
 /// Walk a written pyramid and record what it really is on disk.
@@ -1210,9 +1270,32 @@ pub fn write_libviprs_pyramid(
     budget_floor_bytes: u64,
     dir: &std::path::Path,
 ) -> std::io::Result<std::path::PathBuf> {
+    write_libviprs_pyramid_as(
+        src,
+        plan,
+        engine,
+        concurrency,
+        budget_floor_bytes,
+        dir,
+        TileCodec::BENCH,
+    )
+}
+
+/// [`write_libviprs_pyramid`] in a chosen codec (#124). The unparameterised
+/// function delegates here with [`TileCodec::BENCH`], so the engines and vips
+/// families keep writing PNG through the same body.
+pub fn write_libviprs_pyramid_as(
+    src: &Raster,
+    plan: &PyramidPlan,
+    engine: EngineKind,
+    concurrency: usize,
+    budget_floor_bytes: u64,
+    dir: &std::path::Path,
+    codec: TileCodec,
+) -> std::io::Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
     let base = dir.join("pyramid");
-    let sink = engine_fs_sink(dir, plan);
+    let sink = engine_fs_sink_as(dir, plan, codec);
     let observer = Arc::new(CollectingObserver::new());
     let mut builder = EngineBuilder::new(src, plan.clone(), &sink)
         .with_engine(engine)
