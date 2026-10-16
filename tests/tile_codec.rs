@@ -26,11 +26,21 @@ fn tiles(root: &Path) -> Vec<PathBuf> {
 
 fn build(codec: Option<TileCodec>, tag: &str) -> PathBuf {
     let raster = gradient_raster(512, 512);
-    let plan = PyramidPlanner::new(512, 512, 256, 0, Layout::DeepZoom).unwrap().plan();
+    let plan = PyramidPlanner::new(512, 512, 256, 0, Layout::DeepZoom)
+        .unwrap()
+        .plan();
     let dir = std::env::temp_dir().join(format!("tile_codec_{tag}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     match codec {
-        Some(c) => write_libviprs_pyramid_as(&raster, &plan, EngineKind::Monolithic, 0, 1_000_000, &dir, c),
+        Some(c) => write_libviprs_pyramid_as(
+            &raster,
+            &plan,
+            EngineKind::Monolithic,
+            0,
+            1_000_000,
+            &dir,
+            c,
+        ),
         None => write_libviprs_pyramid(&raster, &plan, EngineKind::Monolithic, 0, 1_000_000, &dir),
     }
     .unwrap()
@@ -43,7 +53,11 @@ fn webp_writes_webp_files() {
     let files = tiles(&root);
     assert!(!files.is_empty());
     for f in &files {
-        assert_eq!(f.extension().and_then(|e| e.to_str()), Some("webp"), "{f:?}");
+        assert_eq!(
+            f.extension().and_then(|e| e.to_str()),
+            Some("webp"),
+            "{f:?}"
+        );
         let bytes = std::fs::read(f).unwrap();
         assert_eq!(&bytes[..4], b"RIFF", "{f:?} is not a RIFF container");
         assert_eq!(&bytes[8..12], b"WEBP", "{f:?}");
@@ -56,7 +70,11 @@ fn webp_writes_webp_files() {
 fn jpeg_writes_jpeg_files() {
     let root = build(Some(TileCodec::jpeg(85)), "jpeg");
     for f in tiles(&root) {
-        assert_eq!(f.extension().and_then(|e| e.to_str()), Some("jpeg"), "{f:?}");
+        assert_eq!(
+            f.extension().and_then(|e| e.to_str()),
+            Some("jpeg"),
+            "{f:?}"
+        );
         assert_eq!(&std::fs::read(&f).unwrap()[..2], &[0xFF, 0xD8], "{f:?}");
     }
 }
@@ -90,7 +108,11 @@ fn explicit_png_matches_the_default_byte_for_byte() {
 // derived from the format's own extension, so the two cannot drift.
 #[test]
 fn suffix_is_the_formats_own_extension() {
-    for f in [TileFormat::Png, TileFormat::Jpeg { quality: 85 }, TileFormat::Webp] {
+    for f in [
+        TileFormat::Png,
+        TileFormat::Jpeg { quality: 85 },
+        TileFormat::Webp,
+    ] {
         assert_eq!(TileCodec::new(f).suffix, format!(".{}", f.extension()));
     }
 }
