@@ -21,6 +21,7 @@ pub mod emulation;
 pub mod engines;
 pub mod family;
 pub mod flame;
+pub mod format;
 /// How to read `git status` run twice, shared with `build.rs` by `include!`.
 pub mod git_trap;
 pub mod harness;
