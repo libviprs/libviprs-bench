@@ -99,7 +99,10 @@ fn flat_regions_near_the_threshold_do_not_count() {
 
     let everywhere = vec![true; W * H];
     let naive = ink_iou(&reference, &candidate, &everywhere, 128).unwrap();
-    assert!(naive < 0.2, "the naive score is the nonsense being guarded against: {naive}");
+    assert!(
+        naive < 0.2,
+        "the naive score is the nonsense being guarded against: {naive}"
+    );
 
     let masked = ink_iou(&reference, &candidate, &mask, 128).unwrap();
     assert_eq!(masked, 1.0, "the masked score only sees the line");
@@ -113,7 +116,10 @@ fn a_shifted_line_lowers_the_masked_iou() {
     let shifted = line_tile(255, 21, 2);
     let mask = gradient_mask(&reference, W, H, 16, 2);
     let iou = ink_iou(&reference, &shifted, &mask, 128).unwrap();
-    assert!((iou - 1.0 / 3.0).abs() < 1e-9, "2px line shifted by 1px overlaps 1 of 3: {iou}");
+    assert!(
+        (iou - 1.0 / 3.0).abs() < 1e-9,
+        "2px line shifted by 1px overlaps 1 of 3: {iou}"
+    );
     assert_eq!(ink_iou(&reference, &reference, &mask, 128), Some(1.0));
 }
 
