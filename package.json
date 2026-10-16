@@ -9,11 +9,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test tools/charts tools/contract tools",
+    "test": "node --test 'tools/**/*.test.mjs'",
     "charts": "node tools/charts/render.mjs",
     "comparability": "node tools/charts/comparability.mjs"
   },
   "dependencies": {
-    "@spdrman/bencharts": "^0.1.0"
+    "@spdrman/bencharts": "github:spdrman/BENCHarts#7374fcee3837cce1e613fa5c7f9f4604f89b6969"
   }
 }

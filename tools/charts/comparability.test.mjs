@@ -185,8 +185,8 @@ test('an UNDECLARED cell with missing evidence still fails, so the gate is not s
 });
 
 /* The point of the gate, against the data actually in the repo. */
-test('the checked-in comparison report passes, with its known gap declared', () => {
-  const runs = JSON.parse(readFileSync(join(repo, 'report', 'benchmark_results.json'), 'utf8'));
+test('the committed comparison fixture passes, with its known gap declared', () => {
+  const runs = JSON.parse(readFileSync(join(here, 'fixtures', 'comparison_results.json'), 'utf8'));
   const contract = loadContract(JSON.parse(readFileSync(join(here, 'comparability.json'), 'utf8')));
   const { cells, violations } = assessComparison(runs, contract, { scenario: 'pyramid' });
   assert.ok(cells.length >= 4, `expected a cell per config, got ${cells.length}`);

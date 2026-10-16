@@ -251,7 +251,10 @@ test('config.json names only things the producer actually emits', () => {
   );
   assert.equal(CONFIG.contract.provenance, `${VOCAB.derivedFrom.file.replace('.json', '')}`);
 
-  assert.deepEqual([...CONFIG.series.order].sort(), VOCAB.backends);
+  // The vocabulary is the storage run's, so its backends must all be declared. The config
+  // may declare more (the engines family, libvips), and series-coverage.test.mjs is what
+  // checks the config against the whole feed.
+  for (const id of VOCAB.backends) assert.ok(CONFIG.series.order.includes(id), `series.order omits ${id}`);
   for (const id of CONFIG.defaults.libraries) assert.ok(VOCAB.backends.includes(id));
 
   assert.ok(VOCAB.cellNames.includes(CONFIG.defaults.scales[0]), 'defaults.scales names no real cell');
