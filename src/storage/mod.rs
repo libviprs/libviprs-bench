@@ -786,6 +786,37 @@ pub fn maybe_run_single_subcommand() -> Option<i32> {
 // The parent
 // ---------------------------------------------------------------------------
 
+/// The command that runs one scenario in a child.
+///
+/// The profile travels in `LIBVIPRS_BENCH_PROFILE`, because the child builds
+/// its coordinate sets from it. It used to travel nowhere: the parent used the
+/// profile for the cell list and the rep count, the child defaulted to `ci`, and
+/// every read row of a `full` sweep walked 512 coordinates under a `full` label
+/// (#112). The variable is set on the command, never inherited by luck, so an
+/// ambient value in the operator's shell cannot override the sweep's own.
+pub fn scenario_command(
+    exe: &Path,
+    backend: Backend,
+    cell: Cell,
+    scenario: &str,
+    reps: u32,
+    artefact: Option<&Path>,
+    profile: Profile,
+) -> Command {
+    let mut command = Command::new(exe);
+    command
+        .arg(SINGLE_FLAG)
+        .arg(backend.as_str())
+        .arg(cell.spec())
+        .arg(scenario)
+        .arg(reps.to_string())
+        .env("LIBVIPRS_BENCH_PROFILE", profile.label());
+    if let Some(path) = artefact {
+        command.arg(path);
+    }
+    command
+}
+
 /// Spawn one scenario child and read its run back, taking the child's own
 /// `ru_maxrss` through `wait4` rather than trusting its self-report.
 pub fn spawn_scenario(
@@ -795,17 +826,9 @@ pub fn spawn_scenario(
     scenario: &str,
     reps: u32,
     artefact: Option<&Path>,
+    profile: Profile,
 ) -> Result<WireRun, String> {
-    let mut command = Command::new(exe);
-    command
-        .arg(SINGLE_FLAG)
-        .arg(backend.as_str())
-        .arg(cell.spec())
-        .arg(scenario)
-        .arg(reps.to_string());
-    if let Some(path) = artefact {
-        command.arg(path);
-    }
+    let mut command = scenario_command(exe, backend, cell, scenario, reps, artefact, profile);
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -1094,6 +1117,7 @@ pub fn run_sweep(profile: Profile) -> Document {
                         &scenario.name(),
                         reps,
                         artefact.as_deref(),
+                        profile,
                     ),
                     Isolation::ProcessPerRep => {
                         let mut merged: Option<WireRun> = None;
@@ -1105,6 +1129,7 @@ pub fn run_sweep(profile: Profile) -> Document {
                                 &scenario.name(),
                                 1,
                                 artefact.as_deref(),
+                                profile,
                             ) {
                                 Ok(one) => merged = Some(merge(merged, one)),
                                 Err(e) => eprintln!("storage: {e}"),

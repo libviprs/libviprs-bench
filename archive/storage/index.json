@@ -6,7 +6,8 @@
     "libraryCommit": "809ee8014d002518ce55edaceba698ca7a8b8a79",
     "emulated": false,
     "fsType": "unknown",
-    "file": "20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939.json"
+    "file": "20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939.json",
+    "profileCaveat": "Labelled full, but every read row walked 512 coordinates (the ci count) because the profile never reached the child (libviprs-bench #112). Honest CI-sized reads under a wrong label; do not chart as a full sweep."
   },
   {
     "runId": "20260915T051355Z-adcf1ff21699ded673af74297a4a83104b96abd1-29e9d16b",
@@ -15,7 +16,8 @@
     "libraryCommit": "adcf1ff21699ded673af74297a4a83104b96abd1",
     "emulated": false,
     "fsType": "ext4",
-    "file": "20260915T051355Z-adcf1ff21699ded673af74297a4a83104b96abd1-29e9d16b.json"
+    "file": "20260915T051355Z-adcf1ff21699ded673af74297a4a83104b96abd1-29e9d16b.json",
+    "profileCaveat": "Labelled full, but every read row walked 512 coordinates (the ci count) because the profile never reached the child (libviprs-bench #112). Honest CI-sized reads under a wrong label; do not chart as a full sweep."
   },
   {
     "runId": "20260915T071511Z-adcf1ff21699ded673af74297a4a83104b96abd1-29e9d16b",
@@ -24,6 +26,7 @@
     "libraryCommit": "adcf1ff21699ded673af74297a4a83104b96abd1",
     "emulated": false,
     "fsType": "ext4",
-    "file": "20260915T071511Z-adcf1ff21699ded673af74297a4a83104b96abd1-29e9d16b.json"
+    "file": "20260915T071511Z-adcf1ff21699ded673af74297a4a83104b96abd1-29e9d16b.json",
+    "profileCaveat": "Labelled full, but every read row walked 512 coordinates (the ci count) because the profile never reached the child (libviprs-bench #112). Honest CI-sized reads under a wrong label; do not chart as a full sweep."
   }
 ]

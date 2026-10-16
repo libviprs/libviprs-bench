@@ -137,6 +137,7 @@ pub fn admit(doc: &Value) -> Vec<Refusal> {
     check_filesystem(doc, &mut refusals);
     check_invocation_and_reps(doc, &mut refusals);
     check_cells(doc, &mut refusals);
+    check_profile_walk(doc, &mut refusals);
     refusals
 }
 
@@ -511,6 +512,53 @@ fn check_cells(doc: &Value, refusals: &mut Vec<Refusal>) {
                 format!(
                     "{} has outcome {outcome:?} and no reason",
                     cell_name(i, cell)
+                ),
+            ));
+        }
+    }
+}
+
+/// A document's profile label and the coordinates its read rows walked have to
+/// agree (#112).
+///
+/// Every `requests_declared` row states its own walk length as `walk + 1`, and
+/// the walk is the profile's read-sample cap or the plan length, whichever is
+/// smaller. So the label predicts the declared count exactly, and a document
+/// that says `full` while carrying the `ci` count was built by a child that
+/// never saw the profile. Refused in either direction: the disagreement is the
+/// defect, not which side was larger.
+fn check_profile_walk(doc: &Value, refusals: &mut Vec<Refusal>) {
+    use crate::storage::cells::{Cell, Profile, coordinates};
+    let Some(profile) = doc
+        .get("profile")
+        .and_then(Value::as_str)
+        .and_then(Profile::parse)
+    else {
+        return;
+    };
+    for (i, cell) in cells(doc).iter().enumerate() {
+        if cell.get("metric").and_then(Value::as_str) != Some("requests_declared") {
+            continue;
+        }
+        let (Some(spec), Some(found)) = (
+            cell.get("cell")
+                .and_then(Value::as_str)
+                .and_then(Cell::parse),
+            cell.get("median").and_then(Value::as_f64),
+        ) else {
+            continue;
+        };
+        let Some(plan) = spec.plan() else { continue };
+        let expected = profile.read_samples().min(coordinates(&plan).len()) as f64 + 1.0;
+        if (found - expected).abs() > f64::EPSILON {
+            refusals.push(refuse(
+                "profile-walk-mismatch",
+                format!(
+                    "{} declares {found} requests but the document says profile {:?}, which \
+                     walks {expected}; the label and the coordinates came from different \
+                     profiles",
+                    cell_name(i, cell),
+                    profile.label()
                 ),
             ));
         }
