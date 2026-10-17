@@ -31,24 +31,7 @@
         "libvips against the three libviprs engines. Every run reports the tile and level counts, so",
         "work equivalence is measured rather than asserted, and the libviprs engines report PSNR",
         "against the libvips output. The reference technology carries no PSNR against itself."
-      ],
-      "cells": {
-        "512x512_c0": {
-          "status": "unknown",
-          "reason": [
-            "The harness records no equivalence_psnr_db at this size, for any engine, so the output",
-            "equivalence was never established. Work equivalence is fine (13 tiles, 10 levels, ratio",
-            "1.000); it is only the output check that did not run. Tracked as libviprs-bench#108.",
-            "Delete this override once the measurement exists."
-          ]
-        },
-        "512x512_c4": {
-          "status": "unknown",
-          "reason": [
-            "As 512x512_c0: no equivalence_psnr_db at this size. Tracked as libviprs-bench#108."
-          ]
-        }
-      }
+      ]
     },
     "generate": {
       "status": "comparable",
