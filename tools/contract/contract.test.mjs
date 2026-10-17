@@ -141,7 +141,7 @@ test('an anchor that moved is a refusal, not a patch landing somewhere else', ()
 // or parameteriser change.
 test('generated/dashboard.js is what the frozen file and the parameteriser produce', () => {
   const out = sh(['node', './parameterize.mjs', '--check']);
-  assert.match(out, /is current \(18 edits\)/);
+  assert.match(out, /is current \(20 edits\)/);
 });
 
 // Goes red against: a fallback table that drifted from the frozen file. Every
