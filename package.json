@@ -14,6 +14,6 @@
     "comparability": "node tools/charts/comparability.mjs"
   },
   "dependencies": {
-    "@spdrman/bencharts": "github:spdrman/BENCHarts#7374fcee3837cce1e613fa5c7f9f4604f89b6969"
+    "@spdrman/bencharts": "github:spdrman/BENCHarts#e7de3110617eb1eef79c3b3db2bdecde61a9b782"
   }
 }
