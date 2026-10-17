@@ -251,6 +251,7 @@ RUN apt-get update && \
         libjpeg62-turbo-dev \
         libtiff-dev \
         libwebp-dev \
+        libarchive-dev \
         time \
     && rm -rf /var/lib/apt/lists/*
 
@@ -272,7 +273,7 @@ RUN curl -fL --retry 3 --retry-delay 2 --retry-connrefused -o /tmp/vips.tar.xz \
     tar xJf /tmp/vips.tar.xz -C /tmp/vips-src --strip-components=1 && \
     cd /tmp/vips-src && \
     meson setup build --buildtype=release --prefix=/usr/local --libdir=lib \
-        -Dpng=enabled -Djpeg=enabled -Dtiff=enabled -Dwebp=enabled && \
+        -Dpng=enabled -Djpeg=enabled -Dtiff=enabled -Dwebp=enabled -Darchive=enabled && \
     ninja -C build && \
     ninja -C build install && \
     ldconfig && \
@@ -290,6 +291,7 @@ RUN ldconfig
 # printing it) fails the build if a stray or wrong-version libvips is ahead on
 # PATH / in the pkg-config path, rather than silently benchmarking it (#33).
 RUN vips --version && \
+    vips -l | grep -q dzsave && \
     modversion="$(pkg-config --modversion vips)" && \
     if [ "$modversion" != "${LIBVIPS_VERSION}" ]; then \
         echo "built libvips modversion ${modversion} != pinned ${LIBVIPS_VERSION}" >&2; \
@@ -302,12 +304,20 @@ WORKDIR /src
 COPY libviprs/ libviprs/
 COPY libviprs-bench/ libviprs-bench/
 
-# Fetch dependencies
-WORKDIR /src/libviprs
-RUN cargo fetch --locked
-
+# Fetch dependencies. Only this crate's lockfile is used: the core crate is a
+# library and its Cargo.lock is gitignored, so `cargo fetch --locked` inside it
+# fails on every clean checkout (it only ever passed on a tree that already had
+# a lockfile lying around). The path dependency resolves through this crate's
+# own lock.
 WORKDIR /src/libviprs-bench
 RUN cargo fetch --locked
+
+# libvips is installed under /usr/local. rustc 1.99 links with rust-lld, which
+# does not search /usr/local/lib the way the system linker does, so
+# `-lvips` was "unable to find library" and the image did not build at all.
+# LIBRARY_PATH reaches the linker as -L, the same thing run-bench.sh --no-build
+# sets from pkg-config on a host.
+ENV LIBRARY_PATH=/usr/local/lib
 
 # Build in release mode with libvips FFI feature for in-process comparison
 RUN cargo build --locked --release --features libvips --bin scalability --bin report

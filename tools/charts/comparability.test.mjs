@@ -185,7 +185,7 @@ test('an UNDECLARED cell with missing evidence still fails, so the gate is not s
 });
 
 /* The point of the gate, against the data actually in the repo. */
-test('the committed comparison fixture passes, with its known gap declared', () => {
+test('the committed comparison fixture passes, and every cell in it is charted', () => {
   const runs = JSON.parse(readFileSync(join(here, 'fixtures', 'comparison_results.json'), 'utf8'));
   const contract = loadContract(JSON.parse(readFileSync(join(here, 'comparability.json'), 'utf8')));
   const { cells, violations } = assessComparison(runs, contract, { scenario: 'pyramid' });
@@ -194,12 +194,23 @@ test('the committed comparison fixture passes, with its known gap declared', () 
     assert.ok(cell.work.ratio <= contract.comparabilityTolerance,
       `${cell.config} work ratio ${cell.work.ratio}`);
   }
-  assert.deepEqual(violations, [], 'every hold-out is declared, so the gate is green');
-  const gaps = cells.filter((c) => c.config.startsWith('512x512'));
-  assert.equal(gaps.length, 2, 'both 512x512 cells are present');
-  for (const gap of gaps) {
-    assert.equal(gap.chartable, false, 'and neither is raced against libvips');
-    assert.equal(gap.status, 'unknown', 'held out as unknown, which is a to-do with a name on it (#108)');
+  assert.deepEqual(violations, [], 'the gate is green with no hold-out declared');
+  // The two 512x512 cells used to be held out as `unknown` because nobody had
+  // measured their output equivalence (#108, #122). They are measured now, on a
+  // native x86_64 host, and a cell with evidence is raced like any other.
+  const small = cells.filter((c) => c.config.startsWith('512x512'));
+  assert.equal(small.length, 2, 'both 512x512 cells are present');
+  for (const cell of small) {
+    assert.equal(cell.chartable, true, `${cell.config} carries equivalence evidence and is charted`);
+    assert.equal(cell.status, 'comparable', `${cell.config} is comparable, not unknown`);
   }
-  assert.equal(cells.filter((c) => c.chartable).length, 6);
+  assert.equal(cells.filter((c) => !c.chartable).length, 0, 'nothing is held out');
+  assert.equal(cells.filter((c) => c.chartable).length, cells.length);
+});
+
+test('no cell override is left in the contract', () => {
+  // The overrides were a to-do with a name on it. With the measurement in, an
+  // override that survives would quietly keep a measured cell off the page.
+  const contract = JSON.parse(readFileSync(join(here, 'comparability.json'), 'utf8'));
+  assert.equal(contract.scenarios.pyramid.cells, undefined, 'the pyramid scenario declares no hold-outs');
 });
