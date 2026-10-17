@@ -302,10 +302,11 @@ WORKDIR /src
 COPY libviprs/ libviprs/
 COPY libviprs-bench/ libviprs-bench/
 
-# Fetch dependencies
-WORKDIR /src/libviprs
-RUN cargo fetch --locked
-
+# Fetch dependencies. Only this crate's lockfile is used: the core crate is a
+# library and its Cargo.lock is gitignored, so `cargo fetch --locked` inside it
+# fails on every clean checkout (it only ever passed on a tree that already had
+# a lockfile lying around). The path dependency resolves through this crate's
+# own lock.
 WORKDIR /src/libviprs-bench
 RUN cargo fetch --locked
 
