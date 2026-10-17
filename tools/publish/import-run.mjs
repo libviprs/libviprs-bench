@@ -164,6 +164,9 @@ const refuse = (why) => refusals.push(why);
 // pair of braces, and it is what a test can hold directly.
 const configFaults = [];
 
+/** How many coordinates one read pass walks, per profile. Mirrors `Profile::read_samples`. */
+const READ_SAMPLES = { ci: 512, full: 20000, xl: 20000 };
+
 /** An empty allowed set is a fault in the importer's config, never a verdict. */
 const refuseConfig = (key, consequence) =>
   configFaults.push(
@@ -505,6 +508,42 @@ if (!prov.filesystem?.fsType || !prov.filesystem?.scratchDir) {
 // --- 5. the cells --------------------------------------------------------------
 
 const cells = Array.isArray(doc.cells) ? doc.cells : [];
+
+// --- 5a. the label and the walk have to agree (#112, #120) -----------------------
+//
+// Every `requests_declared` row states its own walk as `walk + 1`, and the walk
+// is the profile's read-sample cap or the cell's planned tile count (`scale`),
+// whichever is smaller. So the profile label predicts the declared count
+// exactly. A document that says `full` while carrying the `ci` count was built
+// by a child that never saw the profile, and three archived runs were exactly
+// that. The Rust side refuses it at the archive door; this is the same rule at
+// the door the page reads through, so a document that never went through that
+// binary cannot get a mislabelled walk onto the page.
+//
+// The numbers mirror `Profile::read_samples` in `src/storage/cells.rs`, and a
+// test reads that file so the two cannot drift apart quietly.
+if (Object.hasOwn(READ_SAMPLES, profile)) {
+  const cap = READ_SAMPLES[profile];
+  const wrong = [];
+  for (const c of cells) {
+    if (c.metric !== 'requests_declared') continue;
+    if (!Number.isFinite(c.scale) || !Number.isFinite(c.median)) continue;
+    const expected = Math.min(cap, c.scale) + 1;
+    if (c.median !== expected) wrong.push({ c, expected });
+  }
+  if (wrong.length > 0) {
+    const shown = wrong
+      .slice(0, 3)
+      .map(({ c, expected }) => `${c.backend}/${c.cell} declares ${c.median}, profile ${profile} walks ${expected}`)
+      .join('; ');
+    refuse(
+      `${wrong.length} requests_declared row(s) disagree with the document's profile label ` +
+        `${JSON.stringify(profile)} (${shown}). The label and the coordinates came from ` +
+        'different profiles, so this is a sweep of one size carrying the name of another, and ' +
+        'a number nobody can tie to what was walked is not evidence.',
+    );
+  }
+}
 
 // Three buckets rather than causl's two. `measured` is a number the page may
 // draw. `structural` is an honest not-a-number: a directory tree has no root
