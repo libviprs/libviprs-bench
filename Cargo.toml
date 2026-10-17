@@ -3,12 +3,12 @@ name = "libviprs-bench"
 version = "0.3.0"
 edition = "2024"
 authors = ["Roman Goldmann <roman@devshell.org>"]
-# The measured core declares `rust-version = "1.97"` as of libviprs 0.4.0, and a
-# path dependency's floor is this crate's floor in practice: cargo refuses the
-# build outright below it. Declaring 1.85 here said nothing true — it only meant
-# the refusal came from the dependency rather than from the manifest that
-# actually has to hold. The Dockerfile's Rust pin moved with it (issue #64).
-rust-version = "1.97"
+# The measured core declares `rust-version = "1.99"`, and a path dependency's
+# floor is this crate's floor in practice: cargo refuses the build outright
+# below it. Declaring a lower floor here says nothing true; it only means the
+# refusal comes from the dependency rather than from the manifest that actually
+# has to hold. The Dockerfile's Rust pin moves with it (issue #64, #114).
+rust-version = "1.99"
 publish = false
 
 [features]
@@ -205,3 +205,10 @@ path = "src/storage_main.rs"
 [[bin]]
 name = "engines"
 path = "src/engines_main.rs"
+
+# Resolve every pdfium-render in the graph, the core crate's included, to the fork tag that carries
+# the page index cache fix (ajrcarey/pdfium-render#268) and the bitmap buffer length fix (#273).
+# The fork keeps version 0.9.4, so the existing requirement still matches. Drop this once a
+# released pdfium-render carries both (libviprs/pdfium-render#15).
+[patch.crates-io]
+pdfium-render = { git = "https://github.com/libviprs/pdfium-render", tag = "v0.9.4-viprs.1" }

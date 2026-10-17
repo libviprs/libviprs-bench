@@ -628,9 +628,9 @@ pub enum SpotCheckSkip {
     NoReferenceLevels,
     /// The candidate pyramid had no level directories at all.
     NoCandidateLevels,
-    /// No downsampled, multi-tile level was comparable on both sides — e.g. an
-    /// image too small to have one (benign), *or* the two pyramids share no
-    /// comparable mid level (a structural divergence worth investigating).
+    /// No downsampled level with a matching grid existed on both sides: the
+    /// two pyramids share no comparable mid level, which is a structural
+    /// divergence worth investigating (a small image no longer lands here, #108).
     NoComparableMidLevel,
     /// A comparable mid level existed, but no sampled tile was present on both
     /// sides to compare.
@@ -776,6 +776,22 @@ pub fn spot_check_tile_psnr(
         // Downsampled (k>=1), multi-tile, and matching grids on both sides.
         if r.cols == c.cols && r.rows == c.rows && (c.cols as u64 * c.rows as u64) > 1 {
             mids.push((r, c));
+        }
+    }
+    if mids.is_empty() {
+        // An image whose full-resolution level is the only multi-tile one
+        // (512x512 at tile size 256: 2x2 at full resolution, one tile from the
+        // next level down) has no multi-tile mid level, and used to go
+        // unscored while its row was charted as a like-for-like race (#108).
+        // The first downsampled level still exercises the resampling pipeline,
+        // which is what a mid level is for, so take it even when it is one tile.
+        for k in 1..shared {
+            let r = &refs[refs.len() - 1 - k];
+            let c = &cands[cands.len() - 1 - k];
+            if r.cols == c.cols && r.rows == c.rows {
+                mids.push((r, c));
+                break;
+            }
         }
     }
     if mids.is_empty() {

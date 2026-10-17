@@ -7,5 +7,5 @@ export default defineConfig({
   testMatch: '*.spec.mjs',
   outputDir: process.env.E2E_OUT || './test-results',
   reporter: 'list',
-  use: { viewport: { width: 640, height: 420 }, deviceScaleFactor: 2 },
+  use: { viewport: { width: 1000, height: 380 }, deviceScaleFactor: 2 },
 });

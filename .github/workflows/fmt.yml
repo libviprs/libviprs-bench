@@ -28,7 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: '1.97.1'
+          toolchain: '1.99.1'
           components: rustfmt
       # `--check` rather than a write, so the failure names the file and the
       # line instead of leaving a dirty tree for someone to discover later.
