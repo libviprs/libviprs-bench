@@ -85,11 +85,11 @@ ARG DEBIAN_SNAPSHOT=20250929T000000Z
 #   docker build --platform linux/arm64 --target storage -t libviprs-bench:storage .
 #   docker run --rm --platform linux/arm64 libviprs-bench:storage
 # ---------------------------------------------------------------------------
-# The Rust pin is 1.97 because libviprs declares `rust-version = "1.97"` and
-# cargo refuses to compile it on the old 1.89 pin outright. Every stage in this
-# file now carries the same digest, which the families lane moved at the same
-# time and for the same reason.
-FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS storage
+# The Rust pin is 1.99.1 because libviprs declares `rust-version = "1.99"` and
+# cargo refuses to compile it on anything older outright. Every stage in this
+# file carries the same digest, and it moves at the same time and for the same
+# reason whenever the core moves its floor.
+FROM rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS storage
 
 WORKDIR /src
 COPY libviprs/ libviprs/
@@ -163,7 +163,7 @@ RUN case "${TARGETARCH}" in \
 # file is what a bare `docker build .` targets, and that has to stay the
 # comparison image the README documents.
 # ---------------------------------------------------------------------------
-FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS engines
+FROM rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS engines
 
 ENV CARGO_TERM_COLOR=always
 WORKDIR /src
@@ -194,13 +194,15 @@ CMD ["cargo", "run", "--release", "--bin", "engines", "--", \
 # do not drift between benchmark runs (issue #153); digest-pinned (not just
 # tag-pinned) so the exact base layer cannot shift under a rebuild (#35).
 #
-# The pin moved 1.89 -> 1.97 because the measured core declares
-# `rust-version = "1.97"` as of libviprs 0.4.0, so the old pin could not compile
-# the thing it exists to measure — `cargo` refused the build outright before any
-# benchmark ran. Bumping a measurement pin does invalidate cross-run comparison,
-# which is the deliberate cost of the core moving its floor.
+# The pin follows the measured core's floor. It moved 1.89 -> 1.97 when
+# libviprs 0.4.0 declared `rust-version = "1.97"`, and 1.97 -> 1.99.1 when the
+# core moved that floor to `"1.99"`: below it `cargo` refuses the build outright
+# before any benchmark runs, so the old pin could not compile the thing it
+# exists to measure. Bumping a measurement pin does invalidate cross-run
+# comparison, which is the deliberate cost of the core moving its floor; runs
+# already archived stay tied to the toolchain their provenance records.
 # ---------------------------------------------------------------------------
-FROM rust:1.97-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+FROM rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS builder
 
 ARG LIBVIPS_VERSION
 ARG LIBVIPS_SHA256
