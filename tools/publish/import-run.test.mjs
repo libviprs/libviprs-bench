@@ -1102,3 +1102,73 @@ test('a run id the index states but the document does not derive is refused', ()
   const r = runImport(run, emptyHistory());
   refused(r, /carries the run id/);
 });
+
+// --- the label and the walk (#120) ------------------------------------------
+//
+// `requests_declared` is `min(read samples, planned tiles) + 1`, so the profile
+// label predicts it. These fire on the real run with one row moved, in each
+// direction, and the first one fires on the real mislabelled run as archived.
+
+/** The first requests_declared row whose walk the profile cap actually bites on. */
+function cappedRow(doc) {
+  const row = doc.cells.find((c) => c.metric === 'requests_declared' && c.scale > 512);
+  assert.ok(row, 'the run has a requests_declared row big enough for the cap to matter');
+  return row;
+}
+
+test('a requests_declared row that walked fewer coordinates than the label says is refused', () => {
+  // RED against an importer that reads the label and never the walk: the ci
+  // count (513) under a full label is exactly the defect #112 fixed in the
+  // producer, and it imported without a murmur.
+  const r = runImport(
+    mutate({
+      edit: (doc) => {
+        const row = cappedRow(doc);
+        row.median = 513;
+        row.min = 513;
+        row.max = 513;
+        row.samples = row.samples.map(() => 513);
+        row.ci95 = [513, 513];
+        row.p95OfSamples = 513;
+        if (row.tail) row.tail.value = 513;
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /requests_declared row\(s\) disagree with the document's profile label "full"/);
+});
+
+test('a requests_declared row that walked more coordinates than the label says is refused', () => {
+  // Either direction. The disagreement is the defect, not which side was larger.
+  const r = runImport(
+    mutate({
+      edit: (doc) => {
+        const row = cappedRow(doc);
+        const tooMany = Math.min(20000, row.scale) + 2;
+        row.median = tooMany;
+        row.min = tooMany;
+        row.max = tooMany;
+        row.samples = row.samples.map(() => tooMany);
+        row.ci95 = [tooMany, tooMany];
+        row.p95OfSamples = tooMany;
+        if (row.tail) row.tail.value = tooMany;
+      },
+    }),
+    emptyHistory(),
+  );
+  refused(r, /requests_declared row\(s\) disagree with the document's profile label "full"/);
+});
+
+test('the walk table mirrors the producer, not a copy of it', () => {
+  // The importer carries the per-profile read-sample counts as a literal, and the
+  // producer has them as `Profile::read_samples`. Reading the Rust source here is
+  // what stops a re-tuned sweep from leaving the importer refusing honest runs.
+  const rust = readFileSync(new URL('../../src/storage/cells.rs', import.meta.url), 'utf8');
+  const body = rust.slice(rust.indexOf('pub fn read_samples'));
+  const ci = Number(body.match(/Profile::Ci\s*=>\s*([0-9_]+)/)[1].replaceAll('_', ''));
+  const full = Number(body.match(/Profile::Full\s*\|\s*Profile::Xl\s*=>\s*([0-9_]+)/)[1].replaceAll('_', ''));
+  const source = readFileSync(IMPORTER, 'utf8');
+  const literal = source.match(/const READ_SAMPLES = \{ ci: (\d+), full: (\d+), xl: (\d+) \}/);
+  assert.ok(literal, 'READ_SAMPLES is a literal the importer carries');
+  assert.deepEqual(literal.slice(1).map(Number), [ci, full, full]);
+});
