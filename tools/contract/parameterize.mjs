@@ -227,6 +227,28 @@ const PREAMBLE = `${PREAMBLE_BEGIN}
     }
     return anyClaim ? parts.join('\\u0002') : null
   }
+
+  /** The Default view button's words, from the same config that sets what the
+   *  button restores. With no defaults in the config this returns upstream's
+   *  causl wording untouched. \`defaults.viewLabel\` overrides the visible text. */
+  const __UPSTREAM_VIEW_TEXT = 'Default view (causl-ts + causl-wasm + mobx @ 10k)'
+  const __UPSTREAM_VIEW_ARIA = 'Restore the default view: causl-ts, causl-wasm and mobx at scale 10000'
+  function __defaultViewText(aria) {
+    const libs = __cfg('defaults.libraries', null)
+    if (!Array.isArray(libs)) return aria ? __UPSTREAM_VIEW_ARIA : __UPSTREAM_VIEW_TEXT
+    const scales = __cfg('defaults.scales', [10000])
+    const names = libs.map((l) => LIBRARY_LABEL[l] || l)
+    const short = (s) =>
+      typeof s === 'number' && s >= 1000 && s % 1000 === 0 ? s / 1000 + 'k' : String(s)
+    if (aria) {
+      const list =
+        names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names.join('')
+      return 'Restore the default view: ' + list + ' at scale ' + scales.join(', ')
+    }
+    const custom = __cfg('defaults.viewLabel', null)
+    if (typeof custom === 'string') return custom
+    return 'Default view (' + names.join(' + ') + ' @ ' + scales.map(short).join(', ') + ')'
+  }
 ${PREAMBLE_END}
 `;
 
@@ -249,6 +271,17 @@ const EDITS = [
     'preamble',
     "(() => {\n  'use strict'\n",
     `(() => {\n  'use strict'\n\n${PREAMBLE}`,
+  ),
+
+  swap(
+    'default-view-label',
+    "defaultBtn.textContent = 'Default view (causl-ts + causl-wasm + mobx @ 10k)'",
+    "defaultBtn.textContent = __defaultViewText(false)",
+  ),
+  swap(
+    'default-view-aria',
+    "'Restore the default view: causl-ts, causl-wasm and mobx at scale 10000',",
+    "__defaultViewText(true),",
   ),
 
   wrap('LIBRARY_ORDER', '  const LIBRARY_ORDER = ', 'series.order'),
@@ -470,6 +503,7 @@ export const CONFIG_PATHS = EDITS.filter((e) => e.path).map((e) => e.path).conca
   'verdict.gate.kind',
   'verdict.gate.label',
   'verdict.noChipKinds',
+  'defaults.viewLabel',
   'era.axes',
   'samples.carry',
 ]);

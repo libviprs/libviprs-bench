@@ -28,3 +28,25 @@ test('no user-visible string in the generated dashboard names causl, mobx or red
   });
   assert.deepEqual(hits, []);
 });
+
+// The scan above reads source. This one reads what a page built from config.json
+// actually shows, and what upstream's own config-less page still shows.
+import { render } from './lib/render-dashboard.mjs';
+
+const json = (p) => JSON.parse(readFileSync(join(here, p), 'utf8'));
+
+test('the Default view button is named from the config, and falls back to upstream without one', async () => {
+  const history = json('upstream/history.sample.json');
+  const config = json('config.json');
+  const withConfig = await render(GENERATED, { history, config, filename: 'generated.js' });
+  const labels = config.defaults.libraries.map((l) => config.series.label[l]);
+  assert.ok(
+    withConfig.html.includes(`Default view (${labels.join(' + ')} @ ${config.defaults.scales.join(', ')})`),
+    'the button text is built from the default libraries and scales',
+  );
+  assert.ok(withConfig.html.includes(`Restore the default view: ${labels.join(' and ')} at scale`));
+  assert.doesNotMatch(withConfig.html, /Default view \([^)]*(causl|mobx)/);
+
+  const bare = await render(GENERATED, { history, filename: 'generated.js' });
+  assert.ok(bare.html.includes('Default view (causl-ts + causl-wasm + mobx @ 10k)'));
+});

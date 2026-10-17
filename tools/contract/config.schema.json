@@ -102,6 +102,10 @@
       ],
       "description": "Replaces DEFAULT_LIBRARIES / DEFAULT_SCALES: the filter state the page opens on. Nothing is hidden, only un-defaulted.",
       "properties": {
+        "viewLabel": {
+          "type": "string",
+          "description": "Optional override for the visible text of the Default view button. Absent, the text is built from the labels of defaults.libraries and the defaults.scales, and its aria-label always is."
+        },
         "libraries": {
           "type": "array",
           "items": {
