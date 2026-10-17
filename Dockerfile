@@ -310,6 +310,13 @@ COPY libviprs-bench/ libviprs-bench/
 WORKDIR /src/libviprs-bench
 RUN cargo fetch --locked
 
+# libvips is installed under /usr/local. rustc 1.99 links with rust-lld, which
+# does not search /usr/local/lib the way the system linker does, so
+# `-lvips` was "unable to find library" and the image did not build at all.
+# LIBRARY_PATH reaches the linker as -L, the same thing run-bench.sh --no-build
+# sets from pkg-config on a host.
+ENV LIBRARY_PATH=/usr/local/lib
+
 # Build in release mode with libvips FFI feature for in-process comparison
 RUN cargo build --locked --release --features libvips --bin scalability --bin report
 
