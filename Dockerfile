@@ -251,6 +251,7 @@ RUN apt-get update && \
         libjpeg62-turbo-dev \
         libtiff-dev \
         libwebp-dev \
+        libarchive-dev \
         time \
     && rm -rf /var/lib/apt/lists/*
 
@@ -272,7 +273,7 @@ RUN curl -fL --retry 3 --retry-delay 2 --retry-connrefused -o /tmp/vips.tar.xz \
     tar xJf /tmp/vips.tar.xz -C /tmp/vips-src --strip-components=1 && \
     cd /tmp/vips-src && \
     meson setup build --buildtype=release --prefix=/usr/local --libdir=lib \
-        -Dpng=enabled -Djpeg=enabled -Dtiff=enabled -Dwebp=enabled && \
+        -Dpng=enabled -Djpeg=enabled -Dtiff=enabled -Dwebp=enabled -Darchive=enabled && \
     ninja -C build && \
     ninja -C build install && \
     ldconfig && \
@@ -290,6 +291,7 @@ RUN ldconfig
 # printing it) fails the build if a stray or wrong-version libvips is ahead on
 # PATH / in the pkg-config path, rather than silently benchmarking it (#33).
 RUN vips --version && \
+    vips -l | grep -q dzsave && \
     modversion="$(pkg-config --modversion vips)" && \
     if [ "$modversion" != "${LIBVIPS_VERSION}" ]; then \
         echo "built libvips modversion ${modversion} != pinned ${LIBVIPS_VERSION}" >&2; \
