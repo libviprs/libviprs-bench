@@ -1036,7 +1036,7 @@ fn sweep_cell(
                 continue;
             };
             if cell.is_real() {
-                match child_rep(exe, variant, cell, Mode::Engine, None) {
+                match child_rep(exe, variant, cell, Mode::Engine, tiles_root.as_deref()) {
                     Ok(r) => engine[at].reps.push(r),
                     Err(e) => engine[at].failures.push(e),
                 }
