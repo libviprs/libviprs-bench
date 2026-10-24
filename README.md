@@ -292,11 +292,13 @@ child, and go-pmtiles' is the kernel's `ru_maxrss` taken by a small fresh helper
 because `wait4` on a forked child carries the spawner's own resident set as a
 floor and the sweep process is not small.
 
-The cells are the three corpus cells the storage family publishes, plus two
-synthetic ones (`synthetic@z9`, `synthetic@z10`) with one distinct payload per
+The cells are the three corpus cells the storage family publishes, plus three
+synthetic ones (`synthetic@z9`, `@z10`, `@z11`) with one distinct payload per
 tile. A real pyramid has a few thousand distinct payloads at most, far too few
 for a table that grows with them to show, so the synthetic cells are where the
-bounded-memory claim is actually tested.
+bounded-memory claim is actually tested. The largest is four million tiles on
+purpose: the writer's sort buffer holds a million records, so below that heap
+rises with the tile count whatever the dedupe table does.
 
 **The baseline is a revision, not a release.** The epic's checklist says "the
 previous libviprs release", and there is none that fits: v0.4.0 has no PMTiles

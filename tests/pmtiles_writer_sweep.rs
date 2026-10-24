@@ -99,9 +99,12 @@ fn the_profiles_walk_the_cells_they_say_they_do() {
         ["2048x2048@256+gradient", "synthetic@z8"]
     );
     // The three corpus cells the storage family already publishes, so the
-    // writer is compared on the same bytes, then the two synthetic cells the
+    // writer is compared on the same bytes, then the three synthetic cells the
     // bounded-memory claim needs: a real pyramid has too few distinct payloads
-    // for a table that grows with them to show.
+    // for a table that grows with them to show. z11 is the one that matters most.
+    // The writer's sort buffer holds a million records, so at z9 and z10 it is
+    // still filling and heap grows with tiles whatever the dedupe table does;
+    // only at four million tiles is the buffer full, and flat means flat.
     assert_eq!(
         writer_sweep::sweep_cells(Profile::Full),
         [
@@ -110,6 +113,7 @@ fn the_profiles_walk_the_cells_they_say_they_do() {
             "8192x8192@64+noise",
             "synthetic@z9",
             "synthetic@z10",
+            "synthetic@z11",
         ]
     );
 }

@@ -32,12 +32,16 @@
 //!   its workers finish looks like to a writer.
 //!
 //! The cells are the storage family's own three corpus cells, so the writer is
-//! compared on bytes the storage sweep already publishes, plus two synthetic
-//! cells of one distinct payload per tile. A real pyramid has a few thousand
-//! payloads at most, which is far too few for a table that grows with them to
-//! show; the synthetic cells are where the bounded-memory claim is actually
-//! tested, and they are labelled synthetic in the cell name and the source so
-//! nobody reads them as imagery.
+//! compared on bytes the storage sweep already publishes, plus three synthetic
+//! cells of one distinct payload per tile (65 thousand to four million tiles at
+//! the largest). A real pyramid has a few thousand payloads at most, which is
+//! far too few for a table that grows with them to show; the synthetic cells are
+//! where the bounded-memory claim is actually tested, and they are labelled
+//! synthetic in the cell name and the source so nobody reads them as imagery.
+//! The largest is four million tiles on purpose: the writer's sort buffer holds
+//! a million records, so below that it is still filling and heap rises with the
+//! tile count whatever the dedupe table does, and "flat" only means something
+//! once the buffer is full.
 //!
 //! # Why the baseline is a revision and not a release
 //!
@@ -354,6 +358,7 @@ pub fn cells_for(profile: Profile) -> Vec<SweepCell> {
             SweepCell::Real(cells::leaf_cell(Source::Noise)),
             SweepCell::Synthetic(9),
             SweepCell::Synthetic(10),
+            SweepCell::Synthetic(11),
         ],
     }
 }

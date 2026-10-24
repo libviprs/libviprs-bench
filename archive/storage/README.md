@@ -261,10 +261,13 @@ Things to know before quoting a number from one of these:
   Ours is `VmHWM` read by the child; go-pmtiles' is the kernel's `ru_maxrss` from
   a small fresh helper, because that figure carries the spawner's resident set as
   a floor and the sweep process is not small.
-* **The synthetic cells are not imagery.** `synthetic@z9` and `synthetic@z10` are
-  one distinct 48-byte payload per tile, at every address of one zoom. A real
-  pyramid has too few distinct payloads for a table that grows with them to show,
-  and these are where the bounded-memory claim is tested.
+* **The synthetic cells are not imagery.** `synthetic@z9`, `@z10` and `@z11` are
+  one distinct 48-byte payload per tile, at every address of one zoom (262 144,
+  1 048 576 and 4 194 304 tiles). A real pyramid has too few distinct payloads for
+  a table that grows with them to show, and these are where the bounded-memory
+  claim is tested. The writer's sort buffer holds a million records, so below
+  `z11` it is still filling and heap rises with the tile count whatever the
+  dedupe table does; read the curve at `z11`.
 * **A row without an `artefactDigest` is not a row that failed.** An
   `arrival` run without ordered emission lays tiles down in whatever order the
   worker threads finished, so its bytes differ from one repetition to the next
