@@ -128,6 +128,12 @@ pub const QUIET_BELOW_ENV: &str = "WRITER_QUIET_BELOW";
 /// The most a repetition waits for the machine to go quiet, in seconds.
 pub const QUIET_WAIT_ENV: &str = "WRITER_QUIET_WAIT_S";
 
+/// The share of the last ten seconds some task spent stalled on I/O, above which
+/// a repetition waits (`/proc/pressure/io`, `some avg10`). CPU load does not see
+/// a neighbour hammering the disk, and the archive's finalize is an `fsync`.
+pub const QUIET_IO_BELOW_ENV: &str = "WRITER_QUIET_IO_BELOW";
+
+const DEFAULT_QUIET_IO_BELOW: f64 = 20.0;
 const DEFAULT_QUIET_BELOW: f64 = 0.5;
 const DEFAULT_QUIET_WAIT_S: u64 = 300;
 
@@ -942,6 +948,16 @@ static GATE_WAITED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU
 static GATE_GAVE_UP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static GATE_REPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// `some avg10` from `/proc/pressure/io`, as a percentage. `None` where the
+/// kernel does not offer pressure stall information, which is then not gated on.
+fn io_pressure_some_avg10() -> Option<f64> {
+    let text = std::fs::read_to_string("/proc/pressure/io").ok()?;
+    let line = text.lines().find(|l| l.starts_with("some "))?;
+    line.split_whitespace()
+        .find_map(|field| field.strip_prefix("avg10="))
+        .and_then(|v| v.parse().ok())
+}
+
 fn env_f64(name: &str, default: f64) -> f64 {
     std::env::var(name)
         .ok()
@@ -963,12 +979,15 @@ fn env_f64(name: &str, default: f64) -> f64 {
 /// row records, so a repetition that had to give up says so in its own row.
 fn wait_for_quiet() -> MachineLoad {
     let below = env_f64(QUIET_BELOW_ENV, DEFAULT_QUIET_BELOW);
-    let budget = std::time::Duration::from_secs(env_f64(QUIET_WAIT_ENV, DEFAULT_QUIET_WAIT_S as f64) as u64);
+    let io_below = env_f64(QUIET_IO_BELOW_ENV, DEFAULT_QUIET_IO_BELOW);
+    let budget =
+        std::time::Duration::from_secs(env_f64(QUIET_WAIT_ENV, DEFAULT_QUIET_WAIT_S as f64) as u64);
     let began = Instant::now();
     GATE_REPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     loop {
         let load = MachineLoad::sample();
-        let calm = load.contention_per_core.is_some_and(|c| c < below);
+        let calm = load.contention_per_core.is_some_and(|c| c < below)
+            && io_pressure_some_avg10().is_none_or(|p| p < io_below);
         if calm || began.elapsed() >= budget {
             GATE_WAITED_MS.fetch_add(
                 began.elapsed().as_millis() as u64,
@@ -1472,6 +1491,8 @@ fn sweep_provenance(
                 "coreWriterKnobs": cfg!(core_writer_knobs),
                 "quietGate": {
                     "belowContentionPerCore": env_f64(QUIET_BELOW_ENV, DEFAULT_QUIET_BELOW),
+                    "belowIoPressureSomeAvg10Pct": env_f64(QUIET_IO_BELOW_ENV, DEFAULT_QUIET_IO_BELOW),
+                    "ioPressureAvailable": io_pressure_some_avg10().is_some(),
                     "maxWaitPerRepetitionS": env_f64(QUIET_WAIT_ENV, DEFAULT_QUIET_WAIT_S as f64),
                     "repetitionsGated": GATE_REPS.load(std::sync::atomic::Ordering::Relaxed),
                     "repetitionsStartedBusy": GATE_GAVE_UP.load(std::sync::atomic::Ordering::Relaxed),
