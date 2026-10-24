@@ -28,7 +28,8 @@ function remoteCommands(src) {
     let i = marker.lastIndex;
     let body = '';
     while (i < code.length && !(code[i] === '"' && code[i - 1] !== '\\')) body += code[i++];
-    out.push(body);
+    // `$DOCKER` is `docker --config /tmp/dcbench`, said once at the top of the script.
+    out.push(body.replaceAll('$DOCKER', 'docker --config /tmp/dcbench'));
   }
   return out;
 }
@@ -38,7 +39,7 @@ function remoteCommands(src) {
  *  them may chain, pipe or redirect. */
 function isOneDockerCommand(remote) {
   const outside = remote.replace(/'[^']*'/g, "''");
-  if (!/^docker (run|build|images|rm|rmi|image|info) /.test(outside)) return false;
+  if (!/^docker --config \/tmp\/dcbench (run|build|images|rm|rmi|image|info) /.test(outside)) return false;
   return !/[;|&><`]|\$\(/.test(outside);
 }
 
@@ -52,11 +53,11 @@ test('every command sent to the host is one docker invocation', () => {
 
 test('the throw-away helper pins the platform and runs in a container', () => {
   const helper = script.match(/util\(\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-  assert.match(helper, /docker run --rm --platform linux\/amd64/);
+  assert.match(helper, /\$DOCKER run --rm --platform linux\/amd64/);
 });
 
 test('every docker run names its platform', () => {
-  const runs = remoteCommands(script).filter((c) => c.startsWith('docker run'));
+  const runs = remoteCommands(script).filter((c) => c.startsWith('docker --config /tmp/dcbench run'));
   assert.ok(runs.length >= 4, 'the walk found the docker runs');
   for (const run of runs) assert.match(run, /--platform linux\/amd64/, run);
 });
@@ -74,7 +75,7 @@ test('the push keeps .git, because provenance cannot resolve a commit without it
 
 test('cleanup is on a trap and removes only what this run made', () => {
   assert.match(script, /trap cleanup EXIT/);
-  assert.match(script, /docker rmi -f \$IMAGE/, 'its own image goes');
+  assert.match(script, /\$DOCKER rmi -f \$IMAGE/, 'its own image goes');
   assert.ok(!/rmi[^\n]*nas-driver/.test(script), 'the shared driver image is left for other jobs');
   assert.match(script, /rm -rf \/ws\/\$NAME/, 'only its own scratch tree goes');
   // The only `rm -rf` in the file is inside that container's quoted argument.

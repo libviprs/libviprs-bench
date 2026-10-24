@@ -51,6 +51,10 @@ set -euo pipefail
 NAS=${NAS:-devshell@192.168.0.100}
 SSH=(ssh -o BatchMode=yes -o LogLevel=ERROR "$NAS")
 WORK=/work/nas-work
+# ~/.docker on this host is a symlink into a tree that is not there, and a plain
+# `docker build` dies on it with "mkdir /home/devshell/.docker: file exists". A
+# config directory of our own, in /tmp, is what every docker call here uses.
+DOCKER="docker --config /tmp/dcbench"
 CORE_REPO=https://github.com/libviprs/libviprs.git
 BENCH_REPO=https://github.com/libviprs/libviprs-bench.git
 CORE_REV=
@@ -98,19 +102,19 @@ mars() { "${SSH[@]}" "$@"; }
 util() { # util <host:container mounts...> -- <command...>
   local mounts=""
   while [ "$1" != "--" ]; do mounts="$mounts -v $1"; shift; done; shift
-  mars "docker run --rm --platform linux/amd64$mounts alpine:3.20 $*"
+  mars "$DOCKER run --rm --platform linux/amd64$mounts alpine:3.20 $*"
 }
 
 cleanup() {
   local code=$?
   say "cleaning up $NAS"
-  mars "docker rm -f $BUILDER" >/dev/null 2>&1 || true
-  mars "docker rmi -f $IMAGE" >/dev/null 2>&1 || true
+  mars "$DOCKER rm -f $BUILDER" >/dev/null 2>&1 || true
+  mars "$DOCKER rmi -f $IMAGE" >/dev/null 2>&1 || true
   util "$WORK:/ws" -- sh -c "'rm -rf /ws/$NAME'" >/dev/null 2>&1 || true
   # Report what is left rather than asserting the machine is clean. The counting
   # is local plumbing on docker's own output.
   printf 'images matching this run: %s\n' \
-    "$(mars "docker images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | grep -c "$NAME" || true)"
+    "$(mars "$DOCKER images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | grep -c "$NAME" || true)"
   printf 'scratch trees matching this run: %s\n' \
     "$(util "$WORK:/ws" -- ls /ws 2>/dev/null | grep -c "^$NAME\$" || true)"
   exit $code
@@ -147,29 +151,29 @@ echo "bench $BENCH_SHA"
 say "pushing to $NAS:$WORK/$NAME"
 util "$WORK:/ws" -- sh -c "'mkdir -p /ws/$NAME/src /ws/$NAME/out /ws/$NAME/scratch'"
 tar -cf - -C "$STAGE" --exclude=target --exclude=node_modules . \
-  | mars "docker run --rm -i --platform linux/amd64 -v $WORK/$NAME/src:/dest alpine:3.20 tar -xf - -C /dest --no-same-owner"
+  | mars "$DOCKER run --rm -i --platform linux/amd64 -v $WORK/$NAME/src:/dest alpine:3.20 tar -xf - -C /dest --no-same-owner"
 
 say "ensuring the driver image (shared, never removed here)"
-mars "docker image inspect nas-driver:latest" >/dev/null 2>&1 || mars "docker build -q -t nas-driver:latest -" >/dev/null <<'DOCKEREOF'
+mars "$DOCKER image inspect nas-driver:latest" >/dev/null 2>&1 || mars "$DOCKER build -q -t nas-driver:latest -" >/dev/null <<'DOCKEREOF'
 FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-        python3 git ca-certificates curl gnupg \\
-    && install -m 0755 -d /etc/apt/keyrings \\
-    && curl -fsSL https://download.docker.com/linux/debian/gpg \\
-        -o /etc/apt/keyrings/docker.asc \\
-    && chmod a+r /etc/apt/keyrings/docker.asc \\
-    && echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable' \\
-        > /etc/apt/sources.list.d/docker.list \\
-    && apt-get update && apt-get install -y --no-install-recommends \\
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 git ca-certificates curl gnupg \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable' \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
         docker-ce-cli docker-buildx-plugin
 DOCKEREOF
 
 say "building the writer image through the socket-mounted driver"
-mars "docker run --rm --name $BUILDER --platform linux/amd64 \
+mars "$DOCKER run --rm --name $BUILDER --platform linux/amd64 \
   -v /var/run/docker.sock:/var/run/docker.sock -v $WORK/$NAME/src:/work -w /work nas-driver:latest \
   sh -c 'docker build --platform linux/amd64 -f libviprs-bench/Dockerfile --target writer --build-arg CARGO_LOCKED=$LOCKED --build-arg BENCH_RUSTFLAGS=$RUSTFLAGS_FOR_BUILD -t $IMAGE . >/dev/null'"
 
-DAEMON_ARCH=$(mars "docker info --format '{{.Architecture}}'" | tr -d '[:space:]')
+DAEMON_ARCH=$(mars "$DOCKER info --format '{{.Architecture}}'" | tr -d '[:space:]')
 CORES=$(util -- nproc | tr -d '[:space:]')
 
 # Settle: two consecutive readings under the threshold, or refuse. A sweep that
@@ -190,13 +194,13 @@ while :; do
 done
 
 say "capturing profile $PROFILE, native x86_64, core $CORE_VER@${CORE_SHA:0:8}"
-mars "docker run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out -v $WORK/$NAME/scratch:/scratch \
+mars "$DOCKER run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out -v $WORK/$NAME/scratch:/scratch \
   -e TMPDIR=/scratch -e BENCH_DAEMON_ARCH=$DAEMON_ARCH $IMAGE \
   /src/libviprs-bench/target/release/pmtiles-writer --profile $PROFILE --out /out/writer-x86.json"
 
 say "checking, archiving and verifying inside the image that measured"
 AGG=/src/libviprs-bench/target/release/storage-aggregate
-mars "docker run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out $IMAGE sh -c '
+mars "$DOCKER run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out $IMAGE sh -c '
   set -e
   $AGG --check /out/writer-x86.json
   mkdir -p /out/archive-storage
@@ -208,8 +212,8 @@ mars "docker run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out $IMAGE sh -
 
 say "retrieving"
 mkdir -p "$OUT"
-mars "docker run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out alpine:3.20 cat /out/writer-x86.json" > "$OUT/writer-x86.json"
-mars "docker run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out alpine:3.20 tar -cf - -C /out/archive-storage ." \
+mars "$DOCKER run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out alpine:3.20 cat /out/writer-x86.json" > "$OUT/writer-x86.json"
+mars "$DOCKER run --rm --platform linux/amd64 -v $WORK/$NAME/out:/out alpine:3.20 tar -cf - -C /out/archive-storage ." \
   | tar -xf - -C "$(mkdir -p "$OUT/archive-storage" && echo "$OUT/archive-storage")"
 echo "document: $OUT/writer-x86.json ($(wc -c < "$OUT/writer-x86.json") bytes)"
 echo "archive:  $OUT/archive-storage"
