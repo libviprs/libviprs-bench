@@ -302,7 +302,11 @@ pub fn hand_walk(
 }
 
 /// The half of [`hand_walk`] that does not depend on which sink it is.
-fn walk<S: TileSink>(
+///
+/// Public so the writer sweep (libviprs-bench #132) can split a pass the same
+/// way over a sink it configures itself, rather than carrying a second copy of
+/// the seam.
+pub fn walk<S: TileSink>(
     sink: &S,
     source: &Raster,
     plan: &PyramidPlan,
