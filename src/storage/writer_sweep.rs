@@ -121,6 +121,16 @@ pub const MBTILES_SCRIPT: &str = "tools/mbtiles-from-tiles.py";
 /// The environment variable that names the go-pmtiles binary.
 pub const GO_ENV: &str = "BENCH_GO_PMTILES";
 
+/// The contention (one-minute load per core) a repetition waits to fall under
+/// before it starts. Half a core's worth of load per core by default.
+pub const QUIET_BELOW_ENV: &str = "WRITER_QUIET_BELOW";
+
+/// The most a repetition waits for the machine to go quiet, in seconds.
+pub const QUIET_WAIT_ENV: &str = "WRITER_QUIET_WAIT_S";
+
+const DEFAULT_QUIET_BELOW: f64 = 0.5;
+const DEFAULT_QUIET_WAIT_S: u64 = 300;
+
 // ---------------------------------------------------------------------------
 // Variants
 // ---------------------------------------------------------------------------
@@ -927,6 +937,62 @@ struct Accum {
     failures: Vec<String>,
 }
 
+/// What the quiet gate did over a sweep, for the document to say.
+static GATE_WAITED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GATE_GAVE_UP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static GATE_REPS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn env_f64(name: &str, default: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// Hold a repetition back until the machine is quiet, then take the reading it
+/// starts under.
+///
+/// The host is shared, and its one-minute load swings from single digits to
+/// well over a hundred as other jobs come and go. A sweep that simply started
+/// every repetition would publish whatever it happened to land on, and the first
+/// full capture did: three rows in four recorded a contended machine. So each
+/// repetition waits, up to [`QUIET_WAIT_ENV`] seconds, for the load per core to
+/// fall under [`QUIET_BELOW_ENV`], and starts anyway when the budget runs out
+/// rather than stalling a sweep behind a machine that never calms. The time
+/// waited is not in any sample, and the reading it started under is the one the
+/// row records, so a repetition that had to give up says so in its own row.
+fn wait_for_quiet() -> MachineLoad {
+    let below = env_f64(QUIET_BELOW_ENV, DEFAULT_QUIET_BELOW);
+    let budget = std::time::Duration::from_secs(env_f64(QUIET_WAIT_ENV, DEFAULT_QUIET_WAIT_S as f64) as u64);
+    let began = Instant::now();
+    GATE_REPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    loop {
+        let load = MachineLoad::sample();
+        let calm = load.contention_per_core.is_some_and(|c| c < below);
+        if calm || began.elapsed() >= budget {
+            GATE_WAITED_MS.fetch_add(
+                began.elapsed().as_millis() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            if !calm {
+                GATE_GAVE_UP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            return load;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+}
+
+/// The reading a repetition is recorded under: the worse of the one it started
+/// under and the one it finished under, so a spike in the middle is not missed.
+fn worse(a: MachineLoad, b: MachineLoad) -> MachineLoad {
+    match (a.contention_per_core, b.contention_per_core) {
+        (Some(x), Some(y)) if y > x => b,
+        (None, Some(_)) => b,
+        _ => a,
+    }
+}
+
 fn worst_load(loads: impl Iterator<Item = MachineLoad>) -> MachineLoad {
     loads
         .max_by(|a, b| {
@@ -1270,7 +1336,7 @@ fn child_rep(
     tiles_root: Option<&Path>,
 ) -> Result<RepResult, String> {
     let scratch = Scratch::new(None).map_err(|e| format!("no scratch directory: {e}"))?;
-    let load = MachineLoad::sample();
+    let started_under = wait_for_quiet();
     let out_dir = scratch.path().join("out");
     let mut args = vec![
         variant.label(),
@@ -1283,7 +1349,9 @@ fn child_rep(
     if let (Mode::Build, Some(root)) = (mode, tiles_root) {
         args.push(root.display().to_string());
     }
-    let out = run_child_process(exe, &args, &scratch.path().join("stderr.txt"))
+    let ran = run_child_process(exe, &args, &scratch.path().join("stderr.txt"));
+    let load = worse(started_under, MachineLoad::sample());
+    let out = ran
         .map_err(|e| format!("{} {} {}: {e}", variant.label(), cell.spec(), mode.as_str()))?;
     attest_archive(&out_dir.join("pyramid.pmtiles"), cell, tiles_root).map_err(|e| {
         format!("attest {} {} {}: {e}", variant.label(), cell.spec(), mode.as_str())
@@ -1300,7 +1368,7 @@ fn go_rep(
     tiles_root: Option<&Path>,
 ) -> Result<RepResult, String> {
     let scratch = Scratch::new(None).map_err(|e| format!("no scratch directory: {e}"))?;
-    let load = MachineLoad::sample();
+    let started_under = wait_for_quiet();
     let out_dir = scratch.path().join("out");
     let args = vec![
         "-".to_string(),
@@ -1310,8 +1378,9 @@ fn go_rep(
         go.binary.display().to_string(),
         input.display().to_string(),
     ];
-    let out = run_child_process(exe, &args, &scratch.path().join("stderr.txt"))
-        .map_err(|e| format!("go-pmtiles {}: {e}", cell.spec()))?;
+    let ran = run_child_process(exe, &args, &scratch.path().join("stderr.txt"));
+    let load = worse(started_under, MachineLoad::sample());
+    let out = ran.map_err(|e| format!("go-pmtiles {}: {e}", cell.spec()))?;
     attest_archive(&out_dir.join("pyramid.pmtiles"), cell, tiles_root)
         .map_err(|e| format!("attest go-pmtiles {}: {e}", cell.spec()))?;
     Ok(RepResult { out, load })
@@ -1401,6 +1470,13 @@ fn sweep_provenance(
                 "cells": sweep_cells(profile),
                 "variants": variants.iter().map(Variant::label).collect::<Vec<_>>(),
                 "coreWriterKnobs": cfg!(core_writer_knobs),
+                "quietGate": {
+                    "belowContentionPerCore": env_f64(QUIET_BELOW_ENV, DEFAULT_QUIET_BELOW),
+                    "maxWaitPerRepetitionS": env_f64(QUIET_WAIT_ENV, DEFAULT_QUIET_WAIT_S as f64),
+                    "repetitionsGated": GATE_REPS.load(std::sync::atomic::Ordering::Relaxed),
+                    "repetitionsStartedBusy": GATE_GAVE_UP.load(std::sync::atomic::Ordering::Relaxed),
+                    "waitedS": GATE_WAITED_MS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1000.0,
+                },
                 "externalTools": external,
             },
         }),
