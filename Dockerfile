@@ -149,12 +149,35 @@ COPY libviprs/ libviprs/
 COPY libviprs-bench/ libviprs-bench/
 
 WORKDIR /src/libviprs-bench
-RUN cargo fetch --locked
+
+# Two build arguments exist for one reason: measuring a core revision that is not
+# the one `Cargo.lock` was written for. The previous-revision baseline is such a
+# revision, and it differs from the lock in exactly one line, the core's own
+# version (0.5.0 against 0.6.1), which `--locked` refuses and which cargo rewrites
+# without touching a single dependency. That revision also predates the move to
+# Rust 1.99, so its manifest's `deprecated = "deny"` trips on two calls the newer
+# compiler deprecates; `--cap-lints=warn` turns the lint down and changes no code
+# that is generated, and it is what lets the baseline be built with the SAME
+# compiler as the revision it is compared with rather than a different one.
+#
+# Both are recorded. RUSTFLAGS is stamped into the binary by `build.rs` and lands
+# in `provenance.node.rustflags`, and `provenance.lockfileHash` is taken over the
+# lock as it was built. The default is the strict build every other stage does.
+ARG CARGO_LOCKED=--locked
+ARG BENCH_RUSTFLAGS=
+ENV RUSTFLAGS=${BENCH_RUSTFLAGS}
+
+# Cargo rewriting that one line would make the harness tree read as modified, and
+# the aggregator refuses a dirty tree. The index is told to stop watching the lock
+# for an unlocked build only; every source file is still compared.
+RUN if [ -z "${CARGO_LOCKED}" ]; then git update-index --assume-unchanged Cargo.lock; fi
+
+RUN cargo fetch ${CARGO_LOCKED}
 
 # Default features only, like `storage`. `storage-aggregate` is built here too,
 # because the document this stage writes is archived by the same binary and
 # checking it before it leaves the box is cheaper than finding out afterwards.
-RUN cargo build --locked --release --bin pmtiles-writer --bin storage-aggregate
+RUN cargo build ${CARGO_LOCKED} --release --bin pmtiles-writer --bin storage-aggregate
 
 CMD ["/src/libviprs-bench/target/release/pmtiles-writer", "--profile", "ci"]
 

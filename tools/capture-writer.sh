@@ -5,6 +5,7 @@
 #   tools/capture-writer.sh --core-rev <sha|tag> [--bench-rev <sha>] [--profile full|xl|ci]
 #                           [--core-repo <url|path>] [--bench-repo <url|path>]
 #                           [--out <dir>] [--name <tag>] [--settle-below <load>] [--keep]
+#                           [--unlocked] [--rustflags <flags>]
 #
 # One invocation measures ONE core revision, because a document carries exactly
 # one `provenance.library.commit` and the comparison the issue asks for is
@@ -37,6 +38,11 @@
 #      measured, before the document leaves the box: --check, --archive into a
 #      copy of the repository's archive directory, then --verify.
 #
+# A revision older than the harness's lock needs `--unlocked` (cargo rewrites the
+# core's own version in Cargo.lock and nothing else) and, if it predates Rust 1.99,
+# `--rustflags --cap-lints=warn`. The Dockerfile says why and both land in the
+# document's provenance.
+#
 # Nothing here writes into the repository. The sealed document and the updated
 # index come back under --out, and committing them (and importing the run into
 # tools/publish/history.json) is the next, separate step.
@@ -54,6 +60,8 @@ OUT=$(pwd)/writer-capture
 NAME=viprs-writer-$$
 SETTLE_BELOW=4
 SETTLE_BUDGET_S=3600
+LOCKED=--locked
+RUSTFLAGS_FOR_BUILD=
 KEEP=false
 
 while [ $# -gt 0 ]; do
@@ -66,9 +74,11 @@ while [ $# -gt 0 ]; do
     --out)          OUT=$2; shift 2 ;;
     --name)         NAME=$2; shift 2 ;;
     --settle-below) SETTLE_BELOW=$2; shift 2 ;;
+    --unlocked)     LOCKED=; shift ;;
+    --rustflags)    RUSTFLAGS_FOR_BUILD=$2; shift 2 ;;
     --settle-budget) SETTLE_BUDGET_S=$2; shift 2 ;;
     --keep)         KEEP=true; shift ;;
-    -h|--help)      sed -n '2,38p' "$0"; exit 0 ;;
+    -h|--help)      sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -157,7 +167,7 @@ DOCKEREOF
 say "building the writer image through the socket-mounted driver"
 mars "docker run --rm --name $BUILDER --platform linux/amd64 \
   -v /var/run/docker.sock:/var/run/docker.sock -v $WORK/$NAME/src:/work -w /work nas-driver:latest \
-  sh -c 'docker build --platform linux/amd64 -f libviprs-bench/Dockerfile --target writer -t $IMAGE . >/dev/null'"
+  sh -c 'docker build --platform linux/amd64 -f libviprs-bench/Dockerfile --target writer --build-arg CARGO_LOCKED=$LOCKED --build-arg BENCH_RUSTFLAGS=$RUSTFLAGS_FOR_BUILD -t $IMAGE . >/dev/null'"
 
 DAEMON_ARCH=$(mars "docker info --format '{{.Architecture}}'" | tr -d '[:space:]')
 CORES=$(util -- nproc | tr -d '[:space:]')
