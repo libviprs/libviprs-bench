@@ -285,8 +285,12 @@ is measured two ways because the two answer different questions.
 The second form is the one go-pmtiles can stand beside, because go-pmtiles does not
 encode a pyramid either: `pmtiles convert` turns an MBTiles file into an archive.
 So the tile set is written to one (`tools/mbtiles-from-tiles.py`, untimed), and
-go-pmtiles is timed converting it, as a backend named `go-pmtiles`. It is spawned
-by the sweep itself so the `ru_maxrss` the kernel reports is go-pmtiles' own.
+go-pmtiles is timed converting it, as a backend named `go-pmtiles`. Both
+contenders are timed inside the process that does the work and both report a peak
+resident set with no floor from whoever started them: ours is `VmHWM` read by the
+child, and go-pmtiles' is the kernel's `ru_maxrss` taken by a small fresh helper,
+because `wait4` on a forked child carries the spawner's own resident set as a
+floor and the sweep process is not small.
 
 The cells are the three corpus cells the storage family publishes, plus two
 synthetic ones (`synthetic@z9`, `synthetic@z10`) with one distinct payload per
