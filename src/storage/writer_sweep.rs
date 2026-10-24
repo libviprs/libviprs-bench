@@ -55,11 +55,17 @@
 //!
 //! `pmtiles convert` reads an MBTiles file, so the tile set is written to one
 //! (`tools/mbtiles-from-tiles.py`, untimed) and go-pmtiles is timed converting
-//! it. It is spawned by the sweep itself, not by a child of it, so the
-//! `ru_maxrss` the kernel reports is go-pmtiles' own and not a Rust process's
-//! with a Go process folded in. What is and is not the same work is spelled out
-//! in `archive/storage/README.md`; the short version is that go-pmtiles also
-//! reads SQLite and the writer here reads loose files.
+//! it. Both contenders are timed inside the process that does the work (the
+//! writer from opening to publishing, go-pmtiles from spawn to reap), so neither
+//! carries its own start-up, and both report a peak resident set that has no
+//! floor from whoever started them. Ours is `VmHWM` read by the child. go-pmtiles
+//! is not ours to instrument, so its figure is the kernel's `ru_maxrss` from the
+//! reaping `wait4`, taken by a small fresh helper process rather than by the
+//! sweep: that figure includes the parent's resident set at the fork, and the
+//! sweep, which has just built tile sets, is not a small parent. What is and is
+//! not the same work is spelled out in `archive/storage/README.md`; the short
+//! version is that go-pmtiles also reads SQLite and the writer here reads loose
+//! files.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -362,8 +368,23 @@ pub struct RepOut {
     pub ingest_heap: Option<u64>,
     /// Engine-driven: peak live heap over the whole pass.
     pub finalize_heap: Option<u64>,
+    /// Writer-driven (and go-pmtiles): milliseconds from the writer opening to
+    /// the archive being published. Measured inside the process that did the
+    /// work, so it excludes starting that process, for ours and for go-pmtiles
+    /// alike.
+    pub build_ms: Option<f64>,
     /// Writer-driven: peak live heap over the build.
     pub heap_peak: Option<u64>,
+    /// The process's own peak resident set, in bytes.
+    ///
+    /// Read by the child from `VmHWM` in `/proc/self/status`, never from the
+    /// parent's `wait4`. On Linux a forked child that execs reports, through
+    /// `wait4`, the larger of its own peak and the parent's resident set at the
+    /// moment of the fork, because the old address space's high-water mark is
+    /// folded in at exec. A parent that had just built a 200 MB raster would put
+    /// a 200 MB floor under every child, and the numbers would be about the
+    /// parent. `VmHWM` belongs to the new address space and has no floor.
+    pub peak_rss_bytes: Option<u64>,
     pub output_bytes: Option<u64>,
     pub tiles: Option<u64>,
     pub digest: Option<String>,
@@ -386,6 +407,14 @@ pub enum Mode {
     Engine,
     /// The writer is handed an existing tile set.
     Build,
+    /// Write the tile set the other modes are built from. A child, so the sweep
+    /// process never holds a raster and never has a large resident set to hand
+    /// down.
+    Tileset,
+    /// Run go-pmtiles and report what it cost. A child for the same reason:
+    /// `wait4` on a process spawned from here reports a floor of this process's
+    /// own resident set, so it is spawned from the smallest process available.
+    Go,
 }
 
 impl Mode {
@@ -393,6 +422,8 @@ impl Mode {
         match self {
             Mode::Engine => "engine",
             Mode::Build => "build",
+            Mode::Tileset => "tileset",
+            Mode::Go => "go",
         }
     }
 
@@ -400,27 +431,41 @@ impl Mode {
         match s {
             "engine" => Some(Mode::Engine),
             "build" => Some(Mode::Build),
+            "tileset" => Some(Mode::Tileset),
+            "go" => Some(Mode::Go),
             _ => None,
         }
     }
 }
 
-/// The child body: `<variant> <cell> <engine|build> <out-dir> [tiles-root]`.
+/// The child body: `<variant|-> <cell> <mode> <out-dir> [extra...]`.
+///
+/// `engine` takes nothing more, `build` takes the tile set's root, `tileset`
+/// takes nothing more, and `go` takes the go-pmtiles binary and its MBTiles
+/// input. The variant is `-` for the two modes that have none.
 pub fn run_child(args: &[String]) -> i32 {
     let [variant, cell, mode, out, rest @ ..] = args else {
-        eprintln!("{SINGLE_FLAG} <variant> <cell> <engine|build> <out-dir> [tiles-root]");
+        eprintln!("{SINGLE_FLAG} <variant|-> <cell> <engine|build|tileset|go> <out-dir> [extra...]");
         return 2;
     };
-    let (Some(variant), Some(cell), Some(mode)) = (
-        Variant::parse(variant),
-        SweepCell::parse(cell),
-        Mode::parse(mode),
-    ) else {
+    let (Some(cell), Some(mode)) = (SweepCell::parse(cell), Mode::parse(mode)) else {
         eprintln!("unparseable arguments: {args:?}");
         return 2;
     };
-    let reply = match one_rep(variant, cell, mode, Path::new(out), rest.first().map(Path::new)) {
-        Ok(out) => ChildReply::Ok(out),
+    let variant = Variant::parse(variant);
+    if variant.is_none() && matches!(mode, Mode::Engine | Mode::Build) {
+        eprintln!("{mode:?} needs a variant: {args:?}");
+        return 2;
+    }
+    let outcome = one_rep(variant, cell, mode, Path::new(out), rest);
+    let reply = match outcome {
+        Ok(mut out) => {
+            // Last thing, so it covers the whole repetition and nothing after.
+            if out.peak_rss_bytes.is_none() {
+                out.peak_rss_bytes = vm_hwm_bytes();
+            }
+            ChildReply::Ok(out)
+        }
         Err(e) => ChildReply::Err(e),
     };
     println!(
@@ -437,22 +482,93 @@ pub fn maybe_run_single_subcommand() -> Option<i32> {
     Some(run_child(&argv[at + 1..]))
 }
 
+/// The peak resident set of this process, from `VmHWM`. `None` off Linux, where
+/// there is no figure with the same meaning and a number without it would be a
+/// different measurement under the same name.
+pub fn vm_hwm_bytes() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find_map(|l| l.strip_prefix("VmHWM:"))?;
+    let kib: u64 = line.trim().trim_end_matches("kB").trim().parse().ok()?;
+    Some(kib * 1024)
+}
+
 /// One repetition, in this process.
 pub fn one_rep(
-    variant: Variant,
+    variant: Option<Variant>,
     cell: SweepCell,
     mode: Mode,
     out_dir: &Path,
-    tiles_root: Option<&Path>,
+    extra: &[String],
 ) -> Result<RepOut, String> {
     std::fs::create_dir_all(out_dir).map_err(|e| format!("no output directory: {e}"))?;
-    match (mode, cell) {
-        (Mode::Engine, SweepCell::Real(cell)) => engine_rep(variant, cell, out_dir),
-        (Mode::Engine, SweepCell::Synthetic(_)) => {
+    match (mode, cell, variant) {
+        (Mode::Engine, SweepCell::Real(cell), Some(variant)) => engine_rep(variant, cell, out_dir),
+        (Mode::Engine, SweepCell::Synthetic(_), _) => {
             Err("a synthetic cell has no engine to drive".to_string())
         }
-        (Mode::Build, cell) => build_rep(variant, cell, out_dir, tiles_root),
+        (Mode::Build, cell, Some(variant)) => {
+            build_rep(variant, cell, out_dir, extra.first().map(Path::new))
+        }
+        (Mode::Tileset, SweepCell::Real(cell), _) => tileset_rep(cell, out_dir),
+        (Mode::Tileset, SweepCell::Synthetic(_), _) => {
+            Err("a synthetic cell has no tile set to write".to_string())
+        }
+        (Mode::Go, _, _) => match extra {
+            [binary, input] => go_child(Path::new(binary), Path::new(input), out_dir),
+            _ => Err("go wants the binary and the mbtiles input".to_string()),
+        },
+        _ => Err("a mode was given no variant".to_string()),
     }
+}
+
+/// Write the tile set the writer-driven scenario and go-pmtiles are built from,
+/// untimed, through the directory backend. Its XYZ layout, `<z>/<x>/<y>.png`, is
+/// the neutral one both readers want.
+fn tileset_rep(cell: Cell, out_dir: &Path) -> Result<RepOut, String> {
+    let plan = cell.plan().ok_or("the cell does not plan")?;
+    let written = write_pyramid(Backend::Directory, cell, &plan, out_dir)?;
+    Ok(RepOut {
+        tiles: Some(written.tiles_produced),
+        ..RepOut::default()
+    })
+}
+
+/// Run go-pmtiles once, from this (small, fresh) process, and report it.
+///
+/// The `wait4` that matters here is the one on go-pmtiles itself, and its
+/// `ru_maxrss` floor is this process's resident set at the fork. This process
+/// has just started and holds nothing, so the floor is a few megabytes under a
+/// Go runtime that is itself tens, rather than the sweep's own.
+fn go_child(binary: &Path, input: &Path, out_dir: &Path) -> Result<RepOut, String> {
+    let output = out_dir.join("pyramid.pmtiles");
+    let mut command = Command::new(binary);
+    command
+        .arg("convert")
+        .arg("--quiet")
+        .arg(input)
+        .arg(&output)
+        .arg("--tmpdir")
+        .arg(out_dir);
+    let spawned = spawn_measured(&mut command, &out_dir.join("go-stderr.txt"))?;
+    if !spawned.success {
+        return Err(format!(
+            "go-pmtiles convert failed: {}",
+            tail(&out_dir.join("go-stderr.txt"))
+        ));
+    }
+    let shape = archive_shape_of(&output);
+    Ok(RepOut {
+        build_ms: Some(spawned.wall_ms),
+        peak_rss_bytes: spawned.peak_rss_bytes,
+        output_bytes: occupancy(&output).map(|o| o.0),
+        tiles: Reader::try_open(&output)
+            .ok()
+            .map(|r| r.header().addressed_tiles_count),
+        digest: artefact_digest(&output),
+        root_entries: shape.map(|s| s.0),
+        leaves: shape.map(|s| s.1),
+        ..RepOut::default()
+    })
 }
 
 /// The engine builds the pyramid; ingest and finalize are timed apart.
@@ -483,12 +599,12 @@ fn engine_rep(variant: Variant, cell: Cell, out_dir: &Path) -> Result<RepOut, St
         finalize_ms: Some(walked.finalize.as_secs_f64() * 1000.0),
         ingest_heap: walked.ingest_peak_bytes,
         finalize_heap: walked.finalize_peak_bytes,
-        heap_peak: None,
         output_bytes: occupancy(&archive).map(|o| o.0),
         tiles: Some(walked.tiles_produced),
         digest: artefact_digest(&archive),
         root_entries: shape.map(|s| s.0),
         leaves: shape.map(|s| s.1),
+        ..RepOut::default()
     })
 }
 
@@ -501,6 +617,7 @@ fn build_rep(
 ) -> Result<RepOut, String> {
     let archive = out_dir.join("pyramid.pmtiles");
     let armed = heap::arm();
+    let started = Instant::now();
     let mut writer = Writer::create(&archive, variant.options())
         .map_err(|e| format!("the writer does not open: {e}"))?;
     match cell {
@@ -556,9 +673,11 @@ fn build_rep(
     let finish = writer
         .finish()
         .map_err(|e| format!("the writer does not finish: {e}"))?;
+    let build_ms = started.elapsed().as_secs_f64() * 1000.0;
     let heap_peak = armed.peak_bytes();
     let shape = archive_shape_of(&archive);
     Ok(RepOut {
+        build_ms: Some(build_ms),
         heap_peak,
         output_bytes: occupancy(&archive).map(|o| o.0),
         tiles: Some(finish.header.addressed_tiles_count),
@@ -798,9 +917,6 @@ impl Contender {
 #[derive(Debug, Clone)]
 struct RepResult {
     out: RepOut,
-    /// The process's wall time, spawn to reap.
-    wall_ms: f64,
-    peak_rss_bytes: Option<u64>,
     load: MachineLoad,
 }
 
@@ -887,7 +1003,7 @@ fn rows_for(
             peak_rss_mb: acc
                 .reps
                 .iter()
-                .filter_map(|r| r.peak_rss_bytes)
+                .filter_map(|r| r.out.peak_rss_bytes)
                 .max()
                 .map(|b| b as f64 / (1024.0 * 1024.0)),
             heap_peak_bytes: acc
@@ -982,22 +1098,18 @@ fn sweep_cell(
     timer: Option<stats::TimerProbe>,
 ) {
     // The tile set the writer-driven scenario and go-pmtiles are both built
-    // from, written once and untimed. The directory backend writes XYZ paths,
-    // `<z>/<x>/<y>.png`, which is the neutral layout both readers want.
+    // from, written once and untimed, by a child. The sweep process never holds
+    // a raster, so it never has a large resident set to put a floor under
+    // anything it spawns, and a tile set it cannot write is a cell it cannot
+    // measure.
     let tiles = match cell {
-        SweepCell::Real(real) => {
-            let (Some(plan), Ok(scratch)) = (real.plan(), Scratch::new(None)) else {
-                eprintln!("pmtiles-writer: {} does not plan or has no scratch", cell.spec());
+        SweepCell::Real(_) => match make_tileset(exe, cell) {
+            Ok(set) => Some(set),
+            Err(e) => {
+                eprintln!("pmtiles-writer: the tile set for {} does not build: {e}", cell.spec());
                 return;
-            };
-            match write_pyramid(Backend::Directory, real, &plan, scratch.path()) {
-                Ok(written) => Some((scratch, written.output)),
-                Err(e) => {
-                    eprintln!("pmtiles-writer: the tile set for {} does not build: {e}", cell.spec());
-                    return;
-                }
             }
-        }
+        },
         SweepCell::Synthetic(_) => None,
     };
     let tiles_root: Option<PathBuf> = tiles.as_ref().map(|(_, root)| root.clone());
@@ -1028,7 +1140,7 @@ fn sweep_cell(
             let Contender::Ours(variant) = &contender else {
                 // go-pmtiles: build only.
                 if let Ok((go, input)) = &go_input {
-                    match go_rep(go, input, cell, tiles_root.as_deref()) {
+                    match go_rep(exe, go, input, cell, tiles_root.as_deref()) {
                         Ok(r) => build[at].reps.push(r),
                         Err(e) => build[at].failures.push(e),
                     }
@@ -1083,7 +1195,7 @@ fn sweep_cell(
                 acc,
                 &[
                     (OUTPUT_BYTES, series(acc, |r| r.out.output_bytes.map(|b| b as f64))),
-                    (PEAK_RSS, series(acc, |r| r.peak_rss_bytes.map(|b| b as f64))),
+                    (PEAK_RSS, series(acc, |r| r.out.peak_rss_bytes.map(|b| b as f64))),
                 ],
                 None,
             )) {
@@ -1106,9 +1218,9 @@ fn sweep_cell(
             timer,
         };
         let mut metrics = vec![
-            (WALL, series(acc, |r| Some(r.wall_ms))),
+            (WALL, series(acc, |r| r.out.build_ms)),
             (OUTPUT_BYTES, series(acc, |r| r.out.output_bytes.map(|b| b as f64))),
-            (PEAK_RSS, series(acc, |r| r.peak_rss_bytes.map(|b| b as f64))),
+            (PEAK_RSS, series(acc, |r| r.out.peak_rss_bytes.map(|b| b as f64))),
         ];
         if matches!(contender, Contender::Ours(_)) {
             metrics.insert(1, (HEAP_PEAK, series(acc, |r| r.out.heap_peak.map(|b| b as f64))));
@@ -1116,6 +1228,36 @@ fn sweep_cell(
         for row in rows_for(&spec, acc, &metrics, skipped) {
             doc.push(row);
         }
+    }
+}
+
+/// The tile set, as a scratch directory and the root of the tree inside it.
+fn make_tileset(exe: &Path, cell: SweepCell) -> Result<(Scratch, PathBuf), String> {
+    let scratch = Scratch::new(None).map_err(|e| format!("no scratch directory: {e}"))?;
+    let args = vec![
+        "-".to_string(),
+        cell.spec(),
+        Mode::Tileset.as_str().to_string(),
+        scratch.path().display().to_string(),
+    ];
+    run_child_process(exe, &args, &scratch.path().join("stderr.txt"))?;
+    let root = scratch.path().join("tree");
+    Ok((scratch, root))
+}
+
+/// Spawn this binary as one child repetition and read its reply.
+fn run_child_process(exe: &Path, args: &[String], stderr_to: &Path) -> Result<RepOut, String> {
+    let mut command = Command::new(exe);
+    command.arg(SINGLE_FLAG).args(args);
+    let spawned = spawn_measured(&mut command, stderr_to)?;
+    if !spawned.success {
+        return Err(format!("the child failed: {}", tail(stderr_to)));
+    }
+    let reply: ChildReply = serde_json::from_str(spawned.stdout.trim())
+        .map_err(|e| format!("the child's reply does not parse: {e}"))?;
+    match reply {
+        ChildReply::Ok(out) => Ok(out),
+        ChildReply::Err(e) => Err(e),
     }
 }
 
@@ -1129,89 +1271,50 @@ fn child_rep(
 ) -> Result<RepResult, String> {
     let scratch = Scratch::new(None).map_err(|e| format!("no scratch directory: {e}"))?;
     let load = MachineLoad::sample();
-    let mut command = Command::new(exe);
-    command
-        .arg(SINGLE_FLAG)
-        .arg(variant.label())
-        .arg(cell.spec())
-        .arg(mode.as_str())
-        .arg(scratch.path().join("out"));
+    let out_dir = scratch.path().join("out");
+    let mut args = vec![
+        variant.label(),
+        cell.spec(),
+        mode.as_str().to_string(),
+        out_dir.display().to_string(),
+    ];
     // Only the writer-driven child reads the tile set. The engine-driven one
     // makes its own tiles, and the parent attests them against the same set.
     if let (Mode::Build, Some(root)) = (mode, tiles_root) {
-        command.arg(root);
+        args.push(root.display().to_string());
     }
-    let spawned = spawn_measured(&mut command, &scratch.path().join("stderr.txt"))?;
-    if !spawned.success {
-        return Err(format!(
-            "{} {} {}: the child failed: {}",
-            variant.label(),
-            cell.spec(),
-            mode.as_str(),
-            tail(&scratch.path().join("stderr.txt"))
-        ));
-    }
-    let reply: ChildReply = serde_json::from_str(spawned.stdout.trim())
-        .map_err(|e| format!("the child's reply does not parse: {e}"))?;
-    let out = match reply {
-        ChildReply::Ok(out) => out,
-        ChildReply::Err(e) => return Err(format!("{} {}: {e}", variant.label(), cell.spec())),
-    };
-    let archive = scratch.path().join("out").join("pyramid.pmtiles");
-    attest_archive(&archive, cell, tiles_root)
-        .map_err(|e| format!("attest {} {} {}: {e}", variant.label(), cell.spec(), mode.as_str()))?;
-    Ok(RepResult {
-        out,
-        wall_ms: spawned.wall_ms,
-        peak_rss_bytes: spawned.peak_rss_bytes,
-        load,
-    })
+    let out = run_child_process(exe, &args, &scratch.path().join("stderr.txt"))
+        .map_err(|e| format!("{} {} {}: {e}", variant.label(), cell.spec(), mode.as_str()))?;
+    attest_archive(&out_dir.join("pyramid.pmtiles"), cell, tiles_root).map_err(|e| {
+        format!("attest {} {} {}: {e}", variant.label(), cell.spec(), mode.as_str())
+    })?;
+    Ok(RepResult { out, load })
 }
 
-/// One go-pmtiles conversion, timed and attested.
+/// One go-pmtiles conversion, timed by a helper child and attested here.
 fn go_rep(
+    exe: &Path,
     go: &GoPmtiles,
     input: &Path,
     cell: SweepCell,
     tiles_root: Option<&Path>,
 ) -> Result<RepResult, String> {
     let scratch = Scratch::new(None).map_err(|e| format!("no scratch directory: {e}"))?;
-    let out = scratch.path().join("go.pmtiles");
     let load = MachineLoad::sample();
-    let mut command = Command::new(&go.binary);
-    command
-        .arg("convert")
-        .arg("--quiet")
-        .arg(input)
-        .arg(&out)
-        .arg("--tmpdir")
-        .arg(scratch.path());
-    let spawned = spawn_measured(&mut command, &scratch.path().join("stderr.txt"))?;
-    if !spawned.success {
-        return Err(format!(
-            "go-pmtiles convert failed on {}: {}",
-            cell.spec(),
-            tail(&scratch.path().join("stderr.txt"))
-        ));
-    }
-    attest_archive(&out, cell, tiles_root)
+    let out_dir = scratch.path().join("out");
+    let args = vec![
+        "-".to_string(),
+        cell.spec(),
+        Mode::Go.as_str().to_string(),
+        out_dir.display().to_string(),
+        go.binary.display().to_string(),
+        input.display().to_string(),
+    ];
+    let out = run_child_process(exe, &args, &scratch.path().join("stderr.txt"))
+        .map_err(|e| format!("go-pmtiles {}: {e}", cell.spec()))?;
+    attest_archive(&out_dir.join("pyramid.pmtiles"), cell, tiles_root)
         .map_err(|e| format!("attest go-pmtiles {}: {e}", cell.spec()))?;
-    let shape = archive_shape_of(&out);
-    Ok(RepResult {
-        out: RepOut {
-            output_bytes: occupancy(&out).map(|o| o.0),
-            tiles: Reader::try_open(&out)
-                .ok()
-                .map(|r| r.header().addressed_tiles_count),
-            digest: artefact_digest(&out),
-            root_entries: shape.map(|s| s.0),
-            leaves: shape.map(|s| s.1),
-            ..RepOut::default()
-        },
-        wall_ms: spawned.wall_ms,
-        peak_rss_bytes: spawned.peak_rss_bytes,
-        load,
-    })
+    Ok(RepResult { out, load })
 }
 
 /// The last lines of a file, for an error message.
