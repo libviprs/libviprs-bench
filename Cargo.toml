@@ -196,6 +196,14 @@ required-features = ["polars"]
 name = "storage"
 path = "src/storage_main.rs"
 
+# The PMTiles writer sweep (libviprs-bench #132): the bounded-memory writer's
+# layouts, emission modes and dedupe budgets, the previous-revision baseline,
+# and go-pmtiles as the external reference. It emits the storage family's own
+# document envelope, so the same aggregator archives it.
+[[bin]]
+name = "pmtiles-writer"
+path = "src/pmtiles_writer_main.rs"
+
 # The engines family's document runner (issue #75): the same envelope the
 # storage family emits, over monolithic vs streaming vs mapreduce. It is its own
 # binary for the same two reasons `storage` is: it builds with no cargo features

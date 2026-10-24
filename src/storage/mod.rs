@@ -64,6 +64,9 @@ pub mod integrity;
 pub mod model;
 pub mod scenarios;
 pub mod stats;
+/// The PMTiles writer sweep: layouts, emission, dedupe budgets, a previous
+/// revision and go-pmtiles (libviprs-bench #132).
+pub mod writer_sweep;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

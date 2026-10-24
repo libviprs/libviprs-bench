@@ -105,6 +105,82 @@ RUN cargo build --locked --release --bin storage --bin storage-aggregate
 CMD ["cargo", "run", "--release", "--bin", "storage", "--", \
      "--family", "storage", "--profile", "ci"]
 
+# ---------------------------------------------------------------------------
+# The `writer` stage: the PMTiles writer sweep and its external reference
+# (libviprs-bench #132).
+#
+# It is the `storage` stage plus go-pmtiles, and nothing else. go-pmtiles is the
+# only independent implementation of the format to measure the writer against,
+# so it is pinned the way every other input here is: an exact release and the
+# SHA-256 of the exact asset, checked before anything is unpacked. The digest was
+# taken from the release asset when the pin was written (the release publishes no
+# checksum file to read it from), which makes it a pin and not an attestation:
+# it stops the asset changing under a rebuild, it does not prove what the asset
+# was the first time. The binary's own digest is recorded in every document the
+# sweep writes (`provenance.invocation.resolved.externalTools`).
+#
+# python3 is already in the Rust base image, and `tools/mbtiles-from-tiles.py`
+# needs nothing but its `sqlite3` module: go-pmtiles reads MBTiles and nothing
+# else, so the tile set has to get into one.
+#
+# x86_64 only. The asset below is the Linux x86_64 build, the sweep's numbers are
+# only publishable from a native x86_64 host, and an arm64 build of this stage
+# refuses rather than measuring go-pmtiles under translation.
+#
+#   docker build --platform linux/amd64 --target writer -t libviprs-bench:writer .
+#   docker run --rm --platform linux/amd64 libviprs-bench:writer \
+#     /src/libviprs-bench/target/release/pmtiles-writer --profile ci --out /tmp/w.json
+# ---------------------------------------------------------------------------
+FROM rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS writer
+
+ARG GO_PMTILES_VERSION=1.31.2
+ARG GO_PMTILES_SHA256=3ed7dbf4ec2e6dfe5e25b6f70d1ffc932729f93c86db353bf514dd71010a312f
+
+RUN test "$(uname -m)" = x86_64 \
+    && curl -fsSL --retry 5 -o /tmp/go-pmtiles.tgz \
+        "https://github.com/protomaps/go-pmtiles/releases/download/v${GO_PMTILES_VERSION}/go-pmtiles_${GO_PMTILES_VERSION}_Linux_x86_64.tar.gz" \
+    && echo "${GO_PMTILES_SHA256}  /tmp/go-pmtiles.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/go-pmtiles.tgz -C /usr/local/bin pmtiles \
+    && rm /tmp/go-pmtiles.tgz \
+    && pmtiles version
+
+WORKDIR /src
+COPY libviprs/ libviprs/
+COPY libviprs-bench/ libviprs-bench/
+
+WORKDIR /src/libviprs-bench
+
+# Two build arguments exist for one reason: measuring a core revision that is not
+# the one `Cargo.lock` was written for. The previous-revision baseline is such a
+# revision, and it differs from the lock in exactly one line, the core's own
+# version (0.5.0 against 0.6.1), which `--locked` refuses and which cargo rewrites
+# without touching a single dependency. That revision also predates the move to
+# Rust 1.99, so its manifest's `deprecated = "deny"` trips on two calls the newer
+# compiler deprecates; `--cap-lints=warn` turns the lint down and changes no code
+# that is generated, and it is what lets the baseline be built with the SAME
+# compiler as the revision it is compared with rather than a different one.
+#
+# Both are recorded. RUSTFLAGS is stamped into the binary by `build.rs` and lands
+# in `provenance.node.rustflags`, and `provenance.lockfileHash` is taken over the
+# lock as it was built. The default is the strict build every other stage does.
+ARG CARGO_LOCKED=--locked
+ARG BENCH_RUSTFLAGS=
+ENV RUSTFLAGS=${BENCH_RUSTFLAGS}
+
+# Cargo rewriting that one line would make the harness tree read as modified, and
+# the aggregator refuses a dirty tree. The index is told to stop watching the lock
+# for an unlocked build only; every source file is still compared.
+RUN if [ -z "${CARGO_LOCKED}" ]; then git update-index --assume-unchanged Cargo.lock; fi
+
+RUN cargo fetch ${CARGO_LOCKED}
+
+# Default features only, like `storage`. `storage-aggregate` is built here too,
+# because the document this stage writes is archived by the same binary and
+# checking it before it leaves the box is cheaper than finding out afterwards.
+RUN cargo build ${CARGO_LOCKED} --release --bin pmtiles-writer --bin storage-aggregate
+
+CMD ["/src/libviprs-bench/target/release/pmtiles-writer", "--profile", "ci"]
+
 # Stage 1: Download PDFium for the target architecture. Base image digest-pinned
 # (not just tag-pinned) so the exact layer cannot shift under a rebuild (#35).
 FROM debian:bookworm-20250929-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 AS pdfium
