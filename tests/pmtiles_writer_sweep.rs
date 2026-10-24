@@ -137,6 +137,10 @@ fn producer_document() -> &'static Value {
         let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
             .join(format!("writer-{}-{nonce}.json", std::process::id()));
         let run = Command::new(exe)
+            // This proves the sweep's shape, not its timings, so it does not
+            // wait for a quiet machine: on a shared runner that wait is the
+            // whole test.
+            .env("WRITER_QUIET_WAIT_S", "0")
             .args(["--profile", "ci", "--out"])
             .arg(&out)
             .output()
