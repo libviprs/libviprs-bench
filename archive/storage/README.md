@@ -236,6 +236,15 @@ the variants a document walked, `coreWriterKnobs` says whether the measured core
 could express more than one, and `externalTools.go-pmtiles` records the version
 and the SHA-256 of the binary that was timed.
 
+The three archived so far, all native x86_64 on one host (Intel Core i7-14700F,
+28 threads, 32 GB), profile `full`, seven repetitions a cell:
+
+| run | core | what it is |
+|---|---|---|
+| `20261024T071004Z-150774a5...` | `150774a5`, reports itself as 0.5.0 | the revision before the bounded writer, the pre-epic baseline |
+| `20261024T071803Z-46991fe5...` | `46991fe5`, v0.6.1 | the latest release |
+| `20261024T062624Z-fe00a3da...` | `fe00a3da`, main | the current writer |
+
 Things to know before quoting a number from one of these:
 
 * **The baseline is a revision, not a release.** v0.4.0 has no PMTiles writer and

@@ -159,6 +159,62 @@
       "work": [
         "tiles_produced"
       ]
+    },
+    "write_ingest": {
+      "status": "non-comparable",
+      "reason": [
+        "The backends in a writer sweep are one writer in different configurations, plus go-pmtiles",
+        "as an external reference, all on one tile set, and the metrics are heap, resident set and",
+        "wall time of a build. That is a comparison, but not the one this contract charts: a bar race",
+        "between storage technologies on a shared latency axis. The sweep's evidence is its archived",
+        "document and the series the page draws from it, with the caveats (go-pmtiles reads SQLite,",
+        "the writer reads loose files) that a bar cannot carry. Held out of the race charts on purpose."
+      ],
+      "work": [
+        "tiles_produced"
+      ]
+    },
+    "write_finalize": {
+      "status": "non-comparable",
+      "reason": [
+        "The backends in a writer sweep are one writer in different configurations, plus go-pmtiles",
+        "as an external reference, all on one tile set, and the metrics are heap, resident set and",
+        "wall time of a build. That is a comparison, but not the one this contract charts: a bar race",
+        "between storage technologies on a shared latency axis. The sweep's evidence is its archived",
+        "document and the series the page draws from it, with the caveats (go-pmtiles reads SQLite,",
+        "the writer reads loose files) that a bar cannot carry. Held out of the race charts on purpose."
+      ],
+      "work": [
+        "tiles_produced"
+      ]
+    },
+    "write_output": {
+      "status": "non-comparable",
+      "reason": [
+        "The backends in a writer sweep are one writer in different configurations, plus go-pmtiles",
+        "as an external reference, all on one tile set, and the metrics are heap, resident set and",
+        "wall time of a build. That is a comparison, but not the one this contract charts: a bar race",
+        "between storage technologies on a shared latency axis. The sweep's evidence is its archived",
+        "document and the series the page draws from it, with the caveats (go-pmtiles reads SQLite,",
+        "the writer reads loose files) that a bar cannot carry. Held out of the race charts on purpose."
+      ],
+      "work": [
+        "tiles_produced"
+      ]
+    },
+    "build_from_tiles": {
+      "status": "non-comparable",
+      "reason": [
+        "The backends in a writer sweep are one writer in different configurations, plus go-pmtiles",
+        "as an external reference, all on one tile set, and the metrics are heap, resident set and",
+        "wall time of a build. That is a comparison, but not the one this contract charts: a bar race",
+        "between storage technologies on a shared latency axis. The sweep's evidence is its archived",
+        "document and the series the page draws from it, with the caveats (go-pmtiles reads SQLite,",
+        "the writer reads loose files) that a bar cannot carry. Held out of the race charts on purpose."
+      ],
+      "work": [
+        "tiles_produced"
+      ]
     }
   }
 }

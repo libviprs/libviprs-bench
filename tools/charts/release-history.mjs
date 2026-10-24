@@ -29,6 +29,19 @@ import { series, labelFor, betterOf } from './series.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, '..', '..');
 
+/**
+ * A document written by the PMTiles writer sweep (libviprs-bench #132).
+ *
+ * It is a storage-family document by envelope and not by content, and it cannot
+ * be a step in a release trend for two reasons of its own. Its baseline is a
+ * pinned revision from before the bounded writer, and that revision carries the
+ * core's version string for the release that came after it, so filing it under a
+ * release would draw a revision as a release. And several of its documents share
+ * a version (the last release and `main` are both 0.6.1), so "the most recent run
+ * of a version" would let one overwrite the other.
+ */
+export const isWriterSweep = (report) => report?.provenance?.invocation?.command === 'pmtiles-writer';
+
 /** One entry per version, most recent run of it, oldest release first. */
 export function releasesOf(reports) {
   const byVersion = new Map();
@@ -115,9 +128,21 @@ export function buildReleaseCharts(reports, opts = {}) {
   const charts = [];
   const skipped = [];
   const byFamily = new Map();
+  let writerSweeps = 0;
   for (const report of reports) {
+    if (isWriterSweep(report)) {
+      writerSweeps += 1;
+      continue;
+    }
     if (!byFamily.has(report.family)) byFamily.set(report.family, []);
     byFamily.get(report.family).push(report);
+  }
+  if (writerSweeps > 0) {
+    skipped.push({
+      family: 'writer-sweep',
+      reason: `${writerSweeps} PMTiles writer sweep document(s) are not release steps: their baseline is a pinned `
+        + 'revision, not a release, and two of them can share a version. Read them as tables, not as a trend.',
+    });
   }
 
   for (const [family, familyReports] of byFamily) {

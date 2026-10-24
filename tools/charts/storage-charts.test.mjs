@@ -115,11 +115,22 @@ test('a work asymmetry over the tolerance stops the chart', () => {
   assert.equal(charts.length, 0);
 });
 
+/* The newest document the `storage` sweep wrote. The archive directory also
+ * holds the PMTiles writer sweep's documents (libviprs-bench #132), which share
+ * the family and the envelope and measure something else, so "the last file" is
+ * no longer the last storage sweep. */
+function latestStorageSweep() {
+  const dir = join(repo, 'archive', 'storage');
+  const files = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort();
+  const documents = files.map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')));
+  const sweeps = documents.filter((d) => d.provenance?.invocation?.command !== 'pmtiles-writer');
+  assert.ok(sweeps.length > 0, 'the archive holds a storage sweep');
+  return sweeps[sweeps.length - 1];
+}
+
 /* Against the archive actually in the repo. */
 test('the archived storage run charts its comparable scenarios and holds out the rest', () => {
-  const dir = join(repo, 'archive', 'storage');
-  const file = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort().pop();
-  const document = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+  const document = latestStorageSweep();
   const { charts, held, violations } = buildStorageCharts(document, { contract });
 
   assert.deepEqual(violations, [], violations.map((v) => v.message).join('; '));
@@ -205,9 +216,7 @@ test('a timer-saturated measurement is held out rather than charted as a latency
 });
 
 test('the archived run has rows of every unfit kind, so this is not a theoretical guard', () => {
-  const dir = join(repo, 'archive', 'storage');
-  const file = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort().pop();
-  const cells = JSON.parse(readFileSync(join(dir, file), 'utf8')).cells.filter((c) => c.outcome === 'ok');
+  const cells = latestStorageSweep().cells.filter((c) => c.outcome === 'ok');
   assert.ok(cells.some((c) => c.timerSaturated), 'the archive carries timer-saturated rows');
   assert.ok(cells.some((c) => c.oversubscribed), 'and oversubscribed ones');
   assert.ok(cells.some((c) => c.confidence === 'low'), 'and low-confidence ones');
