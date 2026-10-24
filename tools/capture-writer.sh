@@ -79,23 +79,30 @@ say() { printf '\n== %s\n' "$*"; }
 IMAGE=viprs-writer:$NAME
 BUILDER=viprs-writer-build-$NAME
 
-# A container on MARS, always `docker run`, always with the platform spelled out.
+# Every remote command is ONE docker invocation, with no host shell around it.
+# `mars` sends whatever it is given, so the discipline is in what is given, and
+# `tools/capture-writer.test.mjs` walks this file and holds it: anything chained
+# after a docker command with `;`, `|` or `&&` would run on the machine itself.
 mars() { "${SSH[@]}" "$@"; }
-util() { # util <mounts...> -- <command>
-  local mounts=()
-  while [ "$1" != "--" ]; do mounts+=(-v "$1"); shift; done; shift
-  mars "docker run --rm --platform linux/amd64 ${mounts[*]} alpine:3.20 $*"
+# A throw-away alpine container, with --platform spelled out.
+util() { # util <host:container mounts...> -- <command...>
+  local mounts=""
+  while [ "$1" != "--" ]; do mounts="$mounts -v $1"; shift; done; shift
+  mars "docker run --rm --platform linux/amd64$mounts alpine:3.20 $*"
 }
 
 cleanup() {
   local code=$?
   say "cleaning up $NAS"
-  mars "docker rm -f $BUILDER 2>/dev/null || true
-        docker rmi -f $IMAGE 2>/dev/null || true
-        docker run --rm --platform linux/amd64 -v $WORK:/ws alpine:3.20 sh -c 'rm -rf /ws/$NAME' 2>/dev/null || true" \
-    2>/dev/null || true
-  mars "printf 'images matching this run: '; docker images --format '{{.Repository}}:{{.Tag}}' | grep -c '$NAME' || true
-        printf 'scratch trees matching this run: '; docker run --rm --platform linux/amd64 -v $WORK:/ws alpine:3.20 sh -c 'ls /ws | grep -c \"^$NAME\$\" || true'" || true
+  mars "docker rm -f $BUILDER" >/dev/null 2>&1 || true
+  mars "docker rmi -f $IMAGE" >/dev/null 2>&1 || true
+  util "$WORK:/ws" -- sh -c "'rm -rf /ws/$NAME'" >/dev/null 2>&1 || true
+  # Report what is left rather than asserting the machine is clean. The counting
+  # is local plumbing on docker's own output.
+  printf 'images matching this run: %s\n' \
+    "$(mars "docker images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | grep -c "$NAME" || true)"
+  printf 'scratch trees matching this run: %s\n' \
+    "$(util "$WORK:/ws" -- ls /ws 2>/dev/null | grep -c "^$NAME\$" || true)"
   exit $code
 }
 $KEEP || trap cleanup EXIT
@@ -133,7 +140,7 @@ tar -cf - -C "$STAGE" --exclude=target --exclude=node_modules . \
   | mars "docker run --rm -i --platform linux/amd64 -v $WORK/$NAME/src:/dest alpine:3.20 tar -xf - -C /dest --no-same-owner"
 
 say "ensuring the driver image (shared, never removed here)"
-mars "docker image inspect nas-driver:latest >/dev/null 2>&1 || docker build -q -t nas-driver:latest - >/dev/null <<'DOCKEREOF'
+mars "docker image inspect nas-driver:latest" >/dev/null 2>&1 || mars "docker build -q -t nas-driver:latest -" >/dev/null <<'DOCKEREOF'
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \\
         python3 git ca-certificates curl gnupg \\
@@ -144,9 +151,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     && echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable' \\
         > /etc/apt/sources.list.d/docker.list \\
     && apt-get update && apt-get install -y --no-install-recommends \\
-        docker-ce-cli docker-buildx-plugin \\
-    && rm -rf /var/lib/apt/lists/*
-DOCKEREOF"
+        docker-ce-cli docker-buildx-plugin
+DOCKEREOF
 
 say "building the writer image through the socket-mounted driver"
 mars "docker run --rm --name $BUILDER --platform linux/amd64 \
@@ -162,7 +168,7 @@ CORES=$(util -- nproc | tr -d '[:space:]')
 say "settling (load below $SETTLE_BELOW on $CORES threads, budget ${SETTLE_BUDGET_S}s)"
 waited=0; calm=0
 while :; do
-  load=$(util -- sh -c "'cut -d\" \" -f1 /proc/loadavg'" | tr -d '[:space:]')
+  load=$(util -- cat /proc/loadavg | cut -d' ' -f1)
   if awk "BEGIN{exit !($load < $SETTLE_BELOW)}"; then calm=$((calm + 1)); else calm=0; fi
   echo "  load $load (calm readings: $calm)"
   [ "$calm" -ge 2 ] && break

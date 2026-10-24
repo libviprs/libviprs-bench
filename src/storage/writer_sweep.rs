@@ -1136,7 +1136,9 @@ fn child_rep(
         .arg(cell.spec())
         .arg(mode.as_str())
         .arg(scratch.path().join("out"));
-    if let Some(root) = tiles_root {
+    // Only the writer-driven child reads the tile set. The engine-driven one
+    // makes its own tiles, and the parent attests them against the same set.
+    if let (Mode::Build, Some(root)) = (mode, tiles_root) {
         command.arg(root);
     }
     let spawned = spawn_measured(&mut command, &scratch.path().join("stderr.txt"))?;
@@ -1179,6 +1181,7 @@ fn go_rep(
     let mut command = Command::new(&go.binary);
     command
         .arg("convert")
+        .arg("--quiet")
         .arg(input)
         .arg(&out)
         .arg("--tmpdir")
