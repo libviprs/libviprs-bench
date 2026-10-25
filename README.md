@@ -480,6 +480,8 @@ archive/storage/
 - For `--no-build`: `libvips-dev` and `pkg-config` on the host
 - **Node** (recent LTS) on the host to render the history/scalability SVGs (`tools/charts/render.mjs`). Optional for a benchmark run — without it the run still writes its JSON — but **required to run the test suite**, because `tests/engines_family_end_to_end.rs` asserts the charts are actually drawn and a chart assertion that quietly does not run is the same colour as one that passed
 
+  The stock `rust:*-bookworm` image has no node, so `engines_family_end_to_end` is red there. That is not a regression, the guard is loud on purpose. Run the suite with `tools/test-image/run-tests.sh` instead: it builds a Rust image with a pinned node added, runs `npm ci` for the chart library, then `cargo test`.
+
 ## See also
 
 - [libviprs CLI flag reference](https://libviprs.org/cli/) — every knob

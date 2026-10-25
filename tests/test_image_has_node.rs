@@ -37,6 +37,10 @@ fn script_runs_cargo_test_inside_that_image() {
     assert!(TEST_SCRIPT.contains("docker run --rm"), "throw-away container");
     assert!(TEST_SCRIPT.contains("cargo test"), "runs the suite");
     assert!(
+        TEST_SCRIPT.contains("npm ci"),
+        "installs the chart library render.mjs imports"
+    );
+    assert!(
         TEST_SCRIPT.contains("CARGO_TARGET_DIR=/tmp/target"),
         "target dir stays off the bind mount"
     );
