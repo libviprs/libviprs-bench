@@ -136,6 +136,12 @@ fn patch_declarations(text: &str) -> Vec<(usize, String)> {
     found
 }
 
+/// Patch declarations that are not on the allowlist (issue #134). Stub: the
+/// allowlist is empty until the fix lands, so everything is unexpected.
+fn unexpected_patches(text: &str) -> Vec<(usize, String)> {
+    patch_declarations(text)
+}
+
 /// `[[patch.unused]]` stanzas cargo recorded in the lockfile.
 fn unused_patches(lock: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -175,7 +181,7 @@ fn the_manifest_declares_no_patch_table() {
          table headers and the patch check below cannot fail. Headers seen: {headers:#?}"
     );
 
-    let patches = patch_declarations(&manifest);
+    let patches = unexpected_patches(&manifest);
     assert!(
         patches.is_empty(),
         "Cargo.toml declares {} patch redirect(s):\n{}\n\
@@ -301,4 +307,40 @@ fn the_scan_survives_every_spelling_cargo_honours() {
         patch_declarations(patches_table).is_empty(),
         "[patches] is not a [patch] table"
     );
+}
+
+const FORK_PATCH: &str = "[package]\nname = \"x\"\n\n[patch.crates-io]\npdfium-render = { git = \"https://github.com/libviprs/pdfium-render\", tag = \"v0.9.4-viprs.1\" }\n";
+
+#[test]
+fn issue_134_the_pdfium_render_fork_patch_is_allowed() {
+    assert!(
+        unexpected_patches(FORK_PATCH).is_empty(),
+        "the one pdfium-render fork entry is allowlisted until libviprs/pdfium-render#15's fixes are released"
+    );
+}
+
+#[test]
+fn issue_134_any_other_crate_in_the_patch_table_still_fails() {
+    let text = format!("{FORK_PATCH}serde = {{ path = \"f\" }}\n");
+    assert_eq!(unexpected_patches(&text).len(), 1, "only serde is unexpected");
+}
+
+#[test]
+fn issue_134_pdfium_render_from_another_source_still_fails() {
+    let text = "[package]\nname = \"x\"\n\n[patch.crates-io]\npdfium-render = { path = \"../pdfium-render\" }\n";
+    assert_eq!(unexpected_patches(text).len(), 1, "a path redirect is not the fork tag");
+    let text = FORK_PATCH.replace("v0.9.4-viprs.1", "integration");
+    assert_eq!(unexpected_patches(&text).len(), 1, "a branch is not the pinned tag");
+}
+
+#[test]
+fn issue_134_another_patch_registry_still_fails() {
+    let text = FORK_PATCH.replace("patch.crates-io", "patch.\"https://example.invalid\"");
+    assert_eq!(unexpected_patches(&text).len(), 1, "the allowlist is for crates-io only");
+}
+
+#[test]
+fn issue_134_unused_patch_in_the_lockfile_still_fails() {
+    let lock = "[[package]]\nname = \"x\"\n\n[[patch.unused]]\nname = \"pdfium-render\"\nsource = \"git+https://github.com/libviprs/pdfium-render?tag=v0.9.4-viprs.1\"\n";
+    assert_eq!(unused_patches(lock).len(), 1, "an allowlisted entry that cargo ignored is still inert");
 }
