@@ -136,10 +136,57 @@ fn patch_declarations(text: &str) -> Vec<(usize, String)> {
     found
 }
 
-/// Patch declarations that are not on the allowlist (issue #134). Stub: the
-/// allowlist is empty until the fix lands, so everything is unexpected.
+/// The one patch this crate carries on purpose (issue #126): `pdfium-render`
+/// resolved to the libviprs fork tag, in whitespace-free form. Delete this and
+/// `unexpected_patches` once a released pdfium-render carries the fixes
+/// (libviprs/pdfium-render#15), and the manifest goes back to no patch at all.
+const ALLOWED_FORK_VALUES: [&str; 2] = [
+    "{git=\"https://github.com/libviprs/pdfium-render\",tag=\"v0.9.4-viprs.1\"}",
+    "{tag=\"v0.9.4-viprs.1\",git=\"https://github.com/libviprs/pdfium-render\"}",
+];
+
+/// Patch declarations that are not the allowlisted fork entry (issue #134).
+///
+/// The allowance is deliberately narrow: a `[patch.crates-io]` table holding
+/// exactly one line, `pdfium-render` pinned to the fork tag. A second crate, a
+/// path or branch spelling, another registry, or a dotted top-level key all
+/// stay reported.
 fn unexpected_patches(text: &str) -> Vec<(usize, String)> {
-    patch_declarations(text)
+    let declarations = patch_declarations(text);
+
+    // Collect the body of every `[patch.crates-io]` table: (header line, entries).
+    let mut tables: Vec<(usize, Vec<String>)> = Vec::new();
+    let mut in_crates_io = false;
+    for (index, raw) in text.lines().enumerate() {
+        let line = without_trailing_comment(raw).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(inner) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            in_crates_io = normalised_key(inner) == "patch.crates-io" && !line.starts_with("[[");
+            if in_crates_io {
+                tables.push((index + 1, Vec::new()));
+            }
+        } else if in_crates_io {
+            tables.last_mut().expect("pushed with the header").1.push(line.to_string());
+        }
+    }
+
+    let allowed_header = |number: usize| {
+        tables.iter().any(|(header, entries)| {
+            *header == number
+                && entries.len() == 1
+                && entries[0].split_once('=').is_some_and(|(name, value)| {
+                    let value: String = value.chars().filter(|c| !c.is_whitespace()).collect();
+                    name.trim() == "pdfium-render" && ALLOWED_FORK_VALUES.contains(&value.as_str())
+                })
+        })
+    };
+
+    declarations
+        .into_iter()
+        .filter(|(number, _)| !allowed_header(*number))
+        .collect()
 }
 
 /// `[[patch.unused]]` stanzas cargo recorded in the lockfile.
