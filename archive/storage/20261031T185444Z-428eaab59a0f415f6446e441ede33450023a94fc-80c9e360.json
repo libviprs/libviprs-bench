@@ -3,13 +3,13 @@
   "family": "libviprs-storage",
   "runner": "libviprs-storage",
   "profile": "full",
-  "startedAt": "2026-10-31T18:38:09.318Z",
-  "finishedAt": "2026-10-31T18:40:57.632Z",
-  "runId": "20261031T183809Z-04933295c7f4ad794957f077d4b707501dcd7f3d-c280426c",
+  "startedAt": "2026-10-31T18:54:44.848Z",
+  "finishedAt": "2026-10-31T18:57:07.992Z",
+  "runId": "20261031T185444Z-428eaab59a0f415f6446e441ede33450023a94fc-80c9e360",
   "startingLoad": {
     "cores": 28,
-    "loadAvg1m": 11.86,
-    "contentionPerCore": 0.42357142857142854,
+    "loadAvg1m": 2.99,
+    "contentionPerCore": 0.10678571428571429,
     "quiet": true
   },
   "measurement": {
@@ -23,8 +23,8 @@
     },
     "seed": "0x5eed1234abcd0001",
     "clock": "std::time::Instant",
-    "timerTickNs": 17.0,
-    "timerCallNs": 28.61188,
+    "timerTickNs": 62.0,
+    "timerCallNs": 88.97602,
     "minTicksPerSample": 100.0,
     "warmup": null,
     "interval": {
@@ -42,23 +42,23 @@
     "library": {
       "name": "libviprs",
       "version": "0.6.1",
-      "commit": "04933295c7f4ad794957f077d4b707501dcd7f3d",
-      "dirty": true,
+      "commit": "428eaab59a0f415f6446e441ede33450023a94fc",
+      "dirty": false,
       "gitNote": "clean read",
-      "mainCommit": null,
-      "mainRelation": "unknown",
-      "commitsBehindMain": null
+      "mainCommit": "428eaab59a0f415f6446e441ede33450023a94fc",
+      "mainRelation": "at-main",
+      "commitsBehindMain": 0
     },
-    "commit": "f8d3591e90781940c6a3fc2e8abb616605dcce7e",
-    "dirty": true,
+    "commit": "8d1c4e459f4db3f29409e13a6de1c3ba2460f479",
+    "dirty": false,
     "gitNote": "clean read",
-    "allowDirty": true,
+    "allowDirty": false,
     "emulated": false,
     "emulationEvidence": [
       {
         "source": "proc-self-maps",
         "verdict": "native",
-        "detail": "read 36 mappings, none of them a translator"
+        "detail": "read 34 mappings, none of them a translator"
       },
       {
         "source": "binfmt-misc",
@@ -77,10 +77,10 @@
       }
     ],
     "filesystem": {
-      "scratchDir": "/tmp/libviprs-storage",
-      "fsType": "overlay",
-      "mountSource": "overlay",
-      "bindMount": false,
+      "scratchDir": "/scratch/libviprs-storage",
+      "fsType": "ext4",
+      "mountSource": "/dev/sdd",
+      "bindMount": true,
       "declaredTmpfs": false
     },
     "node": {
@@ -99,12 +99,12 @@
     "cgroupCpuQuota": null,
     "cgroupMemoryLimit": null,
     "loadAverage": {
-      "oneMin": 5.31,
-      "fiveMin": 9.75,
-      "fifteenMin": 28.04
+      "oneMin": 2.07,
+      "fiveMin": 3.54,
+      "fifteenMin": 12.33
     },
-    "thermalThrottleCount": 199613,
-    "lockfileHash": "sha256:35204cadfcee532ef5aa89a3a57a76f5f4bf0ca3e058232a435c4727228e4ac0",
+    "thermalThrottleCount": 199621,
+    "lockfileHash": "sha256:feaf379ecd407c1bf2ec981d3e2a5281584df2c616d1d2a50c899cf1aa8c6ca9",
     "dependencies": {
       "ab_glyph": {
         "version": "0.2.32",
@@ -1583,47 +1583,47 @@
       },
       "pvec": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-capabilities": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-codec": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-components": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-container": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-entity": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-geometry": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-numeric": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pvec-stream": {
         "version": "0.0.0",
-        "source": null,
+        "source": "git+https://github.com/libviprs/pvec?rev=b9f441618153d256777121a6a1518b15e7f42099#b9f441618153d256777121a6a1518b15e7f42099",
         "checksum": null
       },
       "pxfm": {
@@ -2564,19 +2564,19 @@
     },
     "invocation": {
       "argv": [
-        "/tmp/target/release/pvec-sink",
+        "/src/libviprs-bench/target/release/pvec-sink",
         "--profile",
         "full",
         "--out",
-        "/work/pvec-results.json"
+        "/out/pvec-x86.json"
       ],
       "command": "pvec-sink",
-      "cwd": "/work",
+      "cwd": "/src/libviprs-bench",
       "env": {
-        "STORAGE_ALLOW_DIRTY": "1",
+        "STORAGE_ALLOW_DIRTY": null,
         "RUSTFLAGS": null,
         "BENCH_DAEMON_ARCH": null,
-        "TMPDIR": null,
+        "TMPDIR": "/scratch",
         "BENCH_GDAL_TRANSLATE": null,
         "BENCH_VIPS": null
       },
@@ -2601,14 +2601,14 @@
         "budgetBytes": 536870912,
         "externalTools": {
           "gdal-cog": {
-            "version": "GDAL 3.10.3, released 2025/04/01",
+            "version": "GDAL 3.6.2, released 2023/01/02",
             "binary": "gdal_translate",
-            "sha256": "17334ff31a19610780b17df58c68ce9eddbd27c830cadf73a8d3d9b1a6b3d1bd"
+            "sha256": "280241f668838353ad75cb4f9a11f49f4177e233437f8ba7197aa97b5bc4eba4"
           },
           "libvips-zip": {
-            "version": "vips-8.16.1",
+            "version": "vips-8.14.1",
             "binary": "vips",
-            "sha256": "cd935997ce3148f66d43019f3439c05b67b9e99356f6ab57611a4299057875f4"
+            "sha256": "3c4acf6330148e7173ed3ef189ad2aaba0f90c93635498aa5e269d2d8a28a42b"
           }
         },
         "quietBelowContentionPerCore": 0.5,
@@ -2641,28 +2641,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        10392.209584,
-        8872.871285000001,
-        8595.867812,
-        10322.666025,
-        8445.368956999999,
-        8608.414337999999,
-        8451.417435
+        8163.905969,
+        8229.030777,
+        8233.542699,
+        8371.192846,
+        8106.672699000001,
+        8081.9075139999995,
+        8196.298295
       ],
-      "median": 8608.414337999999,
-      "min": 8445.368956999999,
-      "max": 10392.209584,
-      "iqr": 1074.1260315,
-      "cov": 0.09583039742827762,
+      "median": 8196.298295,
+      "min": 8081.9075139999995,
+      "max": 8371.192846,
+      "iqr": 95.99740399999791,
+      "cov": 0.0117010985837429,
       "ci95": [
-        8451.417435,
-        10322.666025
+        8106.672699000001,
+        8233.542699
       ],
-      "ciHalfWidthPct": 10.868718189712219,
-      "p95OfSamples": 10371.3465163,
+      "ciHalfWidthPct": 0.7739469418615088,
+      "p95OfSamples": 8329.8978019,
       "tail": {
         "statistic": "max",
-        "value": 10392.209584
+        "value": 8371.192846
       },
       "timerSaturated": false,
       "steadyState": null,
@@ -2670,8 +2670,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.09,
-        "contentionPerCore": 0.46749999999999997,
+        "loadAvg1m": 2.99,
+        "contentionPerCore": 0.10678571428571429,
         "quiet": true
       },
       "invariants": {
@@ -2685,11 +2685,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 620.2890625,
-        "heapPeakBytes": 378279428
+        "peakRssMb": 620.1875,
+        "heapPeakBytes": 378279440
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pmtiles",
@@ -2710,28 +2710,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        125.86351241547479,
-        147.41564009964108,
-        152.16613710299342,
-        126.7114519478024,
-        154.87778055165435,
-        151.94435916334956,
-        154.76693821596803
+        160.21742594375047,
+        158.94946020324016,
+        158.86235704575412,
+        156.25013353085046,
+        161.34856414782215,
+        161.84298047635394,
+        159.5842358248383
       ],
-      "median": 151.94435916334956,
-      "min": 125.86351241547479,
-      "max": 154.87778055165435,
-      "iqr": 16.40299163575895,
-      "cov": 0.0890919981303117,
+      "median": 159.5842358248383,
+      "min": 156.25013353085046,
+      "max": 161.84298047635394,
+      "iqr": 1.8770864212891638,
+      "cov": 0.011627038462167684,
       "ci95": [
-        126.7114519478024,
-        154.76693821596803
+        158.86235704575412,
+        161.34856414782215
       ],
-      "ciHalfWidthPct": 9.232157884191096,
-      "p95OfSamples": 154.84452785094845,
+      "ciHalfWidthPct": 0.7789638773584487,
+      "p95OfSamples": 161.6946555777944,
       "tail": {
         "statistic": "max",
-        "value": 154.87778055165435
+        "value": 161.84298047635394
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -2739,8 +2739,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.09,
-        "contentionPerCore": 0.46749999999999997,
+        "loadAvg1m": 2.99,
+        "contentionPerCore": 0.10678571428571429,
         "quiet": true
       },
       "invariants": {
@@ -2754,11 +2754,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 620.2890625,
-        "heapPeakBytes": 378279428
+        "peakRssMb": 620.1875,
+        "heapPeakBytes": 378279440
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pmtiles",
@@ -2779,28 +2779,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        649830400.0,
-        650383360.0,
-        649871360.0,
-        650420224.0,
-        650182656.0,
-        650203136.0,
-        650412032.0
+        650194944.0,
+        650207232.0,
+        650137600.0,
+        649687040.0,
+        649895936.0,
+        649977856.0,
+        650313728.0
       ],
-      "median": 650203136.0,
-      "min": 649830400.0,
-      "max": 650420224.0,
-      "iqr": 370688.0,
-      "cov": 0.0003822720447613645,
+      "median": 650137600.0,
+      "min": 649687040.0,
+      "max": 650313728.0,
+      "iqr": 264192.0,
+      "cov": 0.00033411809287989535,
       "ci95": [
-        649871360.0,
-        650412032.0
+        649895936.0,
+        650207232.0
       ],
-      "ciHalfWidthPct": 0.041577160279952875,
-      "p95OfSamples": 650417766.4,
+      "ciHalfWidthPct": 0.02394077807528745,
+      "p95OfSamples": 650281779.2,
       "tail": {
         "statistic": "max",
-        "value": 650420224.0
+        "value": 650313728.0
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -2808,8 +2808,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.09,
-        "contentionPerCore": 0.46749999999999997,
+        "loadAvg1m": 2.99,
+        "contentionPerCore": 0.10678571428571429,
         "quiet": true
       },
       "invariants": {
@@ -2823,11 +2823,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 620.2890625,
-        "heapPeakBytes": 378279428
+        "peakRssMb": 620.1875,
+        "heapPeakBytes": 378279440
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pmtiles",
@@ -2848,28 +2848,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        378279416.0,
-        378279416.0,
         378279428.0,
         378279428.0,
-        378279428.0,
-        378279428.0,
-        378279428.0
+        378279440.0,
+        378279440.0,
+        378279440.0,
+        378279440.0,
+        378279440.0
       ],
-      "median": 378279428.0,
-      "min": 378279416.0,
-      "max": 378279428.0,
+      "median": 378279440.0,
+      "min": 378279428.0,
+      "max": 378279440.0,
       "iqr": 6.0,
       "cov": 0.0,
       "ci95": [
-        378279416.0,
-        378279428.0
+        378279428.0,
+        378279440.0
       ],
-      "ciHalfWidthPct": 1.5861290770483032e-6,
-      "p95OfSamples": 378279428.0,
+      "ciHalfWidthPct": 1.5861290267321956e-6,
+      "p95OfSamples": 378279440.0,
       "tail": {
         "statistic": "max",
-        "value": 378279428.0
+        "value": 378279440.0
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -2877,8 +2877,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.09,
-        "contentionPerCore": 0.46749999999999997,
+        "loadAvg1m": 2.99,
+        "contentionPerCore": 0.10678571428571429,
         "quiet": true
       },
       "invariants": {
@@ -2892,11 +2892,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 620.2890625,
-        "heapPeakBytes": 378279428
+        "peakRssMb": 620.1875,
+        "heapPeakBytes": 378279440
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pmtiles",
@@ -2946,8 +2946,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.09,
-        "contentionPerCore": 0.46749999999999997,
+        "loadAvg1m": 2.99,
+        "contentionPerCore": 0.10678571428571429,
         "quiet": true
       },
       "invariants": {
@@ -2961,11 +2961,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 620.2890625,
-        "heapPeakBytes": 378279428
+        "peakRssMb": 620.1875,
+        "heapPeakBytes": 378279440
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pvec",
@@ -2986,28 +2986,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        10771.485261,
-        8977.788281000001,
-        11180.024861,
-        10067.052362,
-        8972.382206,
-        8754.344655,
-        8522.884734
+        8309.525106000001,
+        8373.768194,
+        8373.326971999999,
+        8372.751471000001,
+        8278.684371000001,
+        8268.089107,
+        8300.251907
       ],
-      "median": 8977.788281000001,
-      "min": 8522.884734,
-      "max": 11180.024861,
-      "iqr": 1555.9053809999987,
-      "cov": 0.11035309703255489,
+      "median": 8309.525106000001,
+      "min": 8268.089107,
+      "max": 8373.768194,
+      "iqr": 83.57108249999874,
+      "cov": 0.005640329413676126,
       "ci95": [
-        8754.344655,
-        10771.485261
+        8278.684371000001,
+        8373.326971999999
       ],
-      "ciHalfWidthPct": 11.234062014298903,
-      "p95OfSamples": 11057.462981,
+      "ciHalfWidthPct": 0.5694826105745792,
+      "p95OfSamples": 8373.6358274,
       "tail": {
         "statistic": "max",
-        "value": 11180.024861
+        "value": 8373.768194
       },
       "timerSaturated": false,
       "steadyState": null,
@@ -3015,8 +3015,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 14.64,
-        "contentionPerCore": 0.5228571428571429,
+        "loadAvg1m": 2.83,
+        "contentionPerCore": 0.10107142857142858,
         "quiet": true
       },
       "invariants": {
@@ -3030,11 +3030,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 726.15625,
+        "peakRssMb": 726.06640625,
         "heapPeakBytes": 587611589
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pvec",
@@ -3055,28 +3055,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        121.4317216527081,
-        145.69289885886093,
-        116.99437311295975,
-        129.92879672875193,
-        145.78068231704572,
-        149.41152668154803,
-        153.46916458720233
+        157.40971756081964,
+        156.2020788845352,
+        156.21030975786434,
+        156.22104687215548,
+        157.9961188738983,
+        158.19858531672207,
+        157.5855786854976
       ],
-      "median": 145.69289885886093,
-      "min": 116.99437311295975,
-      "max": 153.46916458720233,
-      "iqr": 21.915845308566844,
-      "cov": 0.10572704481855502,
+      "median": 157.40971756081964,
+      "min": 156.2020788845352,
+      "max": 158.19858531672207,
+      "iqr": 1.5751704646880569,
+      "cov": 0.005638995603026874,
       "ci95": [
-        121.4317216527081,
-        149.41152668154803
+        156.21030975786434,
+        157.9961188738983
       ],
-      "ciHalfWidthPct": 9.602322847575838,
-      "p95OfSamples": 152.25187321550604,
+      "ciHalfWidthPct": 0.5672486882342452,
+      "p95OfSamples": 158.13784538387495,
       "tail": {
         "statistic": "max",
-        "value": 153.46916458720233
+        "value": 158.19858531672207
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -3084,8 +3084,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 14.64,
-        "contentionPerCore": 0.5228571428571429,
+        "loadAvg1m": 2.83,
+        "contentionPerCore": 0.10107142857142858,
         "quiet": true
       },
       "invariants": {
@@ -3099,11 +3099,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 726.15625,
+        "peakRssMb": 726.06640625,
         "heapPeakBytes": 587611589
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pvec",
@@ -3124,28 +3124,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        760696832.0,
-        760532992.0,
-        760950784.0,
-        761270272.0,
-        761327616.0,
-        761430016.0,
-        761081856.0
+        761196544.0,
+        760627200.0,
+        760721408.0,
+        761065472.0,
+        761094144.0,
+        761335808.0,
+        760995840.0
       ],
-      "median": 761081856.0,
-      "min": 760532992.0,
-      "max": 761430016.0,
-      "iqr": 475136.0,
-      "cov": 0.0004398684592836397,
+      "median": 761065472.0,
+      "min": 760627200.0,
+      "max": 761335808.0,
+      "iqr": 286720.0,
+      "cov": 0.00033111638769832684,
       "ci95": [
-        760696832.0,
-        761327616.0
+        760721408.0,
+        761196544.0
       ],
-      "ciHalfWidthPct": 0.041439957806588414,
-      "p95OfSamples": 761399296.0,
+      "ciHalfWidthPct": 0.03121518564962569,
+      "p95OfSamples": 761294028.8000001,
       "tail": {
         "statistic": "max",
-        "value": 761430016.0
+        "value": 761335808.0
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -3153,8 +3153,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 14.64,
-        "contentionPerCore": 0.5228571428571429,
+        "loadAvg1m": 2.83,
+        "contentionPerCore": 0.10107142857142858,
         "quiet": true
       },
       "invariants": {
@@ -3168,11 +3168,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 726.15625,
+        "peakRssMb": 726.06640625,
         "heapPeakBytes": 587611589
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pvec",
@@ -3222,8 +3222,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 14.64,
-        "contentionPerCore": 0.5228571428571429,
+        "loadAvg1m": 2.83,
+        "contentionPerCore": 0.10107142857142858,
         "quiet": true
       },
       "invariants": {
@@ -3237,11 +3237,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 726.15625,
+        "peakRssMb": 726.06640625,
         "heapPeakBytes": 587611589
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "pvec",
@@ -3291,8 +3291,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 14.64,
-        "contentionPerCore": 0.5228571428571429,
+        "loadAvg1m": 2.83,
+        "contentionPerCore": 0.10107142857142858,
         "quiet": true
       },
       "invariants": {
@@ -3306,11 +3306,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 726.15625,
+        "peakRssMb": 726.06640625,
         "heapPeakBytes": 587611589
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "gdal-cog",
@@ -3331,28 +3331,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        1991.691238,
-        1900.414973,
-        1634.3454130000002,
-        1565.093674,
-        1623.68514,
-        1629.074116,
-        1644.012351
+        1960.7957379999998,
+        1984.090107,
+        1976.533816,
+        1958.454119,
+        1952.8601989999997,
+        1954.7507930000002,
+        2109.1960740000004
       ],
-      "median": 1634.3454130000002,
-      "min": 1565.093674,
-      "max": 1991.691238,
-      "iqr": 145.83403399999997,
-      "cov": 0.09553978223502119,
+      "median": 1960.7957379999998,
+      "min": 1952.8601989999997,
+      "max": 2109.1960740000004,
+      "iqr": 23.709505499999977,
+      "cov": 0.028147601131520594,
       "ci95": [
-        1623.68514,
-        1900.414973
+        1954.7507930000002,
+        1984.090107
       ],
-      "ciHalfWidthPct": 8.466075494164826,
-      "p95OfSamples": 1964.3083585,
+      "ciHalfWidthPct": 0.7481481480045892,
+      "p95OfSamples": 2071.6642839000006,
       "tail": {
         "statistic": "max",
-        "value": 1991.691238
+        "value": 2109.1960740000004
       },
       "timerSaturated": false,
       "steadyState": null,
@@ -3360,8 +3360,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.62,
-        "contentionPerCore": 0.4864285714285714,
+        "loadAvg1m": 2.55,
+        "contentionPerCore": 0.09107142857142857,
         "quiet": true
       },
       "invariants": {
@@ -3375,11 +3375,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 418.328125,
+        "peakRssMb": 408.8828125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "gdal-cog",
@@ -3400,28 +3400,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        656.7282995698955,
-        688.2707295950146,
-        800.3204154983607,
-        835.7327243276559,
-        805.5749035185479,
-        802.9100623191044,
-        795.6144606847909
+        667.0761133610747,
+        659.2442527611474,
+        661.7645442803798,
+        667.8737006450136,
+        669.7868084309297,
+        669.1390046669749,
+        620.1414918810435
       ],
-      "median": 800.3204154983607,
-      "min": 656.7282995698955,
-      "max": 835.7327243276559,
-      "iqr": 62.29988777892345,
-      "cov": 0.08840339731165979,
+      "median": 667.0761133610747,
+      "min": 620.1414918810435,
+      "max": 669.7868084309297,
+      "iqr": 8.001954135230676,
+      "cov": 0.026850517662687458,
       "ci95": [
-        688.2707295950146,
-        805.5749035185479
+        659.2442527611474,
+        669.1390046669749
       ],
-      "ciHalfWidthPct": 7.328575633703398,
-      "p95OfSamples": 826.6853780849235,
+      "ciHalfWidthPct": 0.7416508931771333,
+      "p95OfSamples": 669.5924673017432,
       "tail": {
         "statistic": "max",
-        "value": 835.7327243276559
+        "value": 669.7868084309297
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -3429,8 +3429,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.62,
-        "contentionPerCore": 0.4864285714285714,
+        "loadAvg1m": 2.55,
+        "contentionPerCore": 0.09107142857142857,
         "quiet": true
       },
       "invariants": {
@@ -3444,11 +3444,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 418.328125,
+        "peakRssMb": 408.8828125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "gdal-cog",
@@ -3469,28 +3469,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        435273728.0,
-        437555200.0,
-        438304768.0,
-        438579200.0,
-        438415360.0,
-        438358016.0,
-        438648832.0
+        426561536.0,
+        426745856.0,
+        426729472.0,
+        427085824.0,
+        428744704.0,
+        428064768.0,
+        428236800.0
       ],
-      "median": 438358016.0,
-      "min": 435273728.0,
-      "max": 438648832.0,
-      "iqr": 567296.0,
-      "cov": 0.0027458196717311156,
+      "median": 427085824.0,
+      "min": 426561536.0,
+      "max": 428744704.0,
+      "iqr": 1413120.0,
+      "cov": 0.002050665878802282,
       "ci95": [
-        437555200.0,
-        438579200.0
+        426729472.0,
+        428236800.0
       ],
-      "ciHalfWidthPct": 0.11679950663888396,
-      "p95OfSamples": 438627942.4,
+      "ciHalfWidthPct": 0.17646663917367578,
+      "p95OfSamples": 428592332.8,
       "tail": {
         "statistic": "max",
-        "value": 438648832.0
+        "value": 428744704.0
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -3498,8 +3498,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.62,
-        "contentionPerCore": 0.4864285714285714,
+        "loadAvg1m": 2.55,
+        "contentionPerCore": 0.09107142857142857,
         "quiet": true
       },
       "invariants": {
@@ -3513,11 +3513,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 418.328125,
+        "peakRssMb": 408.8828125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "gdal-cog",
@@ -3567,8 +3567,8 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 13.62,
-        "contentionPerCore": 0.4864285714285714,
+        "loadAvg1m": 2.55,
+        "contentionPerCore": 0.09107142857142857,
         "quiet": true
       },
       "invariants": {
@@ -3582,11 +3582,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 418.328125,
+        "peakRssMb": 408.8828125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "libvips-zip",
@@ -3607,41 +3607,43 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        1038.269879,
-        1183.545982,
-        925.480695,
-        896.8860060000001,
-        906.132073,
-        927.7291,
-        883.493163
+        1560.4006689999999,
+        1610.829746,
+        1827.832087,
+        1612.190681,
+        1901.768474,
+        1803.953905,
+        571.7212499999999
       ],
-      "median": 925.480695,
-      "min": 883.493163,
-      "max": 1183.545982,
-      "iqr": 81.49045000000001,
-      "cov": 0.11247784603682733,
+      "median": 1612.190681,
+      "min": 571.7212499999999,
+      "max": 1901.768474,
+      "iqr": 230.27778850000004,
+      "cov": 0.29106112464292383,
       "ci95": [
-        896.8860060000001,
-        1038.269879
+        1560.4006689999999,
+        1827.832087
       ],
-      "ciHalfWidthPct": 7.63840206304897,
-      "p95OfSamples": 1139.9631511,
+      "ciHalfWidthPct": 8.294038079730102,
+      "p95OfSamples": 1879.5875578999999,
       "tail": {
         "statistic": "max",
-        "value": 1183.545982
+        "value": 1901.768474
       },
       "timerSaturated": false,
       "steadyState": null,
-      "confidence": "high",
-      "lowConfidenceReasons": [],
+      "confidence": "low",
+      "lowConfidenceReasons": [
+        "cov 0.291 above 0.15"
+      ],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 12.77,
-        "contentionPerCore": 0.45607142857142857,
+        "loadAvg1m": 2.77,
+        "contentionPerCore": 0.09892857142857144,
         "quiet": true
       },
       "invariants": {
-        "outputBytes": 3699487,
+        "outputBytes": 3785992,
         "allocatedBytes": null,
         "filesystemEntries": null,
         "directories": null,
@@ -3651,11 +3653,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 517.828125,
+        "peakRssMb": 365.9453125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "libvips-zip",
@@ -3676,41 +3678,43 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        1259.788063253639,
-        1105.153513165321,
-        1413.3195938787248,
-        1458.3793160443179,
-        1443.4981819697712,
-        1409.8943323002372,
-        1480.4868388098664
+        838.2462440484894,
+        812.0038776587132,
+        715.6018374460235,
+        811.3184224515437,
+        687.7808828373711,
+        725.0739591375535,
+        2287.8282029922802
       ],
-      "median": 1413.3195938787248,
-      "min": 1105.153513165321,
-      "max": 1480.4868388098664,
-      "iqr": 116.09755123010632,
-      "cov": 0.09953865909231782,
+      "median": 811.3184224515437,
+      "min": 687.7808828373711,
+      "max": 2287.8282029922802,
+      "iqr": 104.7871625618128,
+      "cov": 0.5886934031086225,
       "ci95": [
-        1259.788063253639,
-        1458.3793160443179
+        715.6018374460235,
+        838.2462440484894
       ],
-      "ciHalfWidthPct": 7.025702242111553,
-      "p95OfSamples": 1473.8545819802016,
+      "ciHalfWidthPct": 7.558339808917064,
+      "p95OfSamples": 1852.953615309142,
       "tail": {
         "statistic": "max",
-        "value": 1480.4868388098664
+        "value": 2287.8282029922802
       },
       "timerSaturated": null,
       "steadyState": null,
-      "confidence": "high",
-      "lowConfidenceReasons": [],
+      "confidence": "low",
+      "lowConfidenceReasons": [
+        "cov 0.589 above 0.15"
+      ],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 12.77,
-        "contentionPerCore": 0.45607142857142857,
+        "loadAvg1m": 2.77,
+        "contentionPerCore": 0.09892857142857144,
         "quiet": true
       },
       "invariants": {
-        "outputBytes": 3699487,
+        "outputBytes": 3785992,
         "allocatedBytes": null,
         "filesystemEntries": null,
         "directories": null,
@@ -3720,11 +3724,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 517.828125,
+        "peakRssMb": 365.9453125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "libvips-zip",
@@ -3745,28 +3749,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        509665280.0,
-        542982144.0,
-        514363392.0,
-        516947968.0,
-        532180992.0,
-        513368064.0,
-        514744320.0
+        379949056.0,
+        382042112.0,
+        383721472.0,
+        382849024.0,
+        381108224.0,
+        375971840.0,
+        379756544.0
       ],
-      "median": 514744320.0,
-      "min": 509665280.0,
-      "max": 542982144.0,
-      "iqr": 10698752.0,
-      "cov": 0.023439803854821906,
+      "median": 381108224.0,
+      "min": 375971840.0,
+      "max": 383721472.0,
+      "iqr": 2592768.0,
+      "cov": 0.006737541788217853,
       "ci95": [
-        513368064.0,
-        532180992.0
+        379756544.0,
+        382849024.0
       ],
-      "ciHalfWidthPct": 1.8274051086178085,
-      "p95OfSamples": 539741798.4,
+      "ciHalfWidthPct": 0.4057220239886505,
+      "p95OfSamples": 383459737.6,
       "tail": {
         "statistic": "max",
-        "value": 542982144.0
+        "value": 383721472.0
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -3774,12 +3778,12 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 12.77,
-        "contentionPerCore": 0.45607142857142857,
+        "loadAvg1m": 2.77,
+        "contentionPerCore": 0.09892857142857144,
         "quiet": true
       },
       "invariants": {
-        "outputBytes": 3699487,
+        "outputBytes": 3785992,
         "allocatedBytes": null,
         "filesystemEntries": null,
         "directories": null,
@@ -3789,11 +3793,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 517.828125,
+        "peakRssMb": 365.9453125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     },
     {
       "backend": "libvips-zip",
@@ -3814,28 +3818,28 @@
       "outcome": "ok",
       "reason": null,
       "samples": [
-        3699487.0,
-        3699487.0,
-        3699487.0,
-        3699487.0,
-        3699487.0,
-        3699487.0,
-        3699487.0
+        3785992.0,
+        3785992.0,
+        3785992.0,
+        3785992.0,
+        3785992.0,
+        3785992.0,
+        3785992.0
       ],
-      "median": 3699487.0,
-      "min": 3699487.0,
-      "max": 3699487.0,
+      "median": 3785992.0,
+      "min": 3785992.0,
+      "max": 3785992.0,
       "iqr": 0.0,
       "cov": 0.0,
       "ci95": [
-        3699487.0,
-        3699487.0
+        3785992.0,
+        3785992.0
       ],
       "ciHalfWidthPct": 0.0,
-      "p95OfSamples": 3699487.0,
+      "p95OfSamples": 3785992.0,
       "tail": {
         "statistic": "max",
-        "value": 3699487.0
+        "value": 3785992.0
       },
       "timerSaturated": null,
       "steadyState": null,
@@ -3843,12 +3847,12 @@
       "lowConfidenceReasons": [],
       "machineLoad": {
         "cores": 28,
-        "loadAvg1m": 12.77,
-        "contentionPerCore": 0.45607142857142857,
+        "loadAvg1m": 2.77,
+        "contentionPerCore": 0.09892857142857144,
         "quiet": true
       },
       "invariants": {
-        "outputBytes": 3699487,
+        "outputBytes": 3785992,
         "allocatedBytes": null,
         "filesystemEntries": null,
         "directories": null,
@@ -3858,11 +3862,11 @@
         "leaves": null,
         "requests": null,
         "requestBytes": null,
-        "peakRssMb": 517.828125,
+        "peakRssMb": 365.9453125,
         "heapPeakBytes": null
       },
       "attested": true,
-      "dirty": true
+      "dirty": null
     }
   ],
   "invariants": [
@@ -3943,7 +3947,7 @@
       "scale": 1308,
       "source": "scan-gray8 (png tiles)",
       "name": "output_bytes",
-      "value": 3699487,
+      "value": 3785992,
       "unit": "bytes"
     },
     {
@@ -3958,10 +3962,10 @@
   "modelled": [],
   "replicate": null,
   "integrity": {
-    "cells": "sha256:8e5d9b4c23f8f4907730e4e2a0a944985a2f1359c61a7de585b6f6c8e6b3474c",
+    "cells": "sha256:1a56e29b38f9c5f4754607aaae75ec4b3d40b08aa6a1a1b32f29a64901717b3c",
     "runners": "sha256:7e203b227ffbdb802246b1299acf87eb108c0950bd9d67f2bf47f2dbf967e494",
-    "measurements": "sha256:bbb89a4e6d17f5f53d204bce684a476ac22ead149480a736411312fd03870ebd",
-    "document": "sha256:2bc75854a614f3f8de483f5724cc339057c5a70eafe8f3280a5b2d0f3fba64f6"
+    "measurements": "sha256:fba9fef7781f26955201b7208a3f7b2dfddad4983088d8f08b9f0368e8de9ee8",
+    "document": "sha256:41b021fa129b36f6c17542d7af679cad3aed5d1c2e3dd11389fe2447433cc2cd"
   },
-  "combinedAt": "2026-10-31T18:40:57.665Z"
+  "combinedAt": "2026-10-31T18:57:08.618Z"
 }
