@@ -197,7 +197,8 @@ CMD ["/src/libviprs-bench/target/release/pmtiles-writer", "--profile", "ci"]
 # stages do not and are unchanged. x86_64 is the published architecture; there
 # is no arm64 result for this row (see `notRun` in the document).
 #
-#   docker build --platform linux/amd64 --target pvec -t libviprs-bench:pvec .
+#   GH_TOKEN=$(gh auth token) docker build --platform linux/amd64 --secret id=gh_token,env=GH_TOKEN \
+#     --target pvec -t libviprs-bench:pvec .
 #   docker run --rm --platform linux/amd64 libviprs-bench:pvec \
 #     /src/libviprs-bench/target/release/pvec-sink --profile ci --out /tmp/p.json
 # ---------------------------------------------------------------------------
@@ -216,8 +217,19 @@ COPY libviprs/ libviprs/
 COPY libviprs-bench/ libviprs-bench/
 
 WORKDIR /src/libviprs-bench
-RUN cargo fetch --locked
-RUN cargo build --locked --release --features pvec --bin pvec-sink --bin storage-aggregate
+
+# PVec's crates are a private git dependency, so the fetch needs read access to libviprs/pvec. It
+# comes from a BuildKit secret (`docker build --secret id=gh_token,env=GH_TOKEN`), read into git's
+# environment for this one command: never an ARG or ENV, never a file, so it is in no layer and
+# not in the history. `Cargo.lock` already names the pins, so `--locked` has nothing to rewrite
+# and the tree the run reports stays clean (libviprs-bench#143). The build after it is offline.
+RUN --mount=type=secret,id=gh_token \
+    export GIT_CONFIG_COUNT=1 \
+           GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/gh_token)@github.com/.insteadOf" \
+           GIT_CONFIG_VALUE_0="https://github.com/" \
+           CARGO_NET_GIT_FETCH_WITH_CLI=true && \
+    cargo fetch --locked
+RUN cargo build --locked --offline --release --features pvec --bin pvec-sink --bin storage-aggregate
 
 CMD ["/src/libviprs-bench/target/release/pvec-sink", "--profile", "ci"]
 
