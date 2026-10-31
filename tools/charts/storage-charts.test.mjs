@@ -123,7 +123,8 @@ function latestStorageSweep() {
   const dir = join(repo, 'archive', 'storage');
   const files = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort();
   const documents = files.map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')));
-  const sweeps = documents.filter((d) => d.provenance?.invocation?.command !== 'pmtiles-writer');
+  // `pvec-sink` is the PVec row: one scenario, four contenders, none of the read-side shapes below.
+  const sweeps = documents.filter((d) => !['pmtiles-writer', 'pvec-sink'].includes(d.provenance?.invocation?.command));
   assert.ok(sweeps.length > 0, 'the archive holds a storage sweep');
   return sweeps[sweeps.length - 1];
 }
