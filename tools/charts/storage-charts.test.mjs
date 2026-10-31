@@ -222,3 +222,28 @@ test('the archived run has rows of every unfit kind, so this is not a theoretica
   assert.ok(cells.some((c) => c.confidence === 'low'), 'and low-confidence ones');
   assert.ok(cells.every((c) => !Number.isFinite(c.ci95)), 'and ci95 is never a scalar');
 });
+
+test('every archived storage run draws, so a scenario the harness emits is never undeclared (libviprs-bench#143)', () => {
+  // The PVec row's `generate_scan` was archived before the contract named it, and the site's
+  // ingest, which draws the latest run with this renderer, refused with "not declared".
+  const dir = join(repo, 'archive', 'storage');
+  const files = readdirSync(dir).filter((f) => /^\d{8}T\d{6}Z-.*\.json$/.test(f));
+  assert.ok(files.length > 0, 'there are archived runs to draw');
+  for (const f of files) {
+    const document = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+    assert.doesNotThrow(() => buildStorageCharts(document, { contract }), f);
+  }
+});
+
+test('generate_scan is held out of the charts because GDAL and libvips write different tile bytes (libviprs-bench#143)', () => {
+  const { charts, held } = buildStorageCharts(doc([
+    cell({ scenario: 'generate_scan', metric: 'wall', backend: 'pmtiles', cell: 'scan@18720x13240' }),
+    cell({ scenario: 'generate_scan', metric: 'wall', backend: 'pvec', cell: 'scan@18720x13240' }),
+    cell({ scenario: 'generate_scan', metric: 'wall', backend: 'gdal-cog', cell: 'scan@18720x13240' }),
+  ]), { contract });
+  assert.equal(charts.length, 0);
+  const h = held.find((x) => x.scenario === 'generate_scan');
+  assert.ok(h, JSON.stringify(held));
+  assert.equal(h.status, 'non-comparable');
+  assert.match(contract.scenarios.generate_scan.reason.join(' '), /codec/);
+});
