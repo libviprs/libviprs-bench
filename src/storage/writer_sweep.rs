@@ -963,7 +963,7 @@ fn io_pressure_some_avg10() -> Option<f64> {
         .and_then(|v| v.parse().ok())
 }
 
-fn env_f64(name: &str, default: f64) -> f64 {
+pub(crate) fn env_f64(name: &str, default: f64) -> f64 {
     std::env::var(name)
         .ok()
         .and_then(|v| v.parse().ok())
@@ -982,7 +982,7 @@ fn env_f64(name: &str, default: f64) -> f64 {
 /// rather than stalling a sweep behind a machine that never calms. The time
 /// waited is not in any sample, and the reading it started under is the one the
 /// row records, so a repetition that had to give up says so in its own row.
-fn wait_for_quiet() -> MachineLoad {
+pub(crate) fn wait_for_quiet() -> MachineLoad {
     let below = env_f64(QUIET_BELOW_ENV, DEFAULT_QUIET_BELOW);
     let io_below = env_f64(QUIET_IO_BELOW_ENV, DEFAULT_QUIET_IO_BELOW);
     let budget =
@@ -1009,7 +1009,7 @@ fn wait_for_quiet() -> MachineLoad {
 
 /// The reading a repetition is recorded under: the worse of the one it started
 /// under and the one it finished under, so a spike in the middle is not missed.
-fn worse(a: MachineLoad, b: MachineLoad) -> MachineLoad {
+pub(crate) fn worse(a: MachineLoad, b: MachineLoad) -> MachineLoad {
     match (a.contention_per_core, b.contention_per_core) {
         (Some(x), Some(y)) if y > x => b,
         (None, Some(_)) => b,
@@ -1017,7 +1017,7 @@ fn worse(a: MachineLoad, b: MachineLoad) -> MachineLoad {
     }
 }
 
-fn worst_load(loads: impl Iterator<Item = MachineLoad>) -> MachineLoad {
+pub(crate) fn worst_load(loads: impl Iterator<Item = MachineLoad>) -> MachineLoad {
     loads
         .max_by(|a, b| {
             a.contention_per_core
@@ -1411,7 +1411,7 @@ fn go_rep(
 }
 
 /// The last lines of a file, for an error message.
-fn tail(path: &Path) -> String {
+pub(crate) fn tail(path: &Path) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let lines: Vec<&str> = text.lines().rev().take(6).collect();
     lines.into_iter().rev().collect::<Vec<_>>().join(" | ")
