@@ -44,9 +44,8 @@ fn ours_write_the_same_png_tiles_so_neither_has_a_codec_advantage() {
     // PVec artifact are byte for byte the PNG tiles in the PMTiles archive.
     let cell = ScanCell::ci();
     let (pm_dir, pv_dir) = (scratch("claim-pm"), scratch("claim-pv"));
-    let pm = pvec_sweep::one_rep(Contender::Pmtiles, cell, &pm_dir, &[]).unwrap();
-    let pv = pvec_sweep::one_rep(Contender::Pvec, cell, &pv_dir, &[]).unwrap();
-    assert_eq!(pm.tiles, pv.tiles.map(|_| pm.tiles.unwrap()), "both ran");
+    pvec_sweep::one_rep(Contender::Pmtiles, cell, &pm_dir, &[]).unwrap();
+    pvec_sweep::one_rep(Contender::Pvec, cell, &pv_dir, &[]).unwrap();
     let (pm_tiles, pv_tiles) = pvec_sweep::png_tiles_of(&pm_dir, &pv_dir, cell).unwrap();
     assert!(!pv_tiles.is_empty());
     for (key, bytes) in &pv_tiles {
@@ -62,7 +61,7 @@ fn an_attested_rep_reads_back_from_what_was_written_and_a_damaged_one_is_refused
         let dir = scratch(&format!("attest-{}", c.label()));
         let out = pvec_sweep::one_rep(c, cell, &dir, &[]).unwrap();
         pvec_sweep::attest(c, cell, &dir, &out).unwrap();
-        assert_eq!(out.tiles, Some(cell.tiles()).filter(|_| c == Contender::Pvec).or(out.tiles));
+        assert_eq!(out.tiles, Some(cell.tiles()));
         // Damage the artifact: truncate it. The attestation reads the file, not the report.
         let file = dir.join(pvec_sweep::artifact_name(c));
         let bytes = std::fs::read(&file).unwrap();
@@ -73,7 +72,6 @@ fn an_attested_rep_reads_back_from_what_was_written_and_a_damaged_one_is_refused
 
 #[test]
 fn a_contender_whose_tool_is_missing_is_skipped_with_the_reason_not_dropped() {
-    // SAFETY of the test: set before anything else reads it, in this test binary only.
     let r = pvec_sweep::Rival::locate_with(Contender::GdalCog, Some("/nonexistent/gdal_translate"));
     let why = r.unwrap_err();
     assert!(why.contains("gdal_translate") && why.contains("BENCH_GDAL_TRANSLATE"), "{why}");
@@ -82,8 +80,16 @@ fn a_contender_whose_tool_is_missing_is_skipped_with_the_reason_not_dropped() {
 
 #[test]
 fn a_ci_sweep_has_a_row_set_for_every_contender_with_host_and_arch_on_the_document() {
-    let doc = pvec_sweep::run_sweep(libviprs_bench::storage::cells::Profile::Ci);
-    let json: serde_json::Value = serde_json::from_str(&doc.to_json()).unwrap();
+    // The binary, because a sweep re-executes itself for every repetition.
+    let out = scratch("sweep").join("pvec-results.json");
+    let run = std::process::Command::new(env!("CARGO_BIN_EXE_pvec-sink"))
+        .args(["--profile", "ci", "--out"])
+        .arg(&out)
+        .env("STORAGE_ALLOW_DIRTY", "1")
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     let cells = json["cells"].as_array().unwrap();
     for c in Contender::ALL {
         let rows: Vec<_> = cells.iter().filter(|r| r["backend"] == c.label()).collect();

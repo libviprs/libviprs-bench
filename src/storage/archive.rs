@@ -132,6 +132,7 @@ fn non_empty_str<'a>(doc: &'a Value, path: &str) -> Option<&'a str> {
 pub fn admit(doc: &Value) -> Vec<Refusal> {
     let mut refusals = Vec::new();
     check_emulation(doc, &mut refusals);
+    check_host_and_arch(doc, &mut refusals);
     check_source_trees(doc, &mut refusals);
     check_build(doc, &mut refusals);
     check_filesystem(doc, &mut refusals);
@@ -187,6 +188,26 @@ fn check_emulation(doc: &Value, refusals: &mut Vec<Refusal>) {
                 describe(other)
             ),
         )),
+    }
+}
+
+/// The document names its os, arch and cpu model (libviprs/libviprs#1331).
+///
+/// `run_id` buckets runs by these, and a document missing them files under `unknown` beside every
+/// other document missing them, so two machines' numbers read as one series. Every row in the
+/// document inherits them, so this is where "every row names its host and arch" is enforced.
+fn check_host_and_arch(doc: &Value, refusals: &mut Vec<Refusal>) {
+    for field in ["os", "arch", "cpuModel"] {
+        let path = format!("provenance.{field}");
+        if non_empty_str(doc, &path).is_none() {
+            refusals.push(refuse(
+                "host-arch",
+                format!(
+                    "{path} is {}, so the archive cannot tell this machine's numbers from any other's",
+                    describe(at(doc, &path))
+                ),
+            ));
+        }
     }
 }
 
