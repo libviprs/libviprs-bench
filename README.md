@@ -32,6 +32,8 @@ off: a run of `engines` measures the same three engines whether or not the
 machine it runs on has libvips installed, because the engine set is a function
 of the family and of nothing else.
 
+The `storage` family also carries the PVec row (libviprs/libviprs#1331): `pvec-sink` generates one scan (a 400 dpi A0 sheet, 18,720 x 13,240) into libviprs's PMTiles sink, libviprs's PVec sink, GDAL's COG driver and libvips `dzsave` into a zip, in fresh processes, attests every repetition from the artifact it left, and writes the storage document envelope (`report/storage/pvec-results.json`). It is built with `--features pvec` (PVec's crates are a git dependency) in its own `pvec` Docker stage, which carries the two reference tools from the pinned Debian snapshot; a tool that is not installed gives a skipped row with its reason. The PVec and PMTiles rows write byte-identical PNG tiles, and the GDAL row cannot (its COG driver has no PNG codec), which its row says. x86_64 only: the arm64 run is recorded as not done in the document.
+
 Each family writes into its own `report/<family>/` directory, so two families
 can never append to each other's history or overwrite each other's charts. A
 snapshot records the family it came out of, and appending one family's snapshot

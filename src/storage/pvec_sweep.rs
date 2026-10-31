@@ -218,14 +218,15 @@ impl ScanCell {
             .sum()
     }
 
-    /// Tiles in the pyramid libvips cuts: `dzsave --depth onetile` halves until the longer side is
-    /// *under* the tile size, where ours stops at the first level of one tile (a longer side of
-    /// 512 or less). The two agree unless a level lands on exactly 512, and then libvips has one
-    /// more single-tile level.
+    /// Tiles in the pyramid libvips cuts. `dzsave --depth onetile` keeps halving until the longer
+    /// side is at most half the tile size (256 here), where ours stops at the first level of one
+    /// tile (a longer side of 512 or less), so libvips ends on one more single-tile level than
+    /// ours whenever the last level of ours is wider than 256. Observed with libvips 8.16 on the
+    /// ci cell (18 against 17) and the A0 cell (1,309 against 1,308), and held by the attestation.
     fn vips_tiles(&self) -> u64 {
         let (mut w, mut h) = (self.width, self.height);
         let mut total = u64::from(w.div_ceil(TILE_EDGE)) * u64::from(h.div_ceil(TILE_EDGE));
-        while w.max(h) >= TILE_EDGE {
+        while w.max(h) > TILE_EDGE / 2 {
             w = w.div_ceil(2);
             h = h.div_ceil(2);
             total += u64::from(w.div_ceil(TILE_EDGE)) * u64::from(h.div_ceil(TILE_EDGE));
