@@ -217,17 +217,24 @@
       ]
     },
     "generate_scan": {
-      "status": "non-comparable",
-      "reason": [
-        "The PVec row generates one scan into four contenders: libviprs's PMTiles sink, libviprs's PVec",
-        "sink, GDAL's COG driver and libvips dzsave into a zip. The first two write byte-identical PNG tiles. GDAL",
-        "(DEFLATE strips, no PNG codec in its COG driver) and libvips (its own PNG encoder settings) do not, so a",
-        "wall-clock or size ordering across all four would partly rank codecs, which the storage family refuses to do.",
-        "Every row is measured, archived and published with its tool versions and its caveat, and none of them is",
-        "ranked in a chart. The PMTiles against PVec pair is the like-for-like one and is read from the table."
-      ],
+      "status": "comparable",
       "work": [
         "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": [
+          "Four containers (PMTiles, PVec, a COG, a zip of PNG tiles), so artefact_digest and output_bytes",
+          "differ by construction and are not read as cross-backend equivalence. Same scan, same tile grid, and",
+          "tiles_produced is the work claim."
+        ]
+      },
+      "note": [
+        "libviprs's PMTiles and PVec sinks write byte-identical PNG tiles. GDAL's COG driver has no PNG codec",
+        "(DEFLATE strips) and libvips dzsave writes PNG from its own encoder settings, so the codec differs on",
+        "those two rows and wall time and artefact size include that difference. It is the comparison libviprs#1331",
+        "asks for, against a C library offering the same feature, and each row names its tool version and caveat",
+        "in the archived document. Read the PMTiles against PVec pair as the like-for-like one."
       ]
     }
   }

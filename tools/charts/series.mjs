@@ -25,6 +25,10 @@ export const TECHNOLOGIES = Object.freeze([
   { key: 'mapreduce', label: 'MapReduce', color: '#c62828' },
   { key: 'directory', label: 'Directory', color: '#7986cb' },
   { key: 'pmtiles', label: 'PMTiles', color: '#e65100' },
+  // The PVec row (libviprs-bench#143): the container and its two C references.
+  { key: 'pvec', label: 'PVec', color: '#b8860b' },
+  { key: 'gdal-cog', label: 'GDAL COG', color: '#6d8f00' },
+  { key: 'libvips-zip', label: 'libvips zip', color: '#8d6e63' },
 ]);
 
 export const series = defineSeries(TECHNOLOGIES);

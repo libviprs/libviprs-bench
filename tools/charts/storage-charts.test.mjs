@@ -236,15 +236,16 @@ test('every archived storage run draws, so a scenario the harness emits is never
   }
 });
 
-test('generate_scan is held out of the charts because GDAL and libvips write different tile bytes (libviprs-bench#143)', () => {
-  const { charts, held } = buildStorageCharts(doc([
-    cell({ scenario: 'generate_scan', metric: 'wall', backend: 'pmtiles', cell: 'scan@18720x13240' }),
-    cell({ scenario: 'generate_scan', metric: 'wall', backend: 'pvec', cell: 'scan@18720x13240' }),
-    cell({ scenario: 'generate_scan', metric: 'wall', backend: 'gdal-cog', cell: 'scan@18720x13240' }),
-  ]), { contract });
-  assert.equal(charts.length, 0);
-  const h = held.find((x) => x.scenario === 'generate_scan');
-  assert.ok(h, JSON.stringify(held));
-  assert.equal(h.status, 'non-comparable');
-  assert.match(contract.scenarios.generate_scan.reason.join(' '), /codec/);
+test('generate_scan is charted, and its note says the tile bytes differ (libviprs-bench#143)', () => {
+  // The site refuses a run the renderer draws nothing from, and the GDAL and libvips rows are the
+  // deliverable of libviprs/libviprs#1331: same scan, same tile grid, drawn with the caveat on record.
+  const row = (backend, median) => cell({
+    scenario: 'generate_scan', metric: 'wall', backend, cell: 'scan@18720x13240', median, tiles_produced: 1308,
+  });
+  const { charts, violations } = buildStorageCharts(doc([row('pmtiles', 8), row('pvec', 8.3), row('gdal-cog', 2)]), { contract });
+  assert.deepEqual(violations, []);
+  assert.equal(charts.length, 1);
+  const decl = contract.scenarios.generate_scan;
+  assert.equal(decl.status, 'comparable');
+  assert.match([].concat(decl.note).join(' '), /codec/);
 });
