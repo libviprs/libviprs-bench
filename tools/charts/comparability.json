@@ -215,6 +215,20 @@
       "work": [
         "tiles_produced"
       ]
+    },
+    "generate_scan": {
+      "status": "non-comparable",
+      "reason": [
+        "The PVec row generates one scan into four contenders: libviprs's PMTiles sink, libviprs's PVec",
+        "sink, GDAL's COG driver and libvips dzsave into a zip. The first two write byte-identical PNG tiles. GDAL",
+        "(DEFLATE strips, no PNG codec in its COG driver) and libvips (its own PNG encoder settings) do not, so a",
+        "wall-clock or size ordering across all four would partly rank codecs, which the storage family refuses to do.",
+        "Every row is measured, archived and published with its tool versions and its caveat, and none of them is",
+        "ranked in a chart. The PMTiles against PVec pair is the like-for-like one and is read from the table."
+      ],
+      "work": [
+        "tiles_produced"
+      ]
     }
   }
 }
