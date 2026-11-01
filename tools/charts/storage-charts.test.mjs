@@ -115,11 +115,23 @@ test('a work asymmetry over the tolerance stops the chart', () => {
   assert.equal(charts.length, 0);
 });
 
+/* The newest document the `storage` sweep wrote. The archive directory also
+ * holds the PMTiles writer sweep's documents (libviprs-bench #132), which share
+ * the family and the envelope and measure something else, so "the last file" is
+ * no longer the last storage sweep. */
+function latestStorageSweep() {
+  const dir = join(repo, 'archive', 'storage');
+  const files = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort();
+  const documents = files.map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')));
+  // `pvec-sink` is the PVec row: one scenario, four contenders, none of the read-side shapes below.
+  const sweeps = documents.filter((d) => !['pmtiles-writer', 'pvec-sink'].includes(d.provenance?.invocation?.command));
+  assert.ok(sweeps.length > 0, 'the archive holds a storage sweep');
+  return sweeps[sweeps.length - 1];
+}
+
 /* Against the archive actually in the repo. */
 test('the archived storage run charts its comparable scenarios and holds out the rest', () => {
-  const dir = join(repo, 'archive', 'storage');
-  const file = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort().pop();
-  const document = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+  const document = latestStorageSweep();
   const { charts, held, violations } = buildStorageCharts(document, { contract });
 
   assert.deepEqual(violations, [], violations.map((v) => v.message).join('; '));
@@ -205,11 +217,35 @@ test('a timer-saturated measurement is held out rather than charted as a latency
 });
 
 test('the archived run has rows of every unfit kind, so this is not a theoretical guard', () => {
-  const dir = join(repo, 'archive', 'storage');
-  const file = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort().pop();
-  const cells = JSON.parse(readFileSync(join(dir, file), 'utf8')).cells.filter((c) => c.outcome === 'ok');
+  const cells = latestStorageSweep().cells.filter((c) => c.outcome === 'ok');
   assert.ok(cells.some((c) => c.timerSaturated), 'the archive carries timer-saturated rows');
   assert.ok(cells.some((c) => c.oversubscribed), 'and oversubscribed ones');
   assert.ok(cells.some((c) => c.confidence === 'low'), 'and low-confidence ones');
   assert.ok(cells.every((c) => !Number.isFinite(c.ci95)), 'and ci95 is never a scalar');
+});
+
+test('every archived storage run draws, so a scenario the harness emits is never undeclared (libviprs-bench#143)', () => {
+  // The PVec row's `generate_scan` was archived before the contract named it, and the site's
+  // ingest, which draws the latest run with this renderer, refused with "not declared".
+  const dir = join(repo, 'archive', 'storage');
+  const files = readdirSync(dir).filter((f) => /^\d{8}T\d{6}Z-.*\.json$/.test(f));
+  assert.ok(files.length > 0, 'there are archived runs to draw');
+  for (const f of files) {
+    const document = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+    assert.doesNotThrow(() => buildStorageCharts(document, { contract }), f);
+  }
+});
+
+test('generate_scan is charted, and its note says the tile bytes differ (libviprs-bench#143)', () => {
+  // The site refuses a run the renderer draws nothing from, and the GDAL and libvips rows are the
+  // deliverable of libviprs/libviprs#1331: same scan, same tile grid, drawn with the caveat on record.
+  const row = (backend, median) => cell({
+    scenario: 'generate_scan', metric: 'wall', backend, cell: 'scan@18720x13240', median, tiles_produced: 1308,
+  });
+  const { charts, violations } = buildStorageCharts(doc([row('pmtiles', 8), row('pvec', 8.3), row('gdal-cog', 2)]), { contract });
+  assert.deepEqual(violations, []);
+  assert.equal(charts.length, 1);
+  const decl = contract.scenarios.generate_scan;
+  assert.equal(decl.status, 'comparable');
+  assert.match([].concat(decl.note).join(' '), /codec/);
 });

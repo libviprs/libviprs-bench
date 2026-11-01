@@ -105,6 +105,134 @@ RUN cargo build --locked --release --bin storage --bin storage-aggregate
 CMD ["cargo", "run", "--release", "--bin", "storage", "--", \
      "--family", "storage", "--profile", "ci"]
 
+# ---------------------------------------------------------------------------
+# The `writer` stage: the PMTiles writer sweep and its external reference
+# (libviprs-bench #132).
+#
+# It is the `storage` stage plus go-pmtiles, and nothing else. go-pmtiles is the
+# only independent implementation of the format to measure the writer against,
+# so it is pinned the way every other input here is: an exact release and the
+# SHA-256 of the exact asset, checked before anything is unpacked. The digest was
+# taken from the release asset when the pin was written (the release publishes no
+# checksum file to read it from), which makes it a pin and not an attestation:
+# it stops the asset changing under a rebuild, it does not prove what the asset
+# was the first time. The binary's own digest is recorded in every document the
+# sweep writes (`provenance.invocation.resolved.externalTools`).
+#
+# python3 is already in the Rust base image, and `tools/mbtiles-from-tiles.py`
+# needs nothing but its `sqlite3` module: go-pmtiles reads MBTiles and nothing
+# else, so the tile set has to get into one.
+#
+# x86_64 only. The asset below is the Linux x86_64 build, the sweep's numbers are
+# only publishable from a native x86_64 host, and an arm64 build of this stage
+# refuses rather than measuring go-pmtiles under translation.
+#
+#   docker build --platform linux/amd64 --target writer -t libviprs-bench:writer .
+#   docker run --rm --platform linux/amd64 libviprs-bench:writer \
+#     /src/libviprs-bench/target/release/pmtiles-writer --profile ci --out /tmp/w.json
+# ---------------------------------------------------------------------------
+FROM rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS writer
+
+ARG GO_PMTILES_VERSION=1.31.2
+ARG GO_PMTILES_SHA256=3ed7dbf4ec2e6dfe5e25b6f70d1ffc932729f93c86db353bf514dd71010a312f
+
+RUN test "$(uname -m)" = x86_64 \
+    && curl -fsSL --retry 5 -o /tmp/go-pmtiles.tgz \
+        "https://github.com/protomaps/go-pmtiles/releases/download/v${GO_PMTILES_VERSION}/go-pmtiles_${GO_PMTILES_VERSION}_Linux_x86_64.tar.gz" \
+    && echo "${GO_PMTILES_SHA256}  /tmp/go-pmtiles.tgz" | sha256sum -c - \
+    && tar -xzf /tmp/go-pmtiles.tgz -C /usr/local/bin pmtiles \
+    && rm /tmp/go-pmtiles.tgz \
+    && pmtiles version
+
+WORKDIR /src
+COPY libviprs/ libviprs/
+COPY libviprs-bench/ libviprs-bench/
+
+WORKDIR /src/libviprs-bench
+
+# Two build arguments exist for one reason: measuring a core revision that is not
+# the one `Cargo.lock` was written for. The previous-revision baseline is such a
+# revision, and it differs from the lock in exactly one line, the core's own
+# version (0.5.0 against 0.6.1), which `--locked` refuses and which cargo rewrites
+# without touching a single dependency. That revision also predates the move to
+# Rust 1.99, so its manifest's `deprecated = "deny"` trips on two calls the newer
+# compiler deprecates; `--cap-lints=warn` turns the lint down and changes no code
+# that is generated, and it is what lets the baseline be built with the SAME
+# compiler as the revision it is compared with rather than a different one.
+#
+# Both are recorded. RUSTFLAGS is stamped into the binary by `build.rs` and lands
+# in `provenance.node.rustflags`, and `provenance.lockfileHash` is taken over the
+# lock as it was built. The default is the strict build every other stage does.
+ARG CARGO_LOCKED=--locked
+ARG BENCH_RUSTFLAGS=
+ENV RUSTFLAGS=${BENCH_RUSTFLAGS}
+
+# Cargo rewriting that one line would make the harness tree read as modified, and
+# the aggregator refuses a dirty tree. The index is told to stop watching the lock
+# for an unlocked build only; every source file is still compared.
+RUN if [ -z "${CARGO_LOCKED}" ]; then git update-index --assume-unchanged Cargo.lock; fi
+
+RUN cargo fetch ${CARGO_LOCKED}
+
+# Default features only, like `storage`. `storage-aggregate` is built here too,
+# because the document this stage writes is archived by the same binary and
+# checking it before it leaves the box is cheaper than finding out afterwards.
+RUN cargo build ${CARGO_LOCKED} --release --bin pmtiles-writer --bin storage-aggregate
+
+CMD ["/src/libviprs-bench/target/release/pmtiles-writer", "--profile", "ci"]
+
+# ---------------------------------------------------------------------------
+# The `pvec` stage: the PVec row of the storage family and its two C references
+# (libviprs/libviprs#1331).
+#
+# It is the `storage` stage plus GDAL (`gdal_translate`, `gdalinfo`) and libvips
+# (`vips dzsave`), both from the dated Debian snapshot the other stages resolve
+# against, so the two reference tools are frozen with everything else. The
+# versions they report are recorded in every document the sweep writes
+# (`provenance.invocation.resolved.externalTools`), with the SHA-256 of each
+# binary. python3 lists the zip libvips writes.
+#
+# Built with `--features pvec`, which pulls in PVec's crates as a git dependency,
+# so the build needs read access to libviprs/pvec; the `engines` and `storage`
+# stages do not and are unchanged. x86_64 is the published architecture; there
+# is no arm64 result for this row (see `notRun` in the document).
+#
+#   GH_TOKEN=$(gh auth token) docker build --platform linux/amd64 --secret id=gh_token,env=GH_TOKEN \
+#     --target pvec -t libviprs-bench:pvec .
+#   docker run --rm --platform linux/amd64 libviprs-bench:pvec \
+#     /src/libviprs-bench/target/release/pvec-sink --profile ci --out /tmp/p.json
+# ---------------------------------------------------------------------------
+FROM rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS pvec
+
+ARG DEBIAN_SNAPSHOT=20250929T000000Z
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "${DEBIAN_SNAPSHOT}" "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list.d/debian.sources && \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/10snapshot && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gdal-bin libvips-tools python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY libviprs/ libviprs/
+COPY libviprs-bench/ libviprs-bench/
+
+WORKDIR /src/libviprs-bench
+
+# PVec's crates are a private git dependency, so the fetch needs read access to libviprs/pvec. It
+# comes from a BuildKit secret (`docker build --secret id=gh_token,env=GH_TOKEN`), read into git's
+# environment for this one command: never an ARG or ENV, never a file, so it is in no layer and
+# not in the history. `Cargo.lock` already names the pins, so `--locked` has nothing to rewrite
+# and the tree the run reports stays clean (libviprs-bench#143). The build after it is offline.
+RUN --mount=type=secret,id=gh_token \
+    export GIT_CONFIG_COUNT=1 \
+           GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/gh_token)@github.com/.insteadOf" \
+           GIT_CONFIG_VALUE_0="https://github.com/" \
+           CARGO_NET_GIT_FETCH_WITH_CLI=true && \
+    cargo fetch --locked
+RUN cargo build --locked --offline --release --features pvec --bin pvec-sink --bin storage-aggregate
+
+CMD ["/src/libviprs-bench/target/release/pvec-sink", "--profile", "ci"]
+
 # Stage 1: Download PDFium for the target architecture. Base image digest-pinned
 # (not just tag-pinned) so the exact layer cannot shift under a rebuild (#35).
 FROM debian:bookworm-20250929-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 AS pdfium
@@ -251,6 +379,7 @@ RUN apt-get update && \
         libjpeg62-turbo-dev \
         libtiff-dev \
         libwebp-dev \
+        libarchive-dev \
         time \
     && rm -rf /var/lib/apt/lists/*
 
@@ -272,7 +401,7 @@ RUN curl -fL --retry 3 --retry-delay 2 --retry-connrefused -o /tmp/vips.tar.xz \
     tar xJf /tmp/vips.tar.xz -C /tmp/vips-src --strip-components=1 && \
     cd /tmp/vips-src && \
     meson setup build --buildtype=release --prefix=/usr/local --libdir=lib \
-        -Dpng=enabled -Djpeg=enabled -Dtiff=enabled -Dwebp=enabled && \
+        -Dpng=enabled -Djpeg=enabled -Dtiff=enabled -Dwebp=enabled -Darchive=enabled && \
     ninja -C build && \
     ninja -C build install && \
     ldconfig && \
@@ -290,6 +419,7 @@ RUN ldconfig
 # printing it) fails the build if a stray or wrong-version libvips is ahead on
 # PATH / in the pkg-config path, rather than silently benchmarking it (#33).
 RUN vips --version && \
+    vips -l | grep -q dzsave && \
     modversion="$(pkg-config --modversion vips)" && \
     if [ "$modversion" != "${LIBVIPS_VERSION}" ]; then \
         echo "built libvips modversion ${modversion} != pinned ${LIBVIPS_VERSION}" >&2; \
@@ -302,12 +432,20 @@ WORKDIR /src
 COPY libviprs/ libviprs/
 COPY libviprs-bench/ libviprs-bench/
 
-# Fetch dependencies
-WORKDIR /src/libviprs
-RUN cargo fetch --locked
-
+# Fetch dependencies. Only this crate's lockfile is used: the core crate is a
+# library and its Cargo.lock is gitignored, so `cargo fetch --locked` inside it
+# fails on every clean checkout (it only ever passed on a tree that already had
+# a lockfile lying around). The path dependency resolves through this crate's
+# own lock.
 WORKDIR /src/libviprs-bench
 RUN cargo fetch --locked
+
+# libvips is installed under /usr/local. rustc 1.99 links with rust-lld, which
+# does not search /usr/local/lib the way the system linker does, so
+# `-lvips` was "unable to find library" and the image did not build at all.
+# LIBRARY_PATH reaches the linker as -L, the same thing run-bench.sh --no-build
+# sets from pkg-config on a host.
+ENV LIBRARY_PATH=/usr/local/lib
 
 # Build in release mode with libvips FFI feature for in-process comparison
 RUN cargo build --locked --release --features libvips --bin scalability --bin report

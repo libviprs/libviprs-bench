@@ -32,6 +32,8 @@ off: a run of `engines` measures the same three engines whether or not the
 machine it runs on has libvips installed, because the engine set is a function
 of the family and of nothing else.
 
+The `storage` family also carries the PVec row (libviprs/libviprs#1331): `pvec-sink` generates one scan (a 400 dpi A0 sheet, 18,720 x 13,240) into libviprs's PMTiles sink, libviprs's PVec sink, GDAL's COG driver and libvips `dzsave` into a zip, in fresh processes, attests every repetition from the artifact it left, and writes the storage document envelope (`report/storage/pvec-results.json`). It is built with `--features pvec` (PVec's crates are a git dependency) in its own `pvec` Docker stage, which carries the two reference tools from the pinned Debian snapshot; a tool that is not installed gives a skipped row with its reason. The PVec and PMTiles rows write byte-identical PNG tiles, and the GDAL row cannot (its COG driver has no PNG codec), which its row says. x86_64 only: the arm64 run is recorded as not done in the document.
+
 Each family writes into its own `report/<family>/` directory, so two families
 can never append to each other's history or overwrite each other's charts. A
 snapshot records the family it came out of, and appending one family's snapshot
@@ -257,6 +259,63 @@ The output is one JSON document per sweep rather than a chart set, because the
 family's claim is a comparison between two backends on identical work and the
 page draws it from an archived history rather than from the last run.
 
+## The PMTiles writer sweep
+
+The storage family asks how PMTiles compares with a directory of tiles. This one
+asks how the PMTiles *writer* compares with itself across the bounded-memory epic
+(libviprs#1135) and with go-pmtiles building the same archive. It is its own
+binary, `pmtiles-writer`, and it writes the storage family's document envelope, so
+`storage-aggregate --check`, `--archive` and `--verify` gate it and its documents
+file under `archive/storage/`.
+
+```bash
+cargo run --release --bin pmtiles-writer -- --profile ci --out /tmp/writer.json   # proves it runs
+tools/capture-writer.sh --core-rev <sha|tag> --profile full                       # the publishable one
+```
+
+What it walks is the matrix the issue names: `tile-id` and `arrival` layouts, with
+and without ordered emission, at 256 KiB, 1 MiB and 8 MiB dedupe budgets. Each
+variant is a backend label in the document (`arrival+ordered@1MiB`), and every one
+is measured two ways because the two answer different questions.
+
+| scenario | what it is | series |
+|---|---|---|
+| `write_ingest`, `write_finalize` | the engine builds the pyramid into a sink set up as the variant says, finish held back so the halves time apart | `wall`, `heap_peak` |
+| `write_output` | the same repetitions | `output_bytes`, `peak_rss` |
+| `build_from_tiles` | the writer is handed a tile set that already exists, no engine and no encode | `wall`, `heap_peak`, `output_bytes`, `peak_rss` |
+
+The second form is the one go-pmtiles can stand beside, because go-pmtiles does not
+encode a pyramid either: `pmtiles convert` turns an MBTiles file into an archive.
+So the tile set is written to one (`tools/mbtiles-from-tiles.py`, untimed), and
+go-pmtiles is timed converting it, as a backend named `go-pmtiles`. Both
+contenders are timed inside the process that does the work and both report a peak
+resident set with no floor from whoever started them: ours is `VmHWM` read by the
+child, and go-pmtiles' is the kernel's `ru_maxrss` taken by a small fresh helper,
+because `wait4` on a forked child carries the spawner's own resident set as a
+floor and the sweep process is not small.
+
+The cells are the three corpus cells the storage family publishes, plus three
+synthetic ones (`synthetic@z9`, `@z10`, `@z11`) with one distinct payload per
+tile. A real pyramid has a few thousand distinct payloads at most, far too few
+for a table that grows with them to show, so the synthetic cells are where the
+bounded-memory claim is actually tested. The largest is four million tiles on
+purpose: the writer's sort buffer holds a million records, so below that heap
+rises with the tile count whatever the dedupe table does.
+
+**The baseline is a revision, not a release.** The epic's checklist says "the
+previous libviprs release", and there is none that fits: v0.4.0 has no PMTiles
+writer and v0.5.0 already has the whole epic. The baseline is `150774a5`, the last
+revision before the bounded writer landed. The harness builds against it, because
+the three knobs the epic added sit behind a `cfg` that `build.rs` sets from the
+measured core's own source, and a revision without them has the one variant it can
+express, `tile-id@unbounded`, because its payload table is.
+
+`tools/capture-writer.sh` measures one core revision per invocation, since a
+document carries exactly one `provenance.library.commit`. It builds the `writer`
+stage of the Dockerfile (the storage stage plus a pinned go-pmtiles), refuses to
+measure on a machine that never settles, and runs the aggregator in the image that
+measured. The container-only rule is held by `tools/capture-writer.test.mjs`.
+
 ## The `engines` document
 
 The same family the default build has always measured, emitting the same
@@ -416,12 +475,25 @@ archive/storage/
 
 ```
 
+## Git hooks
+
+The pre-commit hook runs the `check` job's cells (the four `cargo check` runs and the libvips clippy)
+on MARS, not on this machine. It ships the staged tree and builds it against the core CI would use
+(the libviprs branch with the same name, else main), with libvips in the container. The scripts live in
+libviprs-tests (`tools/install-hooks.sh` installs them, `tools/mars-run.sh` does the shipping).
+
+If MARS is down the hook fails and says so, and `LIBVIPRS_HOOKS_SKIP_MARS=1 git commit ...` skips it
+with a loud banner. `--no-verify` isn't the answer for that. The hook runs no tests, so a test-first
+commit that is meant to be red passes as long as it compiles.
+
 ## Requirements
 
 - Rust 1.99+ (edition 2024) — the floor the measured `libviprs` core declares
 - Docker (recommended, used by `run-bench.sh`)
 - For `--no-build`: `libvips-dev` and `pkg-config` on the host
 - **Node** (recent LTS) on the host to render the history/scalability SVGs (`tools/charts/render.mjs`). Optional for a benchmark run — without it the run still writes its JSON — but **required to run the test suite**, because `tests/engines_family_end_to_end.rs` asserts the charts are actually drawn and a chart assertion that quietly does not run is the same colour as one that passed
+
+  The stock `rust:*-bookworm` image has no node, so `engines_family_end_to_end` is red there. That is not a regression, the guard is loud on purpose. Run the suite with `tools/test-image/run-tests.sh` instead: it builds a Rust image with a pinned node added, runs `npm ci` for the chart library, then `cargo test`.
 
 ## See also
 

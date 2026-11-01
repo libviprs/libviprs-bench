@@ -175,13 +175,24 @@ fn every_provenance_probe_takes_its_path_from_the_family_scratch_root() {
     // the line each one has to get its directory from. Spelled out rather than
     // pattern-matched: a fourth prober is a thing to look at, not a thing to
     // wave through because it happens to contain the right substring somewhere.
-    const PROBE_SITES: [(&str, &str); 3] = [
+    const PROBE_SITES: [(&str, &str); 5] = [
         (
             "src/engines/mod.rs",
             "let scratch = crate::family::Family::Engines.scratch_root();",
         ),
         (
             "src/storage/mod.rs",
+            "let scratch = crate::family::Family::Storage.scratch_root();",
+        ),
+        // The PMTiles writer sweep writes the storage family's documents, so it
+        // probes the storage family's scratch directory and no other.
+        (
+            "src/storage/writer_sweep.rs",
+            "let scratch = crate::family::Family::Storage.scratch_root();",
+        ),
+        // The PVec row writes the storage family's documents too (libviprs/libviprs#1331).
+        (
+            "src/storage/pvec_sweep.rs",
             "let scratch = crate::family::Family::Storage.scratch_root();",
         ),
         (

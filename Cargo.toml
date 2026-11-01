@@ -20,6 +20,10 @@ pdfium = ["libviprs/pdfium"]
 # compiled), kept off by default so the everyday bench builds stay
 # light. Gates the `cross_version` binary.
 polars = ["dep:polars"]
+# The PVec row of the storage family (libviprs/libviprs#1331): the PVec sink against the PMTiles
+# sink, GDAL and libvips on one scan. Off by default because PVec's crates are a git dependency,
+# and the `engines` and `storage` stages build without them.
+pvec = ["libviprs/pvec-raster", "dep:pvec-facade", "dep:pvec-geometry"]
 
 # Pinned measurement profile. Benchmark numbers are only meaningful under
 # a fixed optimizer configuration; this is THE config the committed
@@ -32,6 +36,10 @@ codegen-units = 1
 
 [dependencies]
 libviprs = { path = "../libviprs" }
+# Same pin as libviprs's own (`Cargo.toml` there): the facade renamed because `pvec` is a module in
+# the measured core, and the geometry crate for the outline entity an artifact needs.
+pvec-facade = { package = "pvec", git = "https://github.com/libviprs/pvec", rev = "b9f441618153d256777121a6a1518b15e7f42099", version = "0.0.0", features = ["unstable-stream"], optional = true }
+pvec-geometry = { git = "https://github.com/libviprs/pvec", rev = "b9f441618153d256777121a6a1518b15e7f42099", version = "0.0.0", optional = true }
 chrono = { version = "0.4", features = ["serde"] }
 # NOTE: criterion is deliberately a [dev-dependency] ONLY (below), never a
 # normal dependency. Nothing under src/ uses it — it is consumed solely by
@@ -196,6 +204,21 @@ required-features = ["polars"]
 name = "storage"
 path = "src/storage_main.rs"
 
+# The PMTiles writer sweep (libviprs-bench #132): the bounded-memory writer's
+# layouts, emission modes and dedupe budgets, the previous-revision baseline,
+# and go-pmtiles as the external reference. It emits the storage family's own
+# document envelope, so the same aggregator archives it.
+[[bin]]
+name = "pmtiles-writer"
+path = "src/pmtiles_writer_main.rs"
+
+# The PVec row (libviprs/libviprs#1331): generate one scan into PMTiles, PVec, GDAL and libvips,
+# with the storage family's document envelope. Needs the `pvec` feature.
+[[bin]]
+name = "pvec-sink"
+path = "src/pvec_sink_main.rs"
+required-features = ["pvec"]
+
 # The engines family's document runner (issue #75): the same envelope the
 # storage family emits, over monolithic vs streaming vs mapreduce. It is its own
 # binary for the same two reasons `storage` is: it builds with no cargo features
@@ -212,3 +235,7 @@ path = "src/engines_main.rs"
 # released pdfium-render carries both (libviprs/pdfium-render#15).
 [patch.crates-io]
 pdfium-render = { git = "https://github.com/libviprs/pdfium-render", tag = "v0.9.4-viprs.1" }
+
+[[test]]
+name = "pvec_sweep"
+required-features = ["pvec"]

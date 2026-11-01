@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { releasesOf, seriesForMetric, buildReleaseCharts } from './release-history.mjs';
+import { releasesOf, seriesForMetric, buildReleaseCharts, isWriterSweep } from './release-history.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..');
@@ -101,15 +101,39 @@ test('fewer than two releases refuses to draw, and says why', () => {
     skipped.map((s) => s.reason).join('; '));
 });
 
-test('the real archive is read, and today it cannot draw a release trend yet', () => {
-  const reports = loadArchive();
+test('the real archive is read: engines holds one release and cannot draw a trend yet, storage holds two and can', () => {
+  // The writer sweep's documents are filed beside the storage sweep's and are not
+  // release steps; see `isWriterSweep`.
+  const reports = loadArchive().filter((r) => !isWriterSweep(r));
   assert.ok(reports.length >= 4, `expected archived reports, got ${reports.length}`);
-  const versions = new Set(reports.map((r) => r.provenance.library.version));
-  assert.equal(versions.size, 1,
-    `the archive holds ${[...versions].join(', ')}; when a second release lands this assertion is the thing to update`);
-  const { charts, skipped } = buildReleaseCharts(reports.filter((r) => r.family === 'libviprs-engines'));
-  assert.deepEqual(charts, [], 'one release must not be drawn as a trend');
-  assert.ok(skipped.length > 0, 'and the run says so rather than writing nothing quietly');
+  const versionsOf = (family) => new Set(
+    reports.filter((r) => r.family === family).map((r) => r.provenance.library.version));
+  const engines = versionsOf('libviprs-engines');
+  assert.equal(engines.size, 1,
+    `engines holds ${[...engines].join(', ')}; when a second release lands this assertion is the thing to update`);
+  const drawn = buildReleaseCharts(reports.filter((r) => r.family === 'libviprs-engines'));
+  assert.deepEqual(drawn.charts, [], 'one release must not be drawn as a trend');
+  assert.ok(drawn.skipped.length > 0, 'and the run says so rather than writing nothing quietly');
+  assert.ok(versionsOf('libviprs-storage').size >= 2, 'storage holds a second release');
+  const storage = buildReleaseCharts(reports.filter((r) => r.family === 'libviprs-storage'));
+  assert.ok(storage.charts.length > 0, 'two releases is a trend, so storage draws one');
+});
+
+/* A writer sweep is a storage-family document by envelope only. Filed as a
+ * release it would draw a pinned revision as a release, and two of its documents
+ * share a version, so one would silently replace the other. */
+test('a writer sweep document is not a release step, and the run says so', () => {
+  const sweep = (version, startedAt) => ({
+    family: 'libviprs-storage',
+    startedAt,
+    provenance: { library: { version, commit: 'c' }, invocation: { command: 'pmtiles-writer' } },
+    cells: [{ scenario: 'build_from_tiles', metric: 'wall', outcome: 'ok', median: 1, cell: 'x', backend: 'b', unit: 'ms', direction: 'lower-is-better', scale: 1 }],
+  });
+  const { charts, skipped } = buildReleaseCharts([sweep('0.5.0', '2026-10-24T01:00:00Z'), sweep('0.6.1', '2026-10-24T02:00:00Z')]);
+  assert.deepEqual(charts, []);
+  assert.ok(skipped.some((s) => /writer sweep/.test(s.reason)), skipped.map((s) => s.reason).join('; '));
+  assert.ok(isWriterSweep(sweep('0.5.0', 'x')));
+  assert.ok(!isWriterSweep({ provenance: { invocation: { command: 'storage' } } }));
 });
 
 function loadArchive() {

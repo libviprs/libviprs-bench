@@ -62,8 +62,14 @@ pub mod integrity;
 /// The two declared cost models (issue #67). Not measurements, and never
 /// charted on an axis carrying one.
 pub mod model;
+/// The PVec row: one scan into PMTiles, PVec, GDAL and libvips (libviprs/libviprs#1331).
+#[cfg(feature = "pvec")]
+pub mod pvec_sweep;
 pub mod scenarios;
 pub mod stats;
+/// The PMTiles writer sweep: layouts, emission, dedupe budgets, a previous
+/// revision and go-pmtiles (libviprs-bench #132).
+pub mod writer_sweep;
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

@@ -42,6 +42,12 @@ jobs:
       - name: Nothing the capture sends to the NAS runs outside a container
         run: node --test tools/capture-nas.test.mjs
 
+      # The writer capture script (libviprs-bench #132), held to the same rule:
+      # one docker invocation per remote command, the shared driver image left
+      # alone, cleanup from inside a container.
+      - name: Nothing the writer capture sends to the host runs outside a container
+        run: node --test tools/capture-writer.test.mjs
+
       - name: The driver's own guards
         run: python3 -m unittest discover -s tools -t tools -p 'test_capture.py' -v
 

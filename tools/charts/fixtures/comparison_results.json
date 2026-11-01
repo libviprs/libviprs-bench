@@ -7,20 +7,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 3755333
+      "nanos": 8615254
     },
     "tracked_memory_bytes": 786432,
-    "peak_rss_bytes": 16924672,
+    "peak_rss_bytes": 18378752,
     "stats": {
       "n": 7,
-      "wall_ms_median": 3.755333,
-      "wall_ms_min": 3.6409160000000003,
-      "wall_ms_iqr": 0.1079169999999996,
-      "wall_ms_ci95": 0.05678189054004216,
-      "rss_mb_median": 16.125,
-      "rss_mb_min": 16.09375,
-      "rss_mb_iqr": 0.03125,
-      "rss_mb_ci95": 0.01472844470177803
+      "wall_ms_median": 8.615253999999998,
+      "wall_ms_min": 6.048688,
+      "wall_ms_iqr": 1.9066965000000007,
+      "wall_ms_ci95": 1.1146027113902528,
+      "rss_mb_median": 17.60546875,
+      "rss_mb_min": 17.4453125,
+      "rss_mb_iqr": 0.205078125,
+      "rss_mb_ci95": 0.13737343251494266
     },
     "per_level_tiles": [
       1,
@@ -34,7 +34,13 @@
       1,
       4
     ],
-    "equivalence_psnr_db": null,
+    "artefact": {
+      "output_bytes": 518500,
+      "filesystem_entries": 24,
+      "directories": 11,
+      "allocated_bytes": 598016
+    },
+    "equivalence_psnr_db": 100.0,
     "tiles_produced": 13,
     "levels_processed": 10,
     "tiles_skipped": 0,
@@ -52,20 +58,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 3896917
+      "nanos": 8222683
     },
     "tracked_memory_bytes": 786432,
-    "peak_rss_bytes": 16957440,
+    "peak_rss_bytes": 18870272,
     "stats": {
       "n": 7,
-      "wall_ms_median": 3.896917,
-      "wall_ms_min": 3.8145409999999997,
-      "wall_ms_iqr": 0.047667000000000126,
-      "wall_ms_ci95": 0.04931417071370871,
-      "rss_mb_median": 16.21875,
-      "rss_mb_min": 16.171875,
-      "rss_mb_iqr": 0.0390625,
-      "rss_mb_ci95": 0.018561553006146873
+      "wall_ms_median": 8.222683,
+      "wall_ms_min": 5.984019999999999,
+      "wall_ms_iqr": 1.5334395,
+      "wall_ms_ci95": 1.0209659928127992,
+      "rss_mb_median": 17.953125,
+      "rss_mb_min": 17.52734375,
+      "rss_mb_iqr": 0.232421875,
+      "rss_mb_ci95": 0.17995760948328218
     },
     "per_level_tiles": [
       1,
@@ -79,7 +85,13 @@
       1,
       4
     ],
-    "equivalence_psnr_db": null,
+    "artefact": {
+      "output_bytes": 518500,
+      "filesystem_entries": 24,
+      "directories": 11,
+      "allocated_bytes": 598016
+    },
+    "equivalence_psnr_db": 100.0,
     "tiles_produced": 13,
     "levels_processed": 10,
     "tiles_skipped": 0,
@@ -97,20 +109,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 3860417
+      "nanos": 9506678
     },
     "tracked_memory_bytes": 786432,
-    "peak_rss_bytes": 16990208,
+    "peak_rss_bytes": 18587648,
     "stats": {
       "n": 7,
-      "wall_ms_median": 3.860417,
-      "wall_ms_min": 3.8141249999999998,
-      "wall_ms_iqr": 0.0788755000000001,
-      "wall_ms_ci95": 0.07261750926077991,
-      "rss_mb_median": 16.21875,
-      "rss_mb_min": 16.171875,
-      "rss_mb_iqr": 0.046875,
-      "rss_mb_ci95": 0.020981762914493145
+      "wall_ms_median": 9.506677999999999,
+      "wall_ms_min": 6.529197,
+      "wall_ms_iqr": 0.6144324999999995,
+      "wall_ms_ci95": 0.8815184937281809,
+      "rss_mb_median": 17.7265625,
+      "rss_mb_min": 17.39453125,
+      "rss_mb_iqr": 0.1953125,
+      "rss_mb_ci95": 0.15088333116151642
     },
     "per_level_tiles": [
       1,
@@ -124,7 +136,13 @@
       1,
       4
     ],
-    "equivalence_psnr_db": null,
+    "artefact": {
+      "output_bytes": 518500,
+      "filesystem_entries": 24,
+      "directories": 11,
+      "allocated_bytes": 598016
+    },
+    "equivalence_psnr_db": 100.0,
     "tiles_produced": 13,
     "levels_processed": 10,
     "tiles_skipped": 0,
@@ -142,20 +160,20 @@
     "measurement_path": "ffi",
     "wall_time": {
       "secs": 0,
-      "nanos": 16798292
+      "nanos": 29657952
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 27312128,
+    "peak_rss_bytes": 24989696,
     "stats": {
       "n": 7,
-      "wall_ms_median": 16.798292,
-      "wall_ms_min": 16.609375,
-      "wall_ms_iqr": 0.20791649999999962,
-      "wall_ms_ci95": 0.09979623174875264,
-      "rss_mb_median": 26.140625,
-      "rss_mb_min": 26.046875,
-      "rss_mb_iqr": 0.078125,
-      "rss_mb_ci95": 0.0440407008724127
+      "wall_ms_median": 29.657952,
+      "wall_ms_min": 27.811973000000002,
+      "wall_ms_iqr": 75.79864500000001,
+      "wall_ms_ci95": 53.87009368683677,
+      "rss_mb_median": 22.92578125,
+      "rss_mb_min": 22.58203125,
+      "rss_mb_iqr": 0.806640625,
+      "rss_mb_ci95": 0.3851548132157109
     },
     "per_level_tiles": [
       1,
@@ -169,6 +187,7 @@
       1,
       4
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 13,
     "levels_processed": 10,
@@ -187,20 +206,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 4066833
+      "nanos": 7470328
     },
     "tracked_memory_bytes": 786432,
-    "peak_rss_bytes": 17596416,
+    "peak_rss_bytes": 18423808,
     "stats": {
       "n": 7,
-      "wall_ms_median": 4.066833,
-      "wall_ms_min": 3.90875,
-      "wall_ms_iqr": 0.1625420000000002,
-      "wall_ms_ci95": 0.07343848909363714,
-      "rss_mb_median": 16.78125,
-      "rss_mb_min": 16.71875,
-      "rss_mb_iqr": 0.0546875,
-      "rss_mb_ci95": 0.02913018551834734
+      "wall_ms_median": 7.470328,
+      "wall_ms_min": 6.890446,
+      "wall_ms_iqr": 2.5302369999999996,
+      "wall_ms_ci95": 16.034958511394546,
+      "rss_mb_median": 17.5703125,
+      "rss_mb_min": 17.06640625,
+      "rss_mb_iqr": 0.216796875,
+      "rss_mb_ci95": 0.17968706974586168
     },
     "per_level_tiles": [
       1,
@@ -214,7 +233,13 @@
       1,
       4
     ],
-    "equivalence_psnr_db": null,
+    "artefact": {
+      "output_bytes": 518500,
+      "filesystem_entries": 24,
+      "directories": 11,
+      "allocated_bytes": 598016
+    },
+    "equivalence_psnr_db": 100.0,
     "tiles_produced": 13,
     "levels_processed": 10,
     "tiles_skipped": 0,
@@ -232,20 +257,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 3871917
+      "nanos": 6274217
     },
     "tracked_memory_bytes": 786432,
-    "peak_rss_bytes": 17006592,
+    "peak_rss_bytes": 18661376,
     "stats": {
       "n": 7,
-      "wall_ms_median": 3.871917,
-      "wall_ms_min": 3.829417,
-      "wall_ms_iqr": 0.03964500000000015,
-      "wall_ms_ci95": 0.023943041784613272,
-      "rss_mb_median": 16.21875,
-      "rss_mb_min": 16.171875,
-      "rss_mb_iqr": 0.03125,
-      "rss_mb_ci95": 0.02287306458114726
+      "wall_ms_median": 6.274217,
+      "wall_ms_min": 5.971651,
+      "wall_ms_iqr": 0.7999825000000005,
+      "wall_ms_ci95": 181.44713915181998,
+      "rss_mb_median": 17.796875,
+      "rss_mb_min": 17.6015625,
+      "rss_mb_iqr": 0.203125,
+      "rss_mb_ci95": 0.13914288407065592
     },
     "per_level_tiles": [
       1,
@@ -259,7 +284,13 @@
       1,
       4
     ],
-    "equivalence_psnr_db": null,
+    "artefact": {
+      "output_bytes": 518500,
+      "filesystem_entries": 24,
+      "directories": 11,
+      "allocated_bytes": 598016
+    },
+    "equivalence_psnr_db": 100.0,
     "tiles_produced": 13,
     "levels_processed": 10,
     "tiles_skipped": 0,
@@ -277,20 +308,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 3739958
+      "nanos": 8709895
     },
     "tracked_memory_bytes": 786432,
-    "peak_rss_bytes": 17809408,
+    "peak_rss_bytes": 19054592,
     "stats": {
       "n": 7,
-      "wall_ms_median": 3.7399579999999997,
-      "wall_ms_min": 3.681083,
-      "wall_ms_iqr": 0.07141650000000022,
-      "wall_ms_ci95": 0.03848250685861998,
-      "rss_mb_median": 16.984375,
-      "rss_mb_min": 16.96875,
-      "rss_mb_iqr": 0.015625,
-      "rss_mb_ci95": 0.0366038761608658
+      "wall_ms_median": 8.709895000000001,
+      "wall_ms_min": 5.86846,
+      "wall_ms_iqr": 44.484971,
+      "wall_ms_ci95": 74.43774767749763,
+      "rss_mb_median": 17.98828125,
+      "rss_mb_min": 17.54296875,
+      "rss_mb_iqr": 0.345703125,
+      "rss_mb_ci95": 0.19021713966242415
     },
     "per_level_tiles": [
       1,
@@ -304,7 +335,13 @@
       1,
       4
     ],
-    "equivalence_psnr_db": null,
+    "artefact": {
+      "output_bytes": 518500,
+      "filesystem_entries": 24,
+      "directories": 11,
+      "allocated_bytes": 598016
+    },
+    "equivalence_psnr_db": 100.0,
     "tiles_produced": 13,
     "levels_processed": 10,
     "tiles_skipped": 0,
@@ -322,20 +359,20 @@
     "measurement_path": "ffi",
     "wall_time": {
       "secs": 0,
-      "nanos": 12185291
+      "nanos": 21175663
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 28622848,
+    "peak_rss_bytes": 25407488,
     "stats": {
       "n": 7,
-      "wall_ms_median": 12.185291,
-      "wall_ms_min": 12.126041,
-      "wall_ms_iqr": 0.10391649999999863,
-      "wall_ms_ci95": 0.11271521887596661,
-      "rss_mb_median": 27.546875,
-      "rss_mb_min": 27.28125,
-      "rss_mb_iqr": 0.265625,
-      "rss_mb_ci95": 0.12018648703854633
+      "wall_ms_median": 21.175663,
+      "wall_ms_min": 17.326239,
+      "wall_ms_iqr": 67.0482715,
+      "wall_ms_ci95": 59.52460892436524,
+      "rss_mb_median": 23.9921875,
+      "rss_mb_min": 23.66015625,
+      "rss_mb_iqr": 0.376953125,
+      "rss_mb_ci95": 0.21597708648840694
     },
     "per_level_tiles": [
       1,
@@ -349,6 +386,7 @@
       1,
       4
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 13,
     "levels_processed": 10,
@@ -367,20 +405,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 9446291
+      "nanos": 17776984
     },
     "tracked_memory_bytes": 3145728,
-    "peak_rss_bytes": 22495232,
+    "peak_rss_bytes": 24236032,
     "stats": {
       "n": 7,
-      "wall_ms_median": 9.446291,
-      "wall_ms_min": 9.278542000000002,
-      "wall_ms_iqr": 0.20604149999999954,
-      "wall_ms_ci95": 0.09801578725491361,
-      "rss_mb_median": 21.4375,
-      "rss_mb_min": 21.375,
-      "rss_mb_iqr": 0.046875,
-      "rss_mb_ci95": 0.02575930252678955
+      "wall_ms_median": 17.776984,
+      "wall_ms_min": 17.238249,
+      "wall_ms_iqr": 0.5545935000000028,
+      "wall_ms_ci95": 0.2691307578567437,
+      "rss_mb_median": 22.96484375,
+      "rss_mb_min": 22.87109375,
+      "rss_mb_iqr": 0.07421875,
+      "rss_mb_ci95": 0.05976053559484999
     },
     "per_level_tiles": [
       1,
@@ -395,6 +433,12 @@
       4,
       16
     ],
+    "artefact": {
+      "output_bytes": 2035618,
+      "filesystem_entries": 41,
+      "directories": 12,
+      "allocated_bytes": 2166784
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -413,20 +457,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 10553625
+      "nanos": 18967715
     },
     "tracked_memory_bytes": 1966080,
-    "peak_rss_bytes": 22315008,
+    "peak_rss_bytes": 22024192,
     "stats": {
       "n": 7,
-      "wall_ms_median": 10.553625,
-      "wall_ms_min": 10.243958,
-      "wall_ms_iqr": 0.23224999999999874,
-      "wall_ms_ci95": 0.11668848747151714,
-      "rss_mb_median": 21.28125,
-      "rss_mb_min": 21.25,
-      "rss_mb_iqr": 0.0234375,
-      "rss_mb_ci95": 0.013365845776954533
+      "wall_ms_median": 18.967715,
+      "wall_ms_min": 18.677005,
+      "wall_ms_iqr": 0.6482884999999996,
+      "wall_ms_ci95": 0.31395126055979966,
+      "rss_mb_median": 21.54296875,
+      "rss_mb_min": 21.00390625,
+      "rss_mb_iqr": 0.373046875,
+      "rss_mb_ci95": 0.2108697807964076
     },
     "per_level_tiles": [
       1,
@@ -441,6 +485,12 @@
       4,
       16
     ],
+    "artefact": {
+      "output_bytes": 2035618,
+      "filesystem_entries": 41,
+      "directories": 12,
+      "allocated_bytes": 2166784
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -459,20 +509,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 10484000
+      "nanos": 19279919
     },
     "tracked_memory_bytes": 1966080,
-    "peak_rss_bytes": 22331392,
+    "peak_rss_bytes": 22659072,
     "stats": {
       "n": 7,
-      "wall_ms_median": 10.484,
-      "wall_ms_min": 10.261875,
-      "wall_ms_iqr": 0.155124500000003,
-      "wall_ms_ci95": 0.08371181821075148,
-      "rss_mb_median": 21.265625,
-      "rss_mb_min": 21.21875,
-      "rss_mb_iqr": 0.015625,
-      "rss_mb_ci95": 0.01821457749532866
+      "wall_ms_median": 19.279919,
+      "wall_ms_min": 18.931221,
+      "wall_ms_iqr": 0.3511500000000005,
+      "wall_ms_ci95": 0.2522387152266637,
+      "rss_mb_median": 21.44921875,
+      "rss_mb_min": 21.125,
+      "rss_mb_iqr": 0.1953125,
+      "rss_mb_ci95": 0.14191239411752118
     },
     "per_level_tiles": [
       1,
@@ -487,6 +537,12 @@
       4,
       16
     ],
+    "artefact": {
+      "output_bytes": 2035618,
+      "filesystem_entries": 41,
+      "directories": 12,
+      "allocated_bytes": 2166784
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -505,20 +561,20 @@
     "measurement_path": "ffi",
     "wall_time": {
       "secs": 0,
-      "nanos": 53032250
+      "nanos": 74559400
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 31735808,
+    "peak_rss_bytes": 29179904,
     "stats": {
       "n": 7,
-      "wall_ms_median": 53.032250000000005,
-      "wall_ms_min": 52.423958999999996,
-      "wall_ms_iqr": 1.010708000000001,
-      "wall_ms_ci95": 0.5299400283486895,
-      "rss_mb_median": 30.265625,
-      "rss_mb_min": 30.125,
-      "rss_mb_iqr": 0.078125,
-      "rss_mb_ci95": 0.11239578506331988
+      "wall_ms_median": 74.5594,
+      "wall_ms_min": 71.817057,
+      "wall_ms_iqr": 4.547387000000015,
+      "wall_ms_ci95": 1.96332115404699,
+      "rss_mb_median": 27.5,
+      "rss_mb_min": 27.203125,
+      "rss_mb_iqr": 0.244140625,
+      "rss_mb_ci95": 0.15995197847062306
     },
     "per_level_tiles": [
       1,
@@ -533,6 +589,7 @@
       4,
       16
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -551,20 +608,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 9951417
+      "nanos": 18991086
     },
     "tracked_memory_bytes": 3145728,
-    "peak_rss_bytes": 23429120,
+    "peak_rss_bytes": 25133056,
     "stats": {
       "n": 7,
-      "wall_ms_median": 9.951417000000001,
-      "wall_ms_min": 9.786249999999999,
-      "wall_ms_iqr": 0.1271249999999995,
-      "wall_ms_ci95": 0.06305309306674194,
-      "rss_mb_median": 22.15625,
-      "rss_mb_min": 22.109375,
-      "rss_mb_iqr": 0.2109375,
-      "rss_mb_ci95": 0.16326821618633147
+      "wall_ms_median": 18.991086,
+      "wall_ms_min": 18.084985,
+      "wall_ms_iqr": 728.5597725,
+      "wall_ms_ci95": 3184.793123614132,
+      "rss_mb_median": 23.95703125,
+      "rss_mb_min": 23.4375,
+      "rss_mb_iqr": 0.244140625,
+      "rss_mb_ci95": 0.1851455253574761
     },
     "per_level_tiles": [
       1,
@@ -579,6 +636,12 @@
       4,
       16
     ],
+    "artefact": {
+      "output_bytes": 2035618,
+      "filesystem_entries": 41,
+      "directories": 12,
+      "allocated_bytes": 2166784
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -597,20 +660,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 10500917
+      "nanos": 18920705
     },
     "tracked_memory_bytes": 1966080,
-    "peak_rss_bytes": 22315008,
+    "peak_rss_bytes": 23252992,
     "stats": {
       "n": 7,
-      "wall_ms_median": 10.500917,
-      "wall_ms_min": 10.340666,
-      "wall_ms_iqr": 0.07585349999999913,
-      "wall_ms_ci95": 0.07649987019663033,
-      "rss_mb_median": 21.296875,
-      "rss_mb_min": 21.234375,
-      "rss_mb_iqr": 0.015625,
-      "rss_mb_ci95": 0.016944302139657443
+      "wall_ms_median": 18.920704999999998,
+      "wall_ms_min": 18.566367,
+      "wall_ms_iqr": 0.8315514999999998,
+      "wall_ms_ci95": 1.6751597373210445,
+      "rss_mb_median": 22.17578125,
+      "rss_mb_min": 22.17578125,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -625,6 +688,12 @@
       4,
       16
     ],
+    "artefact": {
+      "output_bytes": 2035618,
+      "filesystem_entries": 41,
+      "directories": 12,
+      "allocated_bytes": 2166784
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -643,20 +712,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 9639125
+      "nanos": 18036673
     },
     "tracked_memory_bytes": 1966080,
-    "peak_rss_bytes": 22691840,
+    "peak_rss_bytes": 23781376,
     "stats": {
       "n": 7,
-      "wall_ms_median": 9.639125,
-      "wall_ms_min": 9.512958,
-      "wall_ms_iqr": 0.18629199999999813,
-      "wall_ms_ci95": 0.12774559624181805,
-      "rss_mb_median": 21.625,
-      "rss_mb_min": 21.421875,
-      "rss_mb_iqr": 0.0703125,
-      "rss_mb_ci95": 0.0604109192668566
+      "wall_ms_median": 18.036673,
+      "wall_ms_min": 17.593808999999997,
+      "wall_ms_iqr": 0.7416940000000025,
+      "wall_ms_ci95": 1.638073663667432,
+      "rss_mb_median": 23.04296875,
+      "rss_mb_min": 22.6796875,
+      "rss_mb_iqr": 0.287109375,
+      "rss_mb_ci95": 0.15446806826843967
     },
     "per_level_tiles": [
       1,
@@ -671,6 +740,12 @@
       4,
       16
     ],
+    "artefact": {
+      "output_bytes": 2035618,
+      "filesystem_entries": 41,
+      "directories": 12,
+      "allocated_bytes": 2166784
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -689,20 +764,20 @@
     "measurement_path": "ffi",
     "wall_time": {
       "secs": 0,
-      "nanos": 32405167
+      "nanos": 54157785
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 34406400,
+    "peak_rss_bytes": 31891456,
     "stats": {
       "n": 7,
-      "wall_ms_median": 32.405167,
-      "wall_ms_min": 31.970625000000002,
-      "wall_ms_iqr": 0.3719170000000034,
-      "wall_ms_ci95": 0.3413607715653028,
-      "rss_mb_median": 32.84375,
-      "rss_mb_min": 32.5,
-      "rss_mb_iqr": 0.203125,
-      "rss_mb_ci95": 0.14516827520157422
+      "wall_ms_median": 54.157785,
+      "wall_ms_min": 48.580275,
+      "wall_ms_iqr": 6.1181105,
+      "wall_ms_ci95": 463.87257335018364,
+      "rss_mb_median": 30.4140625,
+      "rss_mb_min": 30.06640625,
+      "rss_mb_iqr": 0.607421875,
+      "rss_mb_ci95": 0.31616501863807867
     },
     "per_level_tiles": [
       1,
@@ -717,6 +792,7 @@
       4,
       16
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 29,
     "levels_processed": 11,
@@ -735,20 +811,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 32685875
+      "nanos": 339560458
     },
     "tracked_memory_bytes": 12582912,
-    "peak_rss_bytes": 44597248,
+    "peak_rss_bytes": 45158400,
     "stats": {
       "n": 7,
-      "wall_ms_median": 32.685875,
-      "wall_ms_min": 32.403541000000004,
-      "wall_ms_iqr": 0.24881249999999966,
-      "wall_ms_ci95": 0.15661786526296773,
-      "rss_mb_median": 42.546875,
-      "rss_mb_min": 42.515625,
-      "rss_mb_iqr": 0.0390625,
-      "rss_mb_ci95": 0.018214577495328663
+      "wall_ms_median": 339.560458,
+      "wall_ms_min": 141.682261,
+      "wall_ms_iqr": 239.92179349999998,
+      "wall_ms_ci95": 117.56013324038287,
+      "rss_mb_median": 43.06640625,
+      "rss_mb_min": 41.94140625,
+      "rss_mb_iqr": 0.279296875,
+      "rss_mb_ci95": 0.32307247165319447
     },
     "per_level_tiles": [
       1,
@@ -764,6 +840,12 @@
       16,
       64
     ],
+    "artefact": {
+      "output_bytes": 8141088,
+      "filesystem_entries": 106,
+      "directories": 13,
+      "allocated_bytes": 8486912
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -782,20 +864,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 36710041
+      "nanos": 454930205
     },
     "tracked_memory_bytes": 5505024,
-    "peak_rss_bytes": 36339712,
+    "peak_rss_bytes": 38961152,
     "stats": {
       "n": 7,
-      "wall_ms_median": 36.710041,
-      "wall_ms_min": 36.489875,
-      "wall_ms_iqr": 0.315250000000006,
-      "wall_ms_ci95": 0.15455676752116249,
-      "rss_mb_median": 34.65625,
-      "rss_mb_min": 34.625,
-      "rss_mb_iqr": 0.046875,
-      "rss_mb_ci95": 0.0302054596334283
+      "wall_ms_median": 454.930205,
+      "wall_ms_min": 343.975355,
+      "wall_ms_iqr": 297.54928749999993,
+      "wall_ms_ci95": 459.80945833592824,
+      "rss_mb_median": 37.15625,
+      "rss_mb_min": 37.15625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -811,6 +893,12 @@
       16,
       64
     ],
+    "artefact": {
+      "output_bytes": 8141088,
+      "filesystem_entries": 106,
+      "directories": 13,
+      "allocated_bytes": 8486912
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -829,20 +917,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 36534583
+      "nanos": 405899796
     },
     "tracked_memory_bytes": 5505024,
-    "peak_rss_bytes": 36372480,
+    "peak_rss_bytes": 38961152,
     "stats": {
       "n": 7,
-      "wall_ms_median": 36.534583000000005,
-      "wall_ms_min": 36.400957999999996,
-      "wall_ms_iqr": 0.2444369999999907,
-      "wall_ms_ci95": 0.19867375744985927,
-      "rss_mb_median": 34.65625,
-      "rss_mb_min": 34.609375,
-      "rss_mb_iqr": 0.0546875,
-      "rss_mb_ci95": 0.029886939734048826
+      "wall_ms_median": 405.899796,
+      "wall_ms_min": 68.366893,
+      "wall_ms_iqr": 245.62323349999997,
+      "wall_ms_ci95": 143.26165233590268,
+      "rss_mb_median": 37.15625,
+      "rss_mb_min": 37.15625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -858,6 +946,12 @@
       16,
       64
     ],
+    "artefact": {
+      "output_bytes": 8141088,
+      "filesystem_entries": 106,
+      "directories": 13,
+      "allocated_bytes": 8486912
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -876,20 +970,20 @@
     "measurement_path": "ffi",
     "wall_time": {
       "secs": 0,
-      "nanos": 195629584
+      "nanos": 978975740
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 44679168,
+    "peak_rss_bytes": 41803776,
     "stats": {
       "n": 7,
-      "wall_ms_median": 195.629584,
-      "wall_ms_min": 193.912375,
-      "wall_ms_iqr": 2.5219374999999786,
-      "wall_ms_ci95": 2.518482242055801,
-      "rss_mb_median": 42.78125,
-      "rss_mb_min": 42.421875,
-      "rss_mb_iqr": 0.2734375,
-      "rss_mb_ci95": 0.12887079689233968
+      "wall_ms_median": 978.97574,
+      "wall_ms_min": 514.0064319999999,
+      "wall_ms_iqr": 725.2818464999999,
+      "wall_ms_ci95": 433.07488007232064,
+      "rss_mb_median": 40.1640625,
+      "rss_mb_min": 39.3125,
+      "rss_mb_iqr": 0.25390625,
+      "rss_mb_ci95": 0.31322525216487573
     },
     "per_level_tiles": [
       1,
@@ -905,6 +999,7 @@
       16,
       64
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -923,20 +1018,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 33000916
+      "nanos": 455018121
     },
     "tracked_memory_bytes": 12582912,
-    "peak_rss_bytes": 45334528,
+    "peak_rss_bytes": 46338048,
     "stats": {
       "n": 7,
-      "wall_ms_median": 33.000916,
-      "wall_ms_min": 32.739125,
-      "wall_ms_iqr": 0.1138339999999971,
-      "wall_ms_ci95": 0.10338304456047934,
-      "rss_mb_median": 43.40625,
-      "rss_mb_min": 43.21875,
-      "rss_mb_iqr": 0.2578125,
-      "rss_mb_ci95": 0.13039653066064807
+      "wall_ms_median": 455.018121,
+      "wall_ms_min": 65.51173,
+      "wall_ms_iqr": 930.4712565,
+      "wall_ms_ci95": 1320.9411589251697,
+      "rss_mb_median": 44.19140625,
+      "rss_mb_min": 44.19140625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.01859375
     },
     "per_level_tiles": [
       1,
@@ -952,6 +1047,12 @@
       16,
       64
     ],
+    "artefact": {
+      "output_bytes": 8141088,
+      "filesystem_entries": 106,
+      "directories": 13,
+      "allocated_bytes": 8486912
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -970,20 +1071,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 36680708
+      "nanos": 80908587
     },
     "tracked_memory_bytes": 5505024,
-    "peak_rss_bytes": 36306944,
+    "peak_rss_bytes": 46338048,
     "stats": {
       "n": 7,
-      "wall_ms_median": 36.680708,
-      "wall_ms_min": 36.553166999999995,
-      "wall_ms_iqr": 0.39545799999999076,
-      "wall_ms_ci95": 0.250168279067814,
-      "rss_mb_median": 34.640625,
-      "rss_mb_min": 34.609375,
-      "rss_mb_iqr": 0.0234375,
-      "rss_mb_ci95": 0.012879651263394775
+      "wall_ms_median": 80.908587,
+      "wall_ms_min": 69.210486,
+      "wall_ms_iqr": 288.279709,
+      "wall_ms_ci95": 685.9575006688248,
+      "rss_mb_median": 44.19140625,
+      "rss_mb_min": 44.19140625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -999,6 +1100,12 @@
       16,
       64
     ],
+    "artefact": {
+      "output_bytes": 8141088,
+      "filesystem_entries": 106,
+      "directories": 13,
+      "allocated_bytes": 8486912
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -1017,20 +1124,20 @@
     "measurement_path": "",
     "wall_time": {
       "secs": 0,
-      "nanos": 33625875
+      "nanos": 75930379
     },
     "tracked_memory_bytes": 5505024,
-    "peak_rss_bytes": 39518208,
+    "peak_rss_bytes": 46338048,
     "stats": {
       "n": 7,
-      "wall_ms_median": 33.625875,
-      "wall_ms_min": 32.943459000000004,
-      "wall_ms_iqr": 0.16024999999999068,
-      "wall_ms_ci95": 0.2104184196530127,
-      "rss_mb_median": 37.65625,
-      "rss_mb_min": 37.5,
-      "rss_mb_iqr": 0.109375,
-      "rss_mb_ci95": 0.06682922888477266
+      "wall_ms_median": 75.930379,
+      "wall_ms_min": 65.74203200000001,
+      "wall_ms_iqr": 101.59568050000004,
+      "wall_ms_ci95": 134.04016794659842,
+      "rss_mb_median": 44.19140625,
+      "rss_mb_min": 44.19140625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1046,6 +1153,12 @@
       16,
       64
     ],
+    "artefact": {
+      "output_bytes": 8141088,
+      "filesystem_entries": 106,
+      "directories": 13,
+      "allocated_bytes": 8486912
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -1064,20 +1177,20 @@
     "measurement_path": "ffi",
     "wall_time": {
       "secs": 0,
-      "nanos": 91147625
+      "nanos": 151965944
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 48791552,
+    "peak_rss_bytes": 48312320,
     "stats": {
       "n": 7,
-      "wall_ms_median": 91.14762499999999,
-      "wall_ms_min": 89.580625,
-      "wall_ms_iqr": 1.9290625000000006,
-      "wall_ms_ci95": 1.3559296480429035,
-      "rss_mb_median": 46.65625,
-      "rss_mb_min": 46.34375,
-      "rss_mb_iqr": 0.1328125,
-      "rss_mb_ci95": 0.19552546722443429
+      "wall_ms_median": 151.96594399999998,
+      "wall_ms_min": 130.89148600000001,
+      "wall_ms_iqr": 807.4331935,
+      "wall_ms_ci95": 721.4840789826641,
+      "rss_mb_median": 46.00390625,
+      "rss_mb_min": 45.46484375,
+      "rss_mb_iqr": 0.48046875,
+      "rss_mb_ci95": 0.30708155334315645
     },
     "per_level_tiles": [
       1,
@@ -1093,6 +1206,7 @@
       16,
       64
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 93,
     "levels_processed": 12,
@@ -1110,21 +1224,21 @@
     "engine": "monolithic",
     "measurement_path": "",
     "wall_time": {
-      "secs": 0,
-      "nanos": 125982375
+      "secs": 1,
+      "nanos": 163497105
     },
     "tracked_memory_bytes": 50331648,
-    "peak_rss_bytes": 132825088,
+    "peak_rss_bytes": 129773568,
     "stats": {
       "n": 7,
-      "wall_ms_median": 125.982375,
-      "wall_ms_min": 124.542875,
-      "wall_ms_iqr": 1.1030619999999942,
-      "wall_ms_ci95": 0.6326610425888802,
-      "rss_mb_median": 126.6875,
-      "rss_mb_min": 126.671875,
-      "rss_mb_iqr": 0.015625,
-      "rss_mb_ci95": 0.009451080185178129
+      "wall_ms_median": 1163.497105,
+      "wall_ms_min": 375.133285,
+      "wall_ms_iqr": 2834.857381,
+      "wall_ms_ci95": 2679.301965462064,
+      "rss_mb_median": 123.76171875,
+      "rss_mb_min": 122.44140625,
+      "rss_mb_iqr": 0.068359375,
+      "rss_mb_ci95": 0.385051266117984
     },
     "per_level_tiles": [
       1,
@@ -1141,6 +1255,12 @@
       64,
       256
     ],
+    "artefact": {
+      "output_bytes": 32525736,
+      "filesystem_entries": 363,
+      "directories": 14,
+      "allocated_bytes": 33705984
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 349,
     "levels_processed": 13,
@@ -1158,21 +1278,21 @@
     "engine": "streaming",
     "measurement_path": "",
     "wall_time": {
-      "secs": 0,
-      "nanos": 139504375
+      "secs": 1,
+      "nanos": 223439310
     },
     "tracked_memory_bytes": 10223616,
-    "peak_rss_bytes": 83853312,
+    "peak_rss_bytes": 109129728,
     "stats": {
       "n": 7,
-      "wall_ms_median": 139.504375,
-      "wall_ms_min": 138.539667,
-      "wall_ms_iqr": 0.5438329999999496,
-      "wall_ms_ci95": 0.5549117234147474,
-      "rss_mb_median": 79.96875,
-      "rss_mb_min": 79.953125,
-      "rss_mb_iqr": 0.015625,
-      "rss_mb_ci95": 0.006187184335382291
+      "wall_ms_median": 1223.43931,
+      "wall_ms_min": 435.162747,
+      "wall_ms_iqr": 1984.2362580000004,
+      "wall_ms_ci95": 4745.608363537861,
+      "rss_mb_median": 104.07421875,
+      "rss_mb_min": 104.07421875,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1189,6 +1309,12 @@
       64,
       256
     ],
+    "artefact": {
+      "output_bytes": 32525736,
+      "filesystem_entries": 363,
+      "directories": 14,
+      "allocated_bytes": 33705984
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 349,
     "levels_processed": 13,
@@ -1206,21 +1332,21 @@
     "engine": "mapreduce",
     "measurement_path": "",
     "wall_time": {
-      "secs": 0,
-      "nanos": 139899125
+      "secs": 1,
+      "nanos": 409329957
     },
     "tracked_memory_bytes": 10223616,
-    "peak_rss_bytes": 83804160,
+    "peak_rss_bytes": 109129728,
     "stats": {
       "n": 7,
-      "wall_ms_median": 139.89912500000003,
-      "wall_ms_min": 139.134291,
-      "wall_ms_iqr": 0.8460620000000176,
-      "wall_ms_ci95": 0.4158600641558215,
-      "rss_mb_median": 79.921875,
-      "rss_mb_min": 79.90625,
-      "rss_mb_iqr": 0.015625,
-      "rss_mb_ci95": 0.009451080185178129
+      "wall_ms_median": 1409.329957,
+      "wall_ms_min": 557.093575,
+      "wall_ms_iqr": 797.1412340000002,
+      "wall_ms_ci95": 3625.4603196867256,
+      "rss_mb_median": 104.07421875,
+      "rss_mb_min": 104.07421875,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1237,6 +1363,12 @@
       64,
       256
     ],
+    "artefact": {
+      "output_bytes": 32525736,
+      "filesystem_entries": 363,
+      "directories": 14,
+      "allocated_bytes": 33705984
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 349,
     "levels_processed": 13,
@@ -1254,21 +1386,21 @@
     "engine": "libvips",
     "measurement_path": "ffi",
     "wall_time": {
-      "secs": 0,
-      "nanos": 760295916
+      "secs": 7,
+      "nanos": 295580971
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 89604096,
+    "peak_rss_bytes": 109129728,
     "stats": {
       "n": 7,
-      "wall_ms_median": 760.295916,
-      "wall_ms_min": 757.7874999999999,
-      "wall_ms_iqr": 3.0178750000000036,
-      "wall_ms_ci95": 2.3676784098871186,
-      "rss_mb_median": 85.390625,
-      "rss_mb_min": 85.234375,
-      "rss_mb_iqr": 0.15625,
-      "rss_mb_ci95": 0.11839475371963627
+      "wall_ms_median": 7295.580970999999,
+      "wall_ms_min": 4243.541038,
+      "wall_ms_iqr": 3798.7656605,
+      "wall_ms_ci95": 2441.8320253732645,
+      "rss_mb_median": 104.07421875,
+      "rss_mb_min": 104.07421875,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1285,6 +1417,7 @@
       64,
       256
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 349,
     "levels_processed": 13,
@@ -1302,21 +1435,21 @@
     "engine": "monolithic",
     "measurement_path": "",
     "wall_time": {
-      "secs": 0,
-      "nanos": 123501625
+      "secs": 1,
+      "nanos": 885877773
     },
     "tracked_memory_bytes": 50331648,
-    "peak_rss_bytes": 133988352,
+    "peak_rss_bytes": 136478720,
     "stats": {
       "n": 7,
-      "wall_ms_median": 123.501625,
-      "wall_ms_min": 122.694417,
-      "wall_ms_iqr": 0.665187500000016,
-      "wall_ms_ci95": 0.4528534496068873,
-      "rss_mb_median": 127.78125,
-      "rss_mb_min": 127.625,
-      "rss_mb_iqr": 0.1796875,
-      "rss_mb_ci95": 0.09260129588726067
+      "wall_ms_median": 1885.877773,
+      "wall_ms_min": 257.567954,
+      "wall_ms_iqr": 2240.605849,
+      "wall_ms_ci95": 1106.521251870884,
+      "rss_mb_median": 130.15625,
+      "rss_mb_min": 130.15625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1333,6 +1466,12 @@
       64,
       256
     ],
+    "artefact": {
+      "output_bytes": 32525736,
+      "filesystem_entries": 363,
+      "directories": 14,
+      "allocated_bytes": 33705984
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 349,
     "levels_processed": 13,
@@ -1350,21 +1489,21 @@
     "engine": "streaming",
     "measurement_path": "",
     "wall_time": {
-      "secs": 0,
-      "nanos": 140030917
+      "secs": 1,
+      "nanos": 210711383
     },
     "tracked_memory_bytes": 10223616,
-    "peak_rss_bytes": 83853312,
+    "peak_rss_bytes": 136478720,
     "stats": {
       "n": 7,
-      "wall_ms_median": 140.03091700000002,
-      "wall_ms_min": 139.046334,
-      "wall_ms_iqr": 0.661999499999979,
-      "wall_ms_ci95": 0.4465090791704253,
-      "rss_mb_median": 79.96875,
-      "rss_mb_min": 79.890625,
-      "rss_mb_iqr": 0.0234375,
-      "rss_mb_ci95": 0.02500520779091161
+      "wall_ms_median": 1210.711383,
+      "wall_ms_min": 270.72911300000004,
+      "wall_ms_iqr": 939.60962,
+      "wall_ms_ci95": 888.0887576453033,
+      "rss_mb_median": 130.15625,
+      "rss_mb_min": 130.15625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1381,6 +1520,12 @@
       64,
       256
     ],
+    "artefact": {
+      "output_bytes": 32525736,
+      "filesystem_entries": 363,
+      "directories": 14,
+      "allocated_bytes": 33705984
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 349,
     "levels_processed": 13,
@@ -1398,21 +1543,21 @@
     "engine": "mapreduce",
     "measurement_path": "",
     "wall_time": {
-      "secs": 0,
-      "nanos": 127048292
+      "secs": 1,
+      "nanos": 142070749
     },
     "tracked_memory_bytes": 10223616,
-    "peak_rss_bytes": 91586560,
+    "peak_rss_bytes": 136478720,
     "stats": {
       "n": 7,
-      "wall_ms_median": 127.048292,
-      "wall_ms_min": 125.534208,
-      "wall_ms_iqr": 0.748228499999982,
-      "wall_ms_ci95": 0.5688190429778196,
-      "rss_mb_median": 87.421875,
-      "rss_mb_min": 87.34375,
-      "rss_mb_iqr": 0.421875,
-      "rss_mb_ci95": 0.2840607237751581
+      "wall_ms_median": 1142.070749,
+      "wall_ms_min": 251.950869,
+      "wall_ms_iqr": 1623.4783745000004,
+      "wall_ms_ci95": 1048.218165859651,
+      "rss_mb_median": 130.15625,
+      "rss_mb_min": 130.15625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1429,6 +1574,12 @@
       64,
       256
     ],
+    "artefact": {
+      "output_bytes": 32525736,
+      "filesystem_entries": 363,
+      "directories": 14,
+      "allocated_bytes": 33705984
+    },
     "equivalence_psnr_db": 100.0,
     "tiles_produced": 349,
     "levels_processed": 13,
@@ -1446,21 +1597,21 @@
     "engine": "libvips",
     "measurement_path": "ffi",
     "wall_time": {
-      "secs": 0,
-      "nanos": 287123333
+      "secs": 2,
+      "nanos": 866057181
     },
     "tracked_memory_bytes": 0,
-    "peak_rss_bytes": 94420992,
+    "peak_rss_bytes": 136478720,
     "stats": {
       "n": 7,
-      "wall_ms_median": 287.123333,
-      "wall_ms_min": 283.11037500000003,
-      "wall_ms_iqr": 1.7636669999999413,
-      "wall_ms_ci95": 1.4763483112960145,
-      "rss_mb_median": 89.953125,
-      "rss_mb_min": 89.859375,
-      "rss_mb_iqr": 0.171875,
-      "rss_mb_ci95": 0.2268118599008144
+      "wall_ms_median": 2866.057181,
+      "wall_ms_min": 422.387075,
+      "wall_ms_iqr": 1283.0013360000003,
+      "wall_ms_ci95": 1425.955142625352,
+      "rss_mb_median": 130.15625,
+      "rss_mb_min": 130.15625,
+      "rss_mb_iqr": 0.0,
+      "rss_mb_ci95": 0.0
     },
     "per_level_tiles": [
       1,
@@ -1477,6 +1628,7 @@
       64,
       256
     ],
+    "artefact": null,
     "equivalence_psnr_db": null,
     "tiles_produced": 349,
     "levels_processed": 13,

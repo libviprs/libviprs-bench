@@ -1,7 +1,7 @@
 /* GENERATED from tools/contract/upstream/dashboard.js (causl-org @ cd65c76)
    by tools/contract/parameterize.mjs. Do not edit: change config.json, or
    the parameteriser, and re-run `parameterize.mjs --write`.
-   Edits applied: preamble, LIBRARY_ORDER, LIBRARY_LABEL, LIBRARY_ANNOTATION, LIBRARY_COLOR, LIBRARY_DASH, DEFAULT_LIBRARIES, DEFAULT_SCALES, VERDICT_COLOR, REGRESSION_PCT, IMPROVED_PCT, PASS_PCT, NOISY_PROXY, gate-check, noise-check, carry-fields, verdict-chip, era-axes */
+   Edits applied: preamble, default-view-label, default-view-aria, LIBRARY_ORDER, LIBRARY_LABEL, LIBRARY_ANNOTATION, LIBRARY_COLOR, LIBRARY_DASH, DEFAULT_LIBRARIES, DEFAULT_SCALES, VERDICT_COLOR, REGRESSION_PCT, IMPROVED_PCT, PASS_PCT, NOISY_PROXY, gate-check, noise-check, carry-fields, verdict-chip, era-axes */
 /* ============================================================
    Series-id vocabulary.
    ------------------------------------------------------------
@@ -297,6 +297,28 @@
       parts.push(axis.id + '=' + shown.join('\u0001'))
     }
     return anyClaim ? parts.join('\u0002') : null
+  }
+
+  /** The Default view button's words, from the same config that sets what the
+   *  button restores. With no defaults in the config this returns upstream's
+   *  causl wording untouched. `defaults.viewLabel` overrides the visible text. */
+  const __UPSTREAM_VIEW_TEXT = 'Default view (causl-ts + causl-wasm + mobx @ 10k)'
+  const __UPSTREAM_VIEW_ARIA = 'Restore the default view: causl-ts, causl-wasm and mobx at scale 10000'
+  function __defaultViewText(aria) {
+    const libs = __cfg('defaults.libraries', null)
+    if (!Array.isArray(libs)) return aria ? __UPSTREAM_VIEW_ARIA : __UPSTREAM_VIEW_TEXT
+    const scales = __cfg('defaults.scales', [10000])
+    const names = libs.map((l) => LIBRARY_LABEL[l] || l)
+    const short = (s) =>
+      typeof s === 'number' && s >= 1000 && s % 1000 === 0 ? s / 1000 + 'k' : String(s)
+    if (aria) {
+      const list =
+        names.length > 1 ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1] : names.join('')
+      return 'Restore the default view: ' + list + ' at scale ' + scales.join(', ')
+    }
+    const custom = __cfg('defaults.viewLabel', null)
+    if (typeof custom === 'string') return custom
+    return 'Default view (' + names.join(' + ') + ' @ ' + scales.map(short).join(', ') + ')'
   }
   /* ==== libviprs contract preamble: END ==== */
 
@@ -1906,10 +1928,10 @@
     const defaultBtn = document.createElement('button')
     defaultBtn.type = 'button'
     defaultBtn.className = 'filter-action'
-    defaultBtn.textContent = 'Default view (causl-ts + causl-wasm + mobx @ 10k)'
+    defaultBtn.textContent = __defaultViewText(false)
     defaultBtn.setAttribute(
       'aria-label',
-      'Restore the default view: causl-ts, causl-wasm and mobx at scale 10000',
+      __defaultViewText(true),
     )
     defaultBtn.addEventListener('click', () => {
       filterState.libraries = new Set(

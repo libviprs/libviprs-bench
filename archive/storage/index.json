@@ -28,5 +28,41 @@
     "fsType": "ext4",
     "file": "20260915T071511Z-adcf1ff21699ded673af74297a4a83104b96abd1-29e9d16b.json",
     "profileCaveat": "Labelled full, but every read row walked 512 coordinates (the ci count) because the profile never reached the child (libviprs-bench #112). Honest CI-sized reads under a wrong label; do not chart as a full sweep."
+  },
+  {
+    "runId": "20261024T062624Z-fe00a3dab794072312da022f06e6192409a5059d-80c9e360",
+    "documentDigest": "sha256:bfc18036efbab334f3fab968bdd21dc48e5f9d7108a81a8add708318b35d8753",
+    "startedAt": "2026-10-24T06:26:24.127Z",
+    "libraryCommit": "fe00a3dab794072312da022f06e6192409a5059d",
+    "emulated": false,
+    "fsType": "ext4",
+    "file": "20261024T062624Z-fe00a3dab794072312da022f06e6192409a5059d-80c9e360.json"
+  },
+  {
+    "runId": "20261024T071004Z-150774a566881226d607d833fb72a2e16332459d-80c9e360",
+    "documentDigest": "sha256:22a23781bade13b95ab537bd0c266884afe1c912abefd80498d9786794aaacce",
+    "startedAt": "2026-10-24T07:10:04.212Z",
+    "libraryCommit": "150774a566881226d607d833fb72a2e16332459d",
+    "emulated": false,
+    "fsType": "ext4",
+    "file": "20261024T071004Z-150774a566881226d607d833fb72a2e16332459d-80c9e360.json"
+  },
+  {
+    "runId": "20261024T071803Z-46991fe5db33256237e21fb6139b5296bb756c09-80c9e360",
+    "documentDigest": "sha256:ca8550ee781b3a8c589fffaf9a1da6c704ea29edd3f133dde385839d5f477bff",
+    "startedAt": "2026-10-24T07:18:03.374Z",
+    "libraryCommit": "46991fe5db33256237e21fb6139b5296bb756c09",
+    "emulated": false,
+    "fsType": "ext4",
+    "file": "20261024T071803Z-46991fe5db33256237e21fb6139b5296bb756c09-80c9e360.json"
+  },
+  {
+    "runId": "20261031T185444Z-428eaab59a0f415f6446e441ede33450023a94fc-80c9e360",
+    "documentDigest": "sha256:41b021fa129b36f6c17542d7af679cad3aed5d1c2e3dd11389fe2447433cc2cd",
+    "startedAt": "2026-10-31T18:54:44.848Z",
+    "libraryCommit": "428eaab59a0f415f6446e441ede33450023a94fc",
+    "emulated": false,
+    "fsType": "ext4",
+    "file": "20261031T185444Z-428eaab59a0f415f6446e441ede33450023a94fc-80c9e360.json"
   }
 ]

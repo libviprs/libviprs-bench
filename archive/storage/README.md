@@ -215,6 +215,77 @@ rather than swallowing it:
    with and without file-mode comparison and reports the difference, rather than
    quietly masking it.
 
+## The writer sweep documents
+
+Some of the runs in here were written by `pmtiles-writer` and not by `storage`
+(libviprs-bench #132). They share the envelope, the four digests and the run id,
+so the aggregator treats them identically, and what tells them apart is the
+vocabulary in the values.
+
+```
+backend       tile-id@8MiB, arrival+ordered@1MiB, tile-id@unbounded, go-pmtiles
+scenario      write_ingest, write_finalize, write_output, build_from_tiles
+cell          2048x2048@256+gradient, ..., synthetic@z10
+```
+
+A backend label is `<layout>[+ordered]@<dedupe budget>`. `unbounded` is not a
+budget the sweep chose: it is what a revision from before the bounded writer has,
+because its payload table grows with the number of distinct payloads, and it is
+the only label such a revision can carry. `provenance.invocation.resolved` lists
+the variants a document walked, `coreWriterKnobs` says whether the measured core
+could express more than one, and `externalTools.go-pmtiles` records the version
+and the SHA-256 of the binary that was timed.
+
+The three archived so far, all native x86_64 on one host (Intel Core i7-14700F,
+28 threads, 32 GB), profile `full`, seven repetitions a cell:
+
+| run | core | what it is |
+|---|---|---|
+| `20261024T071004Z-150774a5...` | `150774a5`, reports itself as 0.5.0 | the revision before the bounded writer, the pre-epic baseline |
+| `20261024T071803Z-46991fe5...` | `46991fe5`, v0.6.1 | the latest release |
+| `20261024T062624Z-fe00a3da...` | `fe00a3da`, main | the current writer |
+
+Things to know before quoting a number from one of these:
+
+* **The baseline is a revision, not a release.** v0.4.0 has no PMTiles writer and
+  v0.5.0 already has the whole bounded-writer epic, so no release carries the
+  writer as it was before. The pre-epic run is `150774a5`, and a document says so
+  by carrying that commit in `provenance.library.commit`. It was built with the
+  same compiler as the others, unlocked and with `--cap-lints=warn`, because its
+  manifest says `deprecated = "deny"` and two calls it makes are deprecated on
+  Rust 1.99. Cargo rewrote one line of `Cargo.lock` (the core's own version) and
+  nothing else; `provenance.lockfileHash` is taken over the lock as built and
+  `provenance.node.rustflags` carries the flag.
+* **`build_from_tiles` is the like-for-like row, and the engine-driven rows are
+  not.** `build_from_tiles` hands a tile set that already exists to the writer, so
+  its wall time and heap are the writer's. `write_ingest`, `write_finalize` and
+  `write_output` are the engine building a pyramid, so the heap peak there is
+  above the source raster but includes everything the engine holds, which is why
+  ordered emission, which keeps every level's raster at once, shows up in it.
+* **go-pmtiles reads SQLite and the writer here reads loose files.** The tile set
+  is in an MBTiles file for go-pmtiles and a directory tree for the writer, and
+  both are warm in the page cache. Both contenders deduplicate. Each is timed
+  inside the process that does the work, so neither wall figure includes starting
+  a process, and each reports a peak resident set with no floor from its parent.
+  Ours is `VmHWM` read by the child; go-pmtiles' is the kernel's `ru_maxrss` from
+  a small fresh helper, because that figure carries the spawner's resident set as
+  a floor and the sweep process is not small.
+* **The synthetic cells are not imagery.** `synthetic@z9`, `@z10` and `@z11` are
+  one distinct 48-byte payload per tile, at every address of one zoom (262 144,
+  1 048 576 and 4 194 304 tiles). A real pyramid has too few distinct payloads for
+  a table that grows with them to show, and these are where the bounded-memory
+  claim is tested. The writer's sort buffer holds a million records, so below
+  `z11` it is still filling and heap rises with the tile count whatever the
+  dedupe table does; read the curve at `z11`.
+* **A row without an `artefactDigest` is not a row that failed.** An
+  `arrival` run without ordered emission lays tiles down in whatever order the
+  worker threads finished, so its bytes differ from one repetition to the next
+  and the digest is `null` there rather than published as an invariant it is not.
+  Its `output_bytes` series shows the spread.
+* **No release is quoted without its host.** Every document records the CPU and
+  the load at the start and per row, and the host is shared. Read the
+  `confidence` and `machineLoad` of a row before trusting its median.
+
 ## Running it
 
 ```

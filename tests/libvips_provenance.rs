@@ -233,6 +233,11 @@ fn dockerfile_force_enables_hot_path_codecs() {
         "-Djpeg=enabled",
         "-Dtiff=enabled",
         "-Dwebp=enabled",
+        // `dzsave` is the operation the whole comparison runs, and since 8.16
+        // it is built on libarchive. Without it `vips dzsave` is "unknown
+        // action", every libvips row fails, and nothing says why until the
+        // report is empty (#122).
+        "-Darchive=enabled",
     ] {
         assert!(
             DOCKERFILE.contains(opt),
@@ -240,6 +245,21 @@ fn dockerfile_force_enables_hot_path_codecs() {
              library fails the build instead of silently disabling the format (#33)"
         );
     }
+}
+
+/// The image has to be able to run the one operation it exists for.
+#[test]
+fn dockerfile_asserts_dzsave_is_available() {
+    let instructions = dockerfile_instructions(DOCKERFILE);
+    assert!(
+        instructions.contains("libarchive-dev"),
+        "Dockerfile must install libarchive-dev, which dzsave is built on (#122)"
+    );
+    assert!(
+        instructions.contains("grep -q dzsave"),
+        "Dockerfile must fail the build when `vips -l` does not list dzsave, \
+         rather than yield a libvips that cannot run the comparison (#122)"
+    );
 }
 
 /// The post-build check must assert the discoverable libvips is *exactly* the

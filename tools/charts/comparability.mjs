@@ -101,7 +101,11 @@ export function assessComparison(runs, contract, opts = {}) {
   const loaded = contract.scenarios && contract.comparabilityTolerance ? contract : loadContract(contract);
   const configOf = opts.configOf ?? defaultConfigOf;
   const tolerance = loaded.comparabilityTolerance;
-  const reference = loaded.equivalenceDefaults?.referenceTechnology ?? null;
+  const defaults = loaded.equivalenceDefaults ?? {};
+  const reference = defaults.referenceTechnology ?? null;
+  // A libviprs-only family has no libvips to be equivalent to (#138); the engine
+  // named here stands in for it, and carries no score against itself.
+  const stand_in = defaults.libviprsOnlyReference ?? null;
 
   /** @type {Map<string, {scenario: string, config: string, runs: object[]}>} */
   const grouped = new Map();
@@ -142,7 +146,12 @@ export function assessComparison(runs, contract, opts = {}) {
     }
 
     const work = assessWork(members, decl.work ?? [], tolerance);
-    const equivalence = assessEquivalence(members, decl, loaded, reference);
+    const equivalence = assessEquivalence(
+      members,
+      decl,
+      loaded,
+      members.some((m) => technologyOf(m) === reference) ? reference : stand_in,
+    );
     const reasons = [];
     let chartable = decl.status === 'comparable';
 

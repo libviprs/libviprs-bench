@@ -26,6 +26,31 @@ include!("src/sha256.rs");
 // The trap-3 classifier, for the same reason and by the same route.
 include!("src/git_trap.rs");
 
+/// Say which PMTiles writer knobs the measured core has (libviprs-bench #132).
+///
+/// The writer sweep has to build against revisions that predate the bounded
+/// writer, because "the regression against the previous libviprs release" is
+/// meaningless if the harness can only be compiled against the new one. Cargo
+/// has no way to ask a path dependency what it exports, and a `cfg` on a
+/// version number would be a guess, so this reads the one fact that matters
+/// straight out of the core's source: whether `Layout` exists in the writer
+/// module. The dedupe budget, the layout and `ordered_emission` arrived in the
+/// same epic and none of them is in a revision that lacks it.
+///
+/// A missing or unreadable source file means "no knobs", never "knobs": the
+/// sweep then measures only the default writer, which every revision has.
+fn stamp_core_capabilities(core_dir: &Path) {
+    println!("cargo:rustc-check-cfg=cfg(core_writer_knobs)");
+    let writer = core_dir.join("src/pmtiles/writer.rs");
+    println!("cargo:rerun-if-changed={}", writer.display());
+    let has_layout = std::fs::read_to_string(&writer)
+        .map(|text| text.contains("pub enum Layout"))
+        .unwrap_or(false);
+    if has_layout {
+        println!("cargo:rustc-cfg=core_writer_knobs");
+    }
+}
+
 /// Path to the measured core crate, relative to this crate's manifest.
 /// It is a Cargo path dependency (`libviprs = { path = "../libviprs" }`),
 /// so if this crate compiles at all the directory is present.
@@ -66,6 +91,7 @@ fn main() {
     // per-tag worktree, so each tag's build re-stamps its own version/SHA.
     println!("cargo:rerun-if-env-changed=BENCH_CORE_DIR");
 
+    stamp_core_capabilities(core_dir);
     stamp_storage_provenance(core_dir);
 }
 
