@@ -11,5 +11,9 @@ COPY --from=node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e
 
 # npm is a symlink into the copied tree; render.mjs imports @spdrman/bencharts,
 # which `npm ci` fetches from the (public) git pin in package.json.
+# The tree is bind-mounted from a host whose uid is not the container's, and
+# git refuses such a repository as "dubious ownership" (the version-matrix tests
+# run `git worktree add` in it), so every directory is trusted inside this image.
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && git config --system --add safe.directory '*' \
  && node --version && npm --version

@@ -16,6 +16,6 @@ core="${LIBVIPRS_DIR:-$repo/../libviprs}"
 
 docker build -q -t "$tag" "$here"
 docker run --rm \
-  -v "$repo":/work/libviprs-bench -v "$core":/work/libviprs:ro -w /work/libviprs-bench \
+  -v "$repo":/work/libviprs-bench -v "$core":/work/libviprs -w /work/libviprs-bench \
   -e CARGO_TARGET_DIR=/tmp/target \
   "$tag" sh -c 'npm ci --no-audit --no-fund && exec cargo test "$@"' sh "$@"
