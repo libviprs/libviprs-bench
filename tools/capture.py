@@ -413,8 +413,14 @@ def cell_summary(document: dict) -> dict:
 # --------------------------------------------------------------------------
 
 
+# Where scratch trees live on the docker host: the directory that is mounted as
+# /ws, with `nas-work/<name>` under it. The NAS keeps it in $HOME/workspace and
+# MARS in /work (#154), so main() overwrites this from --work-parent.
+WORK_PARENT = "$HOME/workspace"
+
+
 def scratch_root(name: str) -> str:
-    return f"$HOME/workspace/nas-work/{name}"
+    return f"{WORK_PARENT}/nas-work/{name}"
 
 
 def nas_container(
@@ -483,13 +489,13 @@ def push_tree(ex: Executor, name: str, tarball: Path, dest: str) -> None:
     # $HOME/workspace is the mount and the path inside is derived from `dest`,
     # so the container creates it rather than docker creating a missing
     # bind-mount source, which is the same thing with no record of who did it.
-    inside = dest.replace("$HOME/workspace", "/ws")
+    inside = dest.replace(WORK_PARENT, "/ws")
     ex.nas_step(
         f"push.mkdir.{leaf}",
         nas_container(
             UTIL_IMAGE,
             f"mkdir -p {inside}",
-            mounts=(("$HOME/workspace", "/ws"),),
+            mounts=((WORK_PARENT, "/ws"),),
         ),
     )
     ex.nas_step(
@@ -693,7 +699,7 @@ def cleanup(ex: Executor, name: str) -> dict:
         nas_container(
             UTIL_IMAGE,
             f"rm -rf /ws/nas-work/{name}",
-            mounts=(("$HOME/workspace", "/ws"),),
+            mounts=((WORK_PARENT, "/ws"),),
         ),
         allow_failure=True,
     )
@@ -717,7 +723,7 @@ def cleanup(ex: Executor, name: str) -> dict:
             nas_container(
                 UTIL_IMAGE,
                 "ls /ws/nas-work",
-                mounts=(("$HOME/workspace", "/ws"),),
+                mounts=((WORK_PARENT, "/ws"),),
             ),
             allow_failure=True,
         ).stdout.splitlines()
@@ -1019,6 +1025,11 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
     parser.add_argument("--out", default=None, help="where the raw captured documents land")
     parser.add_argument("--json", default=None, help="where the run summary is written; - for stdout")
     parser.add_argument("--nas", default=os.environ.get("NAS", "rom@192.168.0.10"))
+    parser.add_argument(
+        "--work-parent",
+        default=os.environ.get("CAPTURE_WORK_PARENT", "$HOME/workspace"),
+        help="the docker host's directory holding nas-work/ ($HOME/workspace on the NAS, /work on MARS)",
+    )
     parser.add_argument("--name", default=None, help="the scratch name; derived from the pid otherwise")
     parser.add_argument(
         "--plan",
@@ -1038,6 +1049,8 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
         help="commit the published files, by name, once every gate has passed",
     )
     args = parser.parse_args(argv)
+    global WORK_PARENT
+    WORK_PARENT = args.work_parent
 
     repo = Path(args.repo).resolve()
     families = [f for f in args.families.split(",") if f]
@@ -1124,7 +1137,7 @@ def main(argv: list[str] | None = None, executor: Executor | None = None) -> int
                         nas_container(
                             UTIL_IMAGE,
                             f"mkdir -p /ws/nas-work/{name}/{leaf}",
-                            mounts=(("$HOME/workspace", "/ws"),),
+                            mounts=((WORK_PARENT, "/ws"),),
                         ),
                     )
                 # The archive goes up as its own tree, OUTSIDE the git checkout,
