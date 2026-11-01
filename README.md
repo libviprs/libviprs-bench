@@ -475,6 +475,17 @@ archive/storage/
 
 ```
 
+## Git hooks
+
+The pre-commit hook runs the `check` job's cells (the four `cargo check` runs and the libvips clippy)
+on MARS, not on this machine. It ships the staged tree and builds it against the core CI would use
+(the libviprs branch with the same name, else main), with libvips in the container. The scripts live in
+libviprs-tests (`tools/install-hooks.sh` installs them, `tools/mars-run.sh` does the shipping).
+
+If MARS is down the hook fails and says so, and `LIBVIPRS_HOOKS_SKIP_MARS=1 git commit ...` skips it
+with a loud banner. `--no-verify` isn't the answer for that. The hook runs no tests, so a test-first
+commit that is meant to be red passes as long as it compiles.
+
 ## Requirements
 
 - Rust 1.99+ (edition 2024) — the floor the measured `libviprs` core declares
