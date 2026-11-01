@@ -14,7 +14,8 @@
   ],
   "equivalenceDefaults": {
     "psnrFloorDb": 40,
-    "referenceTechnology": "libvips"
+    "referenceTechnology": "libvips",
+    "libviprsOnlyReference": "monolithic"
   },
   "scenarios": {
     "pyramid": {

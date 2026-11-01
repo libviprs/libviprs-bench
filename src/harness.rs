@@ -357,8 +357,15 @@ pub fn run_isolated_suite(
         // shelling out to `vips` for a reference nothing scores against would
         // put the very dependency the family exists without back into the run
         // on any machine that happens to have it installed (issue #64).
+        //
+        // A libviprs-only family still proves its engines agree (#138): the
+        // monolithic pyramid, written in-process, is the reference, and the
+        // other engines are scored against it. Monolithic carries no score
+        // against itself.
         let equiv = if engines.contains(&Engine::Libvips) {
             EquivalenceReference::build(w, h, tile_size, budget_bytes)
+        } else if engines.contains(&Engine::Monolithic) {
+            EquivalenceReference::build_monolithic(w, h, tile_size, budget_bytes)
         } else {
             None
         };
@@ -409,6 +416,9 @@ pub fn run_isolated_suite(
                     let Some(kind) = libviprs_engine_kind(&run.engine) else {
                         continue; // the libvips row itself, or an unknown label.
                     };
+                    if reference.reference_engine == Some(kind) {
+                        continue; // the reference does not score against itself.
+                    }
                     let name = run.engine.clone();
                     run.equivalence_psnr_db = reference
                         .spot_check(kind, &name, conc)
@@ -902,12 +912,58 @@ struct EquivalenceReference {
     src: libviprs::Raster,
     plan: libviprs::PyramidPlan,
     reference_files: PathBuf,
+    /// `Some` when the reference is a libviprs engine's own pyramid (the
+    /// libviprs-only families), `None` when it is libvips'.
+    reference_engine: Option<libviprs::EngineKind>,
     budget_bytes: u64,
     w: u32,
     h: u32,
 }
 
 impl EquivalenceReference {
+    /// The reference for a family with no libvips: the monolithic engine's
+    /// pyramid at concurrency 0, written in-process. Same degrade-to-`None`
+    /// rule as [`Self::build`].
+    fn build_monolithic(w: u32, h: u32, tile_size: u32, budget_bytes: u64) -> Option<Self> {
+        let src = crate::gradient_raster(w, h);
+        let plan = libviprs::PyramidPlanner::new(w, h, tile_size, 0, libviprs::Layout::DeepZoom)
+            .ok()?
+            .plan();
+        let root = std::env::temp_dir()
+            .join("libviprs-bench")
+            .join(format!("equiv_{w}x{h}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let kind = libviprs::EngineKind::Monolithic;
+        let reference_files = match crate::write_libviprs_pyramid(
+            &src,
+            &plan,
+            kind,
+            0,
+            budget_bytes,
+            &root.join("monolithic"),
+        ) {
+            Ok(files) => files,
+            Err(e) => {
+                eprintln!(
+                    "note: {w}x{h}: monolithic reference pyramid failed ({e}) — \
+                     pixel spot-check skipped."
+                );
+                let _ = std::fs::remove_dir_all(&root);
+                return None;
+            }
+        };
+        Some(Self {
+            root,
+            src,
+            plan,
+            reference_files,
+            reference_engine: Some(kind),
+            budget_bytes,
+            w,
+            h,
+        })
+    }
+
     /// Build the libvips reference for `w`x`h`. Returns `None` (with a stderr
     /// note) when libvips is unavailable, the plan cannot be built, or libvips
     /// produced no pyramid — the pixel spot-check is then skipped for the size.
@@ -953,6 +1009,7 @@ impl EquivalenceReference {
             src,
             plan,
             reference_files,
+            reference_engine: None,
             budget_bytes,
             w,
             h,
