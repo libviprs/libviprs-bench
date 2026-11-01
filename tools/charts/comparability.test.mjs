@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadContract, assessComparison, chartableRuns } from './comparability.mjs';
+import { loadContract, assessComparison, chartableRuns, CONTRACT_PATH } from './comparability.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..');
 
 const CONTRACT = {
   comparabilityTolerance: 2,
-  equivalenceDefaults: { psnrFloorDb: 40, referenceTechnology: 'libvips' },
+  equivalenceDefaults: { psnrFloorDb: 40, referenceTechnology: 'libvips', libviprsOnlyReference: 'monolithic' },
   scenarios: {
     pyramid: {
       status: 'comparable',
@@ -213,4 +213,33 @@ test('no cell override is left in the contract', () => {
   // override that survives would quietly keep a measured cell off the page.
   const contract = JSON.parse(readFileSync(join(here, 'comparability.json'), 'utf8'));
   assert.equal(contract.scenarios.pyramid.cells, undefined, 'the pyramid scenario declares no hold-outs');
+});
+
+// #138: a libviprs-only run has no libvips to be equivalent to, so the first
+// engine the contract names stands in as the reference and carries no PSNR
+// against itself, exactly like libvips does in the four-engine run.
+const TRIO = ['monolithic', 'streaming', 'mapreduce'].map((e) =>
+  run(e, { equivalence_psnr_db: e === 'monolithic' ? null : 100 }));
+
+test('138: without libvips, monolithic is the reference and the other two prove equivalence to it', () => {
+  const { cells, violations } = assessComparison(TRIO, CONTRACT);
+  assert.deepEqual(violations, []);
+  assert.equal(cells[0].chartable, true);
+});
+
+test('138: without libvips, an engine with no PSNR against monolithic is still refused', () => {
+  const noPsnr = TRIO.map((r) => (r.engine === 'mapreduce' ? { ...r, equivalence_psnr_db: null } : r));
+  const { cells, violations } = assessComparison(noPsnr, CONTRACT);
+  assert.ok(violations.some((v) => v.rule === 'comparable-cells-prove-equivalence'));
+  assert.equal(cells[0].chartable, false);
+});
+
+test('138: without libvips, an engine under the floor is still refused', () => {
+  const poor = TRIO.map((r) => (r.engine === 'streaming' ? { ...r, equivalence_psnr_db: 12 } : r));
+  const { violations } = assessComparison(poor, CONTRACT);
+  assert.ok(violations.some((v) => v.rule === 'comparable-cells-prove-equivalence'));
+});
+
+test('138: the shipped contract names the libviprs-only reference', () => {
+  assert.equal(loadContract(CONTRACT_PATH).equivalenceDefaults.libviprsOnlyReference, 'monolithic');
 });
