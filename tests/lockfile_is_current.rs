@@ -4,8 +4,8 @@
 //! carry on, which is why a stale one never failed a gate. The capture image
 //! builds with `cargo fetch --locked`, which refuses, so a stale lock showed up
 //! hours later as a sweep that could not start. `--locked` here is the same
-//! refusal, and `--offline` keeps the test from reaching for the network: the
-//! build that ran just before has already filled the registry cache.
+//! refusal. It needs the network the way the build does, to read the manifests
+//! of the packages the lock names.
 
 use std::process::Command;
 
@@ -15,7 +15,6 @@ fn cargo_lock_needs_no_update_against_the_sibling_core() {
         .args([
             "metadata",
             "--locked",
-            "--offline",
             "--format-version",
             "1",
             "--manifest-path",
