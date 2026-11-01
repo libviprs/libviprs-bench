@@ -215,6 +215,27 @@
       "work": [
         "tiles_produced"
       ]
+    },
+    "generate_scan": {
+      "status": "comparable",
+      "work": [
+        "tiles_produced"
+      ],
+      "equivalence": {
+        "kind": "not-available",
+        "reason": [
+          "Four containers (PMTiles, PVec, a COG, a zip of PNG tiles), so artefact_digest and output_bytes",
+          "differ by construction and are not read as cross-backend equivalence. Same scan, same tile grid, and",
+          "tiles_produced is the work claim."
+        ]
+      },
+      "note": [
+        "libviprs's PMTiles and PVec sinks write byte-identical PNG tiles. GDAL's COG driver has no PNG codec",
+        "(DEFLATE strips) and libvips dzsave writes PNG from its own encoder settings, so the codec differs on",
+        "those two rows and wall time and artefact size include that difference. It is the comparison libviprs#1331",
+        "asks for, against a C library offering the same feature, and each row names its tool version and caveat",
+        "in the archived document. Read the PMTiles against PVec pair as the like-for-like one."
+      ]
     }
   }
 }

@@ -181,6 +181,58 @@ RUN cargo build ${CARGO_LOCKED} --release --bin pmtiles-writer --bin storage-agg
 
 CMD ["/src/libviprs-bench/target/release/pmtiles-writer", "--profile", "ci"]
 
+# ---------------------------------------------------------------------------
+# The `pvec` stage: the PVec row of the storage family and its two C references
+# (libviprs/libviprs#1331).
+#
+# It is the `storage` stage plus GDAL (`gdal_translate`, `gdalinfo`) and libvips
+# (`vips dzsave`), both from the dated Debian snapshot the other stages resolve
+# against, so the two reference tools are frozen with everything else. The
+# versions they report are recorded in every document the sweep writes
+# (`provenance.invocation.resolved.externalTools`), with the SHA-256 of each
+# binary. python3 lists the zip libvips writes.
+#
+# Built with `--features pvec`, which pulls in PVec's crates as a git dependency,
+# so the build needs read access to libviprs/pvec; the `engines` and `storage`
+# stages do not and are unchanged. x86_64 is the published architecture; there
+# is no arm64 result for this row (see `notRun` in the document).
+#
+#   GH_TOKEN=$(gh auth token) docker build --platform linux/amd64 --secret id=gh_token,env=GH_TOKEN \
+#     --target pvec -t libviprs-bench:pvec .
+#   docker run --rm --platform linux/amd64 libviprs-bench:pvec \
+#     /src/libviprs-bench/target/release/pvec-sink --profile ci --out /tmp/p.json
+# ---------------------------------------------------------------------------
+FROM rust:1.99.1-bookworm@sha256:e12566d5abc17a0da741628782cdb504b68b8961f5bfcf677936bf3e8b32de29 AS pvec
+
+ARG DEBIAN_SNAPSHOT=20250929T000000Z
+RUN printf 'Types: deb\nURIs: http://snapshot.debian.org/archive/debian/%s\nSuites: bookworm bookworm-updates\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n\nTypes: deb\nURIs: http://snapshot.debian.org/archive/debian-security/%s\nSuites: bookworm-security\nComponents: main\nSigned-By: /usr/share/keyrings/debian-archive-keyring.gpg\n' \
+        "${DEBIAN_SNAPSHOT}" "${DEBIAN_SNAPSHOT}" > /etc/apt/sources.list.d/debian.sources && \
+    printf 'Acquire::Check-Valid-Until "false";\nAcquire::Retries "3";\n' > /etc/apt/apt.conf.d/10snapshot && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gdal-bin libvips-tools python3 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY libviprs/ libviprs/
+COPY libviprs-bench/ libviprs-bench/
+
+WORKDIR /src/libviprs-bench
+
+# PVec's crates are a private git dependency, so the fetch needs read access to libviprs/pvec. It
+# comes from a BuildKit secret (`docker build --secret id=gh_token,env=GH_TOKEN`), read into git's
+# environment for this one command: never an ARG or ENV, never a file, so it is in no layer and
+# not in the history. `Cargo.lock` already names the pins, so `--locked` has nothing to rewrite
+# and the tree the run reports stays clean (libviprs-bench#143). The build after it is offline.
+RUN --mount=type=secret,id=gh_token \
+    export GIT_CONFIG_COUNT=1 \
+           GIT_CONFIG_KEY_0="url.https://x-access-token:$(cat /run/secrets/gh_token)@github.com/.insteadOf" \
+           GIT_CONFIG_VALUE_0="https://github.com/" \
+           CARGO_NET_GIT_FETCH_WITH_CLI=true && \
+    cargo fetch --locked
+RUN cargo build --locked --offline --release --features pvec --bin pvec-sink --bin storage-aggregate
+
+CMD ["/src/libviprs-bench/target/release/pvec-sink", "--profile", "ci"]
+
 # Stage 1: Download PDFium for the target architecture. Base image digest-pinned
 # (not just tag-pinned) so the exact layer cannot shift under a rebuild (#35).
 FROM debian:bookworm-20250929-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 AS pdfium

@@ -27,7 +27,10 @@
       "arrival+ordered@1MiB",
       "arrival+ordered@8MiB",
       "tile-id@unbounded",
-      "go-pmtiles"
+      "go-pmtiles",
+      "pvec",
+      "gdal-cog",
+      "libvips-zip"
     ],
     "label": {
       "pmtiles": "PMTiles archive",
@@ -49,7 +52,10 @@
       "arrival+ordered@1MiB": "arrival writer (ordered), 1 MiB dedupe",
       "arrival+ordered@8MiB": "arrival writer (ordered), 8 MiB dedupe",
       "tile-id@unbounded": "tile-id writer, unbounded dedupe (before the epic)",
-      "go-pmtiles": "go-pmtiles"
+      "go-pmtiles": "go-pmtiles",
+      "pvec": "PVec container",
+      "gdal-cog": "GDAL COG",
+      "libvips-zip": "libvips dzsave zip"
     },
     "color": {
       "pmtiles": "#ab47bc",
@@ -71,7 +77,10 @@
       "arrival+ordered@1MiB": "#d823c8",
       "arrival+ordered@8MiB": "#e351d6",
       "tile-id@unbounded": "#956bdc",
-      "go-pmtiles": "#818181"
+      "go-pmtiles": "#818181",
+      "pvec": "#b8860b",
+      "gdal-cog": "#6d8f00",
+      "libvips-zip": "#8d6e63"
     },
     "dash": {
       "directory": "6 3",
