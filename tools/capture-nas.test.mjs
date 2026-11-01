@@ -110,10 +110,10 @@ test('the scratch tree is removed by mounting its parent, not itself', () => {
 // or the cleanup, this fails rather than passing on a walk of nothing.
 
 /** The driver's own account of every command it would send. */
-function plan() {
+function plan(extra = []) {
   const proc = spawnSync(
     'python3',
-    [join(here, 'capture.py'), '--plan', '--name', 'guard-fixture', '--json', '-'],
+    [join(here, 'capture.py'), '--plan', '--name', 'guard-fixture', '--json', '-', ...extra],
     { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   );
   // Never a skip. A host without python3 cannot check this rule, and a check
@@ -284,4 +284,22 @@ test('every local command is git, tar, or a container with its platform spelled 
     return !(s.argv[0] === 'docker' && s.argv.includes('--platform') && s.argv.includes('linux/arm64'));
   });
   assert.deepEqual(offenders.map((s) => s.label), [], 'these run on the host toolchain unpinned');
+});
+
+// #154: the driver's scratch lives under one work parent. On the NAS that is
+// $HOME/workspace, on MARS it is /work, and a step that still names the NAS's
+// directory there points at a path that does not exist.
+test('154: with --work-parent /work no step names $HOME/workspace and the scratch is /work/nas-work', () => {
+  const steps = plan(['--work-parent', '/work']).filter((s) => s.where === 'nas');
+  const remotes = steps.map((s) => s.remote ?? '');
+  assert.ok(remotes.length >= 15, `expected the whole run in the plan, got ${remotes.length} steps`);
+  const stale = remotes.filter((r) => r.includes('$HOME/workspace'));
+  assert.deepEqual(stale, [], 'every path is derived from the work parent');
+  assert.ok(remotes.some((r) => r.includes('/work/nas-work/guard-fixture')), 'the scratch tree is under /work/nas-work');
+  assert.ok(remotes.some((r) => r.includes('-v /work:/ws')), 'the mount that creates it is the work parent');
+});
+
+test('154: the default work parent is still $HOME/workspace, so the NAS behaves as before', () => {
+  const remotes = plan().filter((s) => s.where === 'nas').map((s) => s.remote ?? '');
+  assert.ok(remotes.some((r) => r.includes('$HOME/workspace/nas-work/guard-fixture')));
 });
