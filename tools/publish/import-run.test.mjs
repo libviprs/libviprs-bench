@@ -92,7 +92,22 @@ test('the archived run imports and produces exactly one entry', () => {
   const entry = importedEntry();
   assert.equal(entry.runId, ARCHIVED_RUN_ID);
   assert.equal(entry.commit, '809ee8014d002518ce55edaceba698ca7a8b8a79');
-  assert.equal(entry.integrity.document.startsWith('sha256:6a712af3'), true);
+  // The control is the legacy run with its read rows put right and re-sealed, so its digest is
+  // not the archived one; the archived bytes are pinned by the canonical-json test.
+  assert.match(entry.integrity.document, /^sha256:[0-9a-f]{64}$/);
+});
+
+test('the full run taken after the profile reached the child imports as archived (#120)', () => {
+  // The positive control for the walk rule on a real document: nothing about it is edited, and
+  // its read rows walked what its label says.
+  const run = pristine('storageFull');
+  const r = runImport(run, emptyHistory());
+  assert.equal(r.code, EXIT.OK, r.stderr + r.stdout);
+});
+
+test('the legacy run as archived is refused, because its read rows walked the ci count under a full label (#120)', () => {
+  const r = runImport(mutate({ asArchivedWalk: true }), emptyHistory());
+  refused(r, /requests_declared row\(s\) disagree with the document's profile label "full"/);
 });
 
 test('importing the same archived run twice leaves one entry', () => {

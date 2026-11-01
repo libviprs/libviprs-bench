@@ -40,6 +40,12 @@ export const ARCHIVED = {
     runId: '20260914T145707Z-809ee8014d002518ce55edaceba698ca7a8b8a79-0bc00939',
     dir: fileURLToPath(new URL('../../archive/storage/', import.meta.url)),
   },
+  // The first run taken after the profile reached the child (#112 / #120): a real
+  // full sweep on MARS, whose read rows walked what the label says.
+  storageFull: {
+    runId: '20261101T230606Z-e799b56916b0606cefa7d12a250c05e488087cc0-80c9e360',
+    dir: fileURLToPath(new URL('../../archive/storage/', import.meta.url)),
+  },
   engines: {
     runId: '20260915T021911Z-809ee8014d002518ce55edaceba698ca7a8b8a79-a7bac4a9',
     dir: fileURLToPath(new URL('../../archive/engines/', import.meta.url)),
@@ -75,6 +81,29 @@ export function archivedDocument(family = 'storage') {
 /** The archive index as the producer wrote it. */
 export function archivedIndex(family = 'storage') {
   return JSON.parse(readFileSync(join(archived(family).dir, 'index.json'), 'utf8'));
+}
+
+/** What `requests_declared` is for a profile's label: `min(read samples, scale) + 1`. */
+const READ_SAMPLES_FULL = 20000;
+
+/** The legacy storage run, read rows corrected to the walk its `full` label states.
+ *
+ *  The run was archived while the profile never reached the child, so every read row
+ *  walked the ci count under a full label (`profileCaveat` in the archive index), and
+ *  the importer rightly refuses it as archived (#120). Its shape is what the era
+ *  tests need (arm64, no starting load, the old attestation field), so they start from
+ *  it with the one thing the importer checks put right. `mutate({ asArchivedWalk: true })`
+ *  is the document untouched.
+ */
+function correctWalk(doc) {
+  for (const row of doc.cells) {
+    if (row.metric !== 'requests_declared' || !(row.scale > 512)) continue;
+    const walked = Math.min(READ_SAMPLES_FULL, row.scale) + 1;
+    row.median = row.min = row.max = row.p95OfSamples = walked;
+    row.samples = row.samples.map(() => walked);
+    row.ci95 = [walked, walked];
+    if (row.tail) row.tail.value = walked;
+  }
 }
 
 const scratches = [];
@@ -137,11 +166,13 @@ function locate(root, path) {
  * @param {boolean}                 [edits.reseal]  false to leave the stale digests in place
  * @param {boolean}                 [edits.index]   false to write an archive with no index row
  * @param {string}                  [edits.family]  which archived run to start from
+ * @param {boolean}                 [edits.asArchivedWalk]  true to keep the legacy storage run's mislabelled read rows
  * @returns {{dir: string, doc: object, runId: string, documentPath: string}}
  */
 export function mutate(edits = {}) {
   const family = edits.family ?? 'storage';
   const doc = archivedDocument(family);
+  if (family === 'storage' && edits.asArchivedWalk !== true) correctWalk(doc);
   const originalHost8 = archived(family).runId.split('-').pop();
 
   for (const [path, value] of Object.entries(edits.set ?? {})) {
