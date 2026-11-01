@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadContract, assessComparison, chartableRuns } from './comparability.mjs';
+import { loadContract, assessComparison, chartableRuns, CONTRACT_PATH } from './comparability.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = join(here, '..', '..');
 
 const CONTRACT = {
   comparabilityTolerance: 2,
-  equivalenceDefaults: { psnrFloorDb: 40, referenceTechnology: 'libvips' },
+  equivalenceDefaults: { psnrFloorDb: 40, referenceTechnology: 'libvips', libviprsOnlyReference: 'monolithic' },
   scenarios: {
     pyramid: {
       status: 'comparable',
@@ -238,4 +238,8 @@ test('138: without libvips, an engine under the floor is still refused', () => {
   const poor = TRIO.map((r) => (r.engine === 'streaming' ? { ...r, equivalence_psnr_db: 12 } : r));
   const { violations } = assessComparison(poor, CONTRACT);
   assert.ok(violations.some((v) => v.rule === 'comparable-cells-prove-equivalence'));
+});
+
+test('138: the shipped contract names the libviprs-only reference', () => {
+  assert.equal(loadContract(CONTRACT_PATH).equivalenceDefaults.libviprsOnlyReference, 'monolithic');
 });
