@@ -239,3 +239,8 @@ pdfium-render = { git = "https://github.com/libviprs/pdfium-render", tag = "v0.9
 [[test]]
 name = "pvec_sweep"
 required-features = ["pvec"]
+
+# The `format` family (#102): tile codecs against bytes, time and fidelity.
+[[bin]]
+name = "format"
+path = "src/format_main.rs"
