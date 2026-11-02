@@ -39,14 +39,15 @@ use serde_json::Value;
 fn the_matrix_is_two_layouts_by_two_emissions_by_three_budgets() {
     let labels: Vec<String> = writer_sweep::matrix().iter().map(Variant::label).collect();
     if cfg!(core_writer_knobs) {
-        let expected: BTreeSet<String> = ["tile-id", "arrival", "tile-id+ordered", "arrival+ordered"]
-            .iter()
-            .flat_map(|mode| {
-                ["256KiB", "1MiB", "8MiB"]
-                    .iter()
-                    .map(move |budget| format!("{mode}@{budget}"))
-            })
-            .collect();
+        let expected: BTreeSet<String> =
+            ["tile-id", "arrival", "tile-id+ordered", "arrival+ordered"]
+                .iter()
+                .flat_map(|mode| {
+                    ["256KiB", "1MiB", "8MiB"]
+                        .iter()
+                        .map(move |budget| format!("{mode}@{budget}"))
+                })
+                .collect();
         assert_eq!(
             labels.iter().cloned().collect::<BTreeSet<_>>(),
             expected,
@@ -89,7 +90,10 @@ fn the_default_writer_is_in_the_matrix() {
     } else {
         "tile-id@unbounded"
     };
-    assert!(labels.iter().any(|l| l == default), "{labels:?} has no {default}");
+    assert!(
+        labels.iter().any(|l| l == default),
+        "{labels:?} has no {default}"
+    );
 }
 
 #[test]
@@ -122,7 +126,12 @@ fn the_profiles_walk_the_cells_they_say_they_do() {
 fn the_sweep_publishes_the_four_scenarios_the_issue_names() {
     assert_eq!(
         SCENARIOS,
-        &["write_ingest", "write_finalize", "write_output", "build_from_tiles"][..]
+        &[
+            "write_ingest",
+            "write_finalize",
+            "write_output",
+            "build_from_tiles"
+        ][..]
     );
 }
 
@@ -342,7 +351,9 @@ fn archived_writer_documents() -> Vec<(PathBuf, Value)> {
 }
 
 fn commit(doc: &Value) -> &str {
-    doc["provenance"]["library"]["commit"].as_str().unwrap_or("")
+    doc["provenance"]["library"]["commit"]
+        .as_str()
+        .unwrap_or("")
 }
 
 /// The previous-revision half of the deliverable. No release carries the
@@ -371,10 +382,17 @@ fn the_archive_holds_a_run_of_the_current_writer_across_the_whole_matrix() {
         .iter()
         .filter(|(_, d)| !commit(d).starts_with("150774a5"))
         .collect();
-    assert!(!current.is_empty(), "no archived writer run of a current revision");
+    assert!(
+        !current.is_empty(),
+        "no archived writer run of a current revision"
+    );
     let want: BTreeSet<String> = ["tile-id", "arrival", "tile-id+ordered", "arrival+ordered"]
         .iter()
-        .flat_map(|m| ["256KiB", "1MiB", "8MiB"].iter().map(move |b| format!("{m}@{b}")))
+        .flat_map(|m| {
+            ["256KiB", "1MiB", "8MiB"]
+                .iter()
+                .map(move |b| format!("{m}@{b}"))
+        })
         .collect();
     let covered = current.iter().any(|(_, d)| {
         let have: BTreeSet<String> = rows(d)
@@ -384,7 +402,10 @@ fn the_archive_holds_a_run_of_the_current_writer_across_the_whole_matrix() {
             .collect();
         want.is_subset(&have)
     });
-    assert!(covered, "no archived current run has an ok write_ingest row for every variant");
+    assert!(
+        covered,
+        "no archived current run has an ok write_ingest row for every variant"
+    );
 }
 
 #[test]

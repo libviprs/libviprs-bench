@@ -60,7 +60,11 @@ fn main() -> ExitCode {
         i += 1;
     }
     let path = out.unwrap_or_else(default_out);
-    eprintln!("pvec-sink: profile {}, writing {}", profile.label(), path.display());
+    eprintln!(
+        "pvec-sink: profile {}, writing {}",
+        profile.label(),
+        path.display()
+    );
     if !profile.publishable() {
         eprintln!("pvec-sink: the ci profile proves the harness runs; it is never published");
     }

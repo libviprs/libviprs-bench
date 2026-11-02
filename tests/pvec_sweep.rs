@@ -32,9 +32,16 @@ fn the_four_contenders_are_named_and_round_trip() {
 fn the_cells_are_the_a0_fixture_and_a_small_one_for_ci() {
     let a0 = ScanCell::a0();
     assert_eq!((a0.width, a0.height), (18_720, 13_240));
-    assert_eq!(a0.tiles(), 1_308, "512 px tiles, grid cells only (no Google padding)");
+    assert_eq!(
+        a0.tiles(),
+        1_308,
+        "512 px tiles, grid cells only (no Google padding)"
+    );
     assert_eq!(ScanCell::parse(&a0.spec()), Some(a0));
-    assert_eq!(ScanCell::parse(&ScanCell::ci().spec()), Some(ScanCell::ci()));
+    assert_eq!(
+        ScanCell::parse(&ScanCell::ci().spec()),
+        Some(ScanCell::ci())
+    );
     assert!(ScanCell::ci().tiles() > 1);
 }
 
@@ -49,8 +56,16 @@ fn ours_write_the_same_png_tiles_so_neither_has_a_codec_advantage() {
     let (pm_tiles, pv_tiles) = pvec_sweep::png_tiles_of(&pm_dir, &pv_dir, cell).unwrap();
     assert!(!pv_tiles.is_empty());
     for (key, bytes) in &pv_tiles {
-        assert_eq!(&bytes[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a], "{key:?}");
-        assert_eq!(pm_tiles.get(key), Some(bytes), "{key:?} differs between the sinks");
+        assert_eq!(
+            &bytes[..8],
+            &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a],
+            "{key:?}"
+        );
+        assert_eq!(
+            pm_tiles.get(key),
+            Some(bytes),
+            "{key:?} differs between the sinks"
+        );
     }
 }
 
@@ -66,7 +81,10 @@ fn an_attested_rep_reads_back_from_what_was_written_and_a_damaged_one_is_refused
         let file = dir.join(pvec_sweep::artifact_name(c));
         let bytes = std::fs::read(&file).unwrap();
         std::fs::write(&file, &bytes[..bytes.len() / 2]).unwrap();
-        assert!(pvec_sweep::attest(c, cell, &dir, &out).is_err(), "{c:?} accepted a truncated artifact");
+        assert!(
+            pvec_sweep::attest(c, cell, &dir, &out).is_err(),
+            "{c:?} accepted a truncated artifact"
+        );
     }
 }
 
@@ -74,8 +92,14 @@ fn an_attested_rep_reads_back_from_what_was_written_and_a_damaged_one_is_refused
 fn a_contender_whose_tool_is_missing_is_skipped_with_the_reason_not_dropped() {
     let r = pvec_sweep::Rival::locate_with(Contender::GdalCog, Some("/nonexistent/gdal_translate"));
     let why = r.unwrap_err();
-    assert!(why.contains("gdal_translate") && why.contains("BENCH_GDAL_TRANSLATE"), "{why}");
-    assert!(pvec_sweep::Rival::locate_with(Contender::Pvec, None).is_err_and(|e| e.contains("not external")));
+    assert!(
+        why.contains("gdal_translate") && why.contains("BENCH_GDAL_TRANSLATE"),
+        "{why}"
+    );
+    assert!(
+        pvec_sweep::Rival::locate_with(Contender::Pvec, None)
+            .is_err_and(|e| e.contains("not external"))
+    );
 }
 
 #[test]
@@ -88,8 +112,13 @@ fn a_ci_sweep_has_a_row_set_for_every_contender_with_host_and_arch_on_the_docume
         .env("STORAGE_ALLOW_DIRTY", "1")
         .output()
         .unwrap();
-    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
-    let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     let cells = json["cells"].as_array().unwrap();
     for c in Contender::ALL {
         let rows: Vec<_> = cells.iter().filter(|r| r["backend"] == c.label()).collect();
@@ -108,13 +137,23 @@ fn a_ci_sweep_has_a_row_set_for_every_contender_with_host_and_arch_on_the_docume
             }
         }
     }
-    let metrics: std::collections::BTreeSet<_> =
-        cells.iter().map(|r| r["metric"].as_str().unwrap().to_string()).collect();
+    let metrics: std::collections::BTreeSet<_> = cells
+        .iter()
+        .map(|r| r["metric"].as_str().unwrap().to_string())
+        .collect();
     for m in ["wall", "throughput", "peak_rss", "output_bytes"] {
         assert!(metrics.contains(m), "{m} is not published: {metrics:?}");
     }
-    assert!(json["provenance"]["arch"].as_str().is_some_and(|a| !a.is_empty()));
-    assert!(json["provenance"]["os"].as_str().is_some_and(|a| !a.is_empty()));
+    assert!(
+        json["provenance"]["arch"]
+            .as_str()
+            .is_some_and(|a| !a.is_empty())
+    );
+    assert!(
+        json["provenance"]["os"]
+            .as_str()
+            .is_some_and(|a| !a.is_empty())
+    );
     // The arm64 run is recorded as not done, never fudged.
     let notes = json["provenance"]["invocation"]["resolved"]["notRun"].to_string();
     assert!(notes.contains("arm64"), "{notes}");

@@ -61,7 +61,10 @@ fn streaming_and_mapreduce_record_a_psnr_against_the_monolithic_pyramid() {
     let rows = engines_rows("scored");
     for engine in ["streaming", "mapreduce"] {
         let psnr = psnr_of(&rows, engine).as_f64().unwrap_or_else(|| {
-            panic!("{engine} must carry equivalence_psnr_db, got {}", psnr_of(&rows, engine))
+            panic!(
+                "{engine} must carry equivalence_psnr_db, got {}",
+                psnr_of(&rows, engine)
+            )
         });
         assert!(
             psnr >= libviprs_bench::harness::MIN_TILE_PSNR_DB,

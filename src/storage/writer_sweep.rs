@@ -88,8 +88,8 @@ use super::document::{
     Measurement, MeasurementSpec, RUNNER, Reps,
 };
 use super::heap;
-use super::scenarios::{Direction, Isolation, MetricSpec, Outcome, Unit};
 use super::scenarios::write_split;
+use super::scenarios::{Direction, Isolation, MetricSpec, Outcome, Unit};
 use super::stats;
 use super::{Scratch, artefact_digest, now_iso, occupancy, raster, write_pyramid};
 
@@ -466,7 +466,9 @@ impl Mode {
 /// input. The variant is `-` for the two modes that have none.
 pub fn run_child(args: &[String]) -> i32 {
     let [variant, cell, mode, out, rest @ ..] = args else {
-        eprintln!("{SINGLE_FLAG} <variant|-> <cell> <engine|build|tileset|go> <out-dir> [extra...]");
+        eprintln!(
+            "{SINGLE_FLAG} <variant|-> <cell> <engine|build|tileset|go> <out-dir> [extra...]"
+        );
         return 2;
     };
     let (Some(cell), Some(mode)) = (SweepCell::parse(cell), Mode::parse(mode)) else {
@@ -744,7 +746,8 @@ pub fn attest_archive(
     cell: SweepCell,
     tiles_root: Option<&Path>,
 ) -> Result<(), String> {
-    let reader = Reader::try_open(archive).map_err(|e| format!("the archive does not open: {e}"))?;
+    let reader =
+        Reader::try_open(archive).map_err(|e| format!("the archive does not open: {e}"))?;
     let expected = cell.tiles();
     let addressed = reader.header().addressed_tiles_count;
     if addressed != expected {
@@ -764,7 +767,13 @@ pub fn attest_archive(
             let side = 1u32 << z;
             let mut rng = stats::Splitmix::new(SEED);
             (0..ATTEST_SAMPLE * 4)
-                .map(|_| (z, rng.below(side as usize) as u32, rng.below(side as usize) as u32))
+                .map(|_| {
+                    (
+                        z,
+                        rng.below(side as usize) as u32,
+                        rng.below(side as usize) as u32,
+                    )
+                })
                 .collect()
         }
     };
@@ -889,7 +898,11 @@ impl GoPmtiles {
             )
         })?;
         if !probe.status.success() {
-            return Err(format!("`{} version` exited {:?}", binary.display(), probe.status));
+            return Err(format!(
+                "`{} version` exited {:?}",
+                binary.display(),
+                probe.status
+            ));
         }
         let version = String::from_utf8_lossy(&probe.stdout)
             .lines()
@@ -1196,7 +1209,10 @@ fn sweep_cell(
         SweepCell::Real(_) => match make_tileset(exe, cell) {
             Ok(set) => Some(set),
             Err(e) => {
-                eprintln!("pmtiles-writer: the tile set for {} does not build: {e}", cell.spec());
+                eprintln!(
+                    "pmtiles-writer: the tile set for {} does not build: {e}",
+                    cell.spec()
+                );
                 return;
             }
         },
@@ -1266,7 +1282,10 @@ fn sweep_cell(
                 acc,
                 &[
                     (WALL, series(acc, |r| r.out.ingest_ms)),
-                    (HEAP_PEAK, series(acc, |r| r.out.ingest_heap.map(|b| b as f64))),
+                    (
+                        HEAP_PEAK,
+                        series(acc, |r| r.out.ingest_heap.map(|b| b as f64)),
+                    ),
                 ],
                 None,
             )
@@ -1276,7 +1295,10 @@ fn sweep_cell(
                 acc,
                 &[
                     (WALL, series(acc, |r| r.out.finalize_ms)),
-                    (HEAP_PEAK, series(acc, |r| r.out.finalize_heap.map(|b| b as f64))),
+                    (
+                        HEAP_PEAK,
+                        series(acc, |r| r.out.finalize_heap.map(|b| b as f64)),
+                    ),
                 ],
                 None,
             ))
@@ -1284,8 +1306,14 @@ fn sweep_cell(
                 &mk("write_output"),
                 acc,
                 &[
-                    (OUTPUT_BYTES, series(acc, |r| r.out.output_bytes.map(|b| b as f64))),
-                    (PEAK_RSS, series(acc, |r| r.out.peak_rss_bytes.map(|b| b as f64))),
+                    (
+                        OUTPUT_BYTES,
+                        series(acc, |r| r.out.output_bytes.map(|b| b as f64)),
+                    ),
+                    (
+                        PEAK_RSS,
+                        series(acc, |r| r.out.peak_rss_bytes.map(|b| b as f64)),
+                    ),
                 ],
                 None,
             )) {
@@ -1309,11 +1337,23 @@ fn sweep_cell(
         };
         let mut metrics = vec![
             (WALL, series(acc, |r| r.out.build_ms)),
-            (OUTPUT_BYTES, series(acc, |r| r.out.output_bytes.map(|b| b as f64))),
-            (PEAK_RSS, series(acc, |r| r.out.peak_rss_bytes.map(|b| b as f64))),
+            (
+                OUTPUT_BYTES,
+                series(acc, |r| r.out.output_bytes.map(|b| b as f64)),
+            ),
+            (
+                PEAK_RSS,
+                series(acc, |r| r.out.peak_rss_bytes.map(|b| b as f64)),
+            ),
         ];
         if matches!(contender, Contender::Ours(_)) {
-            metrics.insert(1, (HEAP_PEAK, series(acc, |r| r.out.heap_peak.map(|b| b as f64))));
+            metrics.insert(
+                1,
+                (
+                    HEAP_PEAK,
+                    series(acc, |r| r.out.heap_peak.map(|b| b as f64)),
+                ),
+            );
         }
         for row in rows_for(&spec, acc, &metrics, skipped) {
             doc.push(row);
@@ -1375,10 +1415,15 @@ fn child_rep(
     }
     let ran = run_child_process(exe, &args, &scratch.path().join("stderr.txt"));
     let load = worse(started_under, MachineLoad::sample());
-    let out = ran
-        .map_err(|e| format!("{} {} {}: {e}", variant.label(), cell.spec(), mode.as_str()))?;
+    let out =
+        ran.map_err(|e| format!("{} {} {}: {e}", variant.label(), cell.spec(), mode.as_str()))?;
     attest_archive(&out_dir.join("pyramid.pmtiles"), cell, tiles_root).map_err(|e| {
-        format!("attest {} {} {}: {e}", variant.label(), cell.spec(), mode.as_str())
+        format!(
+            "attest {} {} {}: {e}",
+            variant.label(),
+            cell.spec(),
+            mode.as_str()
+        )
     })?;
     Ok(RepResult { out, load })
 }
@@ -1434,7 +1479,10 @@ fn build_mbtiles(cell: SweepCell, tiles_root: Option<&Path>, out: &Path) -> Resu
     if !output.status.success() {
         return Err(format!(
             "the mbtiles builder failed: {}",
-            String::from_utf8_lossy(&output.stderr).lines().last().unwrap_or("")
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
         ));
     }
     Ok(())

@@ -33,8 +33,14 @@ fn test_image_carries_a_pinned_node_new_enough_for_package_json() {
 
 #[test]
 fn script_runs_cargo_test_inside_that_image() {
-    assert!(TEST_SCRIPT.contains("docker build"), "builds the test image");
-    assert!(TEST_SCRIPT.contains("docker run --rm"), "throw-away container");
+    assert!(
+        TEST_SCRIPT.contains("docker build"),
+        "builds the test image"
+    );
+    assert!(
+        TEST_SCRIPT.contains("docker run --rm"),
+        "throw-away container"
+    );
     assert!(TEST_SCRIPT.contains("cargo test"), "runs the suite");
     assert!(
         TEST_SCRIPT.contains("npm ci"),
