@@ -119,13 +119,18 @@ test('a work asymmetry over the tolerance stops the chart', () => {
  * holds the PMTiles writer sweep's documents (libviprs-bench #132), which share
  * the family and the envelope and measure something else, so "the last file" is
  * no longer the last storage sweep. */
-function latestStorageSweep() {
+function storageSweeps() {
   const dir = join(repo, 'archive', 'storage');
   const files = readdirSync(dir).filter((f) => f.endsWith('.json') && f !== 'index.json').sort();
   const documents = files.map((f) => JSON.parse(readFileSync(join(dir, f), 'utf8')));
   // `pvec-sink` is the PVec row: one scenario, four contenders, none of the read-side shapes below.
   const sweeps = documents.filter((d) => !['pmtiles-writer', 'pvec-sink'].includes(d.provenance?.invocation?.command));
   assert.ok(sweeps.length > 0, 'the archive holds a storage sweep');
+  return sweeps;
+}
+
+function latestStorageSweep() {
+  const sweeps = storageSweeps();
   return sweeps[sweeps.length - 1];
 }
 
@@ -217,7 +222,9 @@ test('a timer-saturated measurement is held out rather than charted as a latency
 });
 
 test('the archived run has rows of every unfit kind, so this is not a theoretical guard', () => {
-  const cells = latestStorageSweep().cells.filter((c) => c.outcome === 'ok');
+  // Across every archived sweep: a 28-core host oversubscribes nothing, so the latest run alone
+  // carries none of the rungs a six-core host declines, and the guard is about what the archive holds.
+  const cells = storageSweeps().flatMap((d) => d.cells).filter((c) => c.outcome === 'ok');
   assert.ok(cells.some((c) => c.timerSaturated), 'the archive carries timer-saturated rows');
   assert.ok(cells.some((c) => c.oversubscribed), 'and oversubscribed ones');
   assert.ok(cells.some((c) => c.confidence === 'low'), 'and low-confidence ones');

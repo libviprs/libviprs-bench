@@ -161,6 +161,32 @@
         "tiles_produced"
       ]
     },
+    "generate_ingest": {
+      "status": "non-comparable",
+      "reason": [
+        "generate_ingest and generate_finalize are the two halves of a generate, split so the cost of the",
+        "container's finish can be read on its own. A directory tree writes every tile at ingest and has",
+        "next to nothing left to do at finalize, while a PMTiles archive holds its tiles until finalize, so",
+        "a phase-by-phase wall-clock ordering restates where each backend does its work. The sum is what",
+        "`generate` charts as comparable; the halves are published beside it and held out of the race charts."
+      ],
+      "work": [
+        "tiles_produced"
+      ]
+    },
+    "generate_finalize": {
+      "status": "non-comparable",
+      "reason": [
+        "generate_ingest and generate_finalize are the two halves of a generate, split so the cost of the",
+        "container's finish can be read on its own. A directory tree writes every tile at ingest and has",
+        "next to nothing left to do at finalize, while a PMTiles archive holds its tiles until finalize, so",
+        "a phase-by-phase wall-clock ordering restates where each backend does its work. The sum is what",
+        "`generate` charts as comparable; the halves are published beside it and held out of the race charts."
+      ],
+      "work": [
+        "tiles_produced"
+      ]
+    },
     "write_ingest": {
       "status": "non-comparable",
       "reason": [
