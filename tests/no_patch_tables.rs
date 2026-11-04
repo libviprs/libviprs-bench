@@ -168,7 +168,11 @@ fn unexpected_patches(text: &str) -> Vec<(usize, String)> {
                 tables.push((index + 1, Vec::new()));
             }
         } else if in_crates_io {
-            tables.last_mut().expect("pushed with the header").1.push(line.to_string());
+            tables
+                .last_mut()
+                .expect("pushed with the header")
+                .1
+                .push(line.to_string());
         }
     }
 
@@ -369,25 +373,45 @@ fn issue_134_the_pdfium_render_fork_patch_is_allowed() {
 #[test]
 fn issue_134_any_other_crate_in_the_patch_table_still_fails() {
     let text = format!("{FORK_PATCH}serde = {{ path = \"f\" }}\n");
-    assert_eq!(unexpected_patches(&text).len(), 1, "only serde is unexpected");
+    assert_eq!(
+        unexpected_patches(&text).len(),
+        1,
+        "only serde is unexpected"
+    );
 }
 
 #[test]
 fn issue_134_pdfium_render_from_another_source_still_fails() {
     let text = "[package]\nname = \"x\"\n\n[patch.crates-io]\npdfium-render = { path = \"../pdfium-render\" }\n";
-    assert_eq!(unexpected_patches(text).len(), 1, "a path redirect is not the fork tag");
+    assert_eq!(
+        unexpected_patches(text).len(),
+        1,
+        "a path redirect is not the fork tag"
+    );
     let text = FORK_PATCH.replace("v0.9.4-viprs.1", "integration");
-    assert_eq!(unexpected_patches(&text).len(), 1, "a branch is not the pinned tag");
+    assert_eq!(
+        unexpected_patches(&text).len(),
+        1,
+        "a branch is not the pinned tag"
+    );
 }
 
 #[test]
 fn issue_134_another_patch_registry_still_fails() {
     let text = FORK_PATCH.replace("patch.crates-io", "patch.\"https://example.invalid\"");
-    assert_eq!(unexpected_patches(&text).len(), 1, "the allowlist is for crates-io only");
+    assert_eq!(
+        unexpected_patches(&text).len(),
+        1,
+        "the allowlist is for crates-io only"
+    );
 }
 
 #[test]
 fn issue_134_unused_patch_in_the_lockfile_still_fails() {
     let lock = "[[package]]\nname = \"x\"\n\n[[patch.unused]]\nname = \"pdfium-render\"\nsource = \"git+https://github.com/libviprs/pdfium-render?tag=v0.9.4-viprs.1\"\n";
-    assert_eq!(unused_patches(lock).len(), 1, "an allowlisted entry that cargo ignored is still inert");
+    assert_eq!(
+        unused_patches(lock).len(),
+        1,
+        "an allowlisted entry that cargo ignored is still inert"
+    );
 }

@@ -69,7 +69,8 @@ use super::heap;
 use super::scenarios::{Direction, Isolation, MetricSpec, Outcome, Unit};
 use super::stats;
 use super::writer_sweep::{
-    ChildReply, RepOut, env_f64, spawn_measured, tail, vm_hwm_bytes, wait_for_quiet, worse, worst_load,
+    ChildReply, RepOut, env_f64, spawn_measured, tail, vm_hwm_bytes, wait_for_quiet, worse,
+    worst_load,
 };
 use super::{Scratch, artefact_digest, now_iso, occupancy};
 
@@ -214,7 +215,9 @@ impl ScanCell {
         self.plan()
             .levels
             .iter()
-            .map(|l| u64::from(l.width.div_ceil(TILE_EDGE)) * u64::from(l.height.div_ceil(TILE_EDGE)))
+            .map(|l| {
+                u64::from(l.width.div_ceil(TILE_EDGE)) * u64::from(l.height.div_ceil(TILE_EDGE))
+            })
             .sum()
     }
 
@@ -297,7 +300,12 @@ impl Rival {
         };
         let binary = over
             .map(PathBuf::from)
-            .or_else(|| std::env::var(env).ok().filter(|v| !v.is_empty()).map(PathBuf::from))
+            .or_else(|| {
+                std::env::var(env)
+                    .ok()
+                    .filter(|v| !v.is_empty())
+                    .map(PathBuf::from)
+            })
             .unwrap_or_else(|| PathBuf::from(default));
         let out = Command::new(&binary).arg(flag).output().map_err(|e| {
             format!(
@@ -306,7 +314,11 @@ impl Rival {
             )
         })?;
         if !out.status.success() {
-            return Err(format!("`{} {flag}` exited {:?}", binary.display(), out.status));
+            return Err(format!(
+                "`{} {flag}` exited {:?}",
+                binary.display(),
+                out.status
+            ));
         }
         let version = String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -359,8 +371,14 @@ fn outline(w: u32, h: u32) -> PvecWriter {
     .expect("a manifest");
     let ring = Polyline::new(vec![
         Point2 { x: 0.0, y: 0.0 },
-        Point2 { x: f64::from(w), y: 0.0 },
-        Point2 { x: f64::from(w), y: f64::from(h) },
+        Point2 {
+            x: f64::from(w),
+            y: 0.0,
+        },
+        Point2 {
+            x: f64::from(w),
+            y: f64::from(h),
+        },
         Point2 { x: 0.0, y: 0.0 },
     ])
     .expect("an outline");
@@ -440,8 +458,23 @@ pub fn one_rep(
             let mut command = Command::new(binary);
             if c == Contender::GdalCog {
                 command
-                    .args(["-q", "-of", "COG", "-co", "BLOCKSIZE=512", "-co", "COMPRESS=DEFLATE"])
-                    .args(["-co", "PREDICTOR=2", "-co", "OVERVIEWS=AUTO", "-co", "NUM_THREADS=1"])
+                    .args([
+                        "-q",
+                        "-of",
+                        "COG",
+                        "-co",
+                        "BLOCKSIZE=512",
+                        "-co",
+                        "COMPRESS=DEFLATE",
+                    ])
+                    .args([
+                        "-co",
+                        "PREDICTOR=2",
+                        "-co",
+                        "OVERVIEWS=AUTO",
+                        "-co",
+                        "NUM_THREADS=1",
+                    ])
                     .arg(input)
                     .arg(&artifact);
             } else {
@@ -451,7 +484,14 @@ pub fn one_rep(
                     // The `.zip` in the name is what makes vips write a zip under that name; without it
                     // the file is called `pyramid` and nothing reads it as an archive.
                     .arg(&artifact)
-                    .args(["--container", "zip", "--suffix", ".png", "--tile-size", "512"])
+                    .args([
+                        "--container",
+                        "zip",
+                        "--suffix",
+                        ".png",
+                        "--tile-size",
+                        "512",
+                    ])
                     .args(["--overlap", "0", "--depth", "onetile", "--layout", "google"]);
             }
             let spawned = spawn_measured(&mut command, &out_dir.join("tool-stderr.txt"))?;
@@ -511,7 +551,10 @@ pub fn run_child(args: &[String]) -> i32 {
         }
         Err(e) => ChildReply::Err(e),
     };
-    println!("{}", serde_json::to_string(&reply).expect("a reply serialises"));
+    println!(
+        "{}",
+        serde_json::to_string(&reply).expect("a reply serialises")
+    );
     0
 }
 
@@ -573,10 +616,17 @@ pub fn png_tiles_of(
     pmtiles_dir: &Path,
     pvec_dir: &Path,
     cell: ScanCell,
-) -> Result<(BTreeMap<(u32, u32, u32), Vec<u8>>, BTreeMap<(u32, u32, u32), Vec<u8>>), String> {
+) -> Result<
+    (
+        BTreeMap<(u32, u32, u32), Vec<u8>>,
+        BTreeMap<(u32, u32, u32), Vec<u8>>,
+    ),
+    String,
+> {
     let archive = Reader::try_open(&pmtiles_dir.join(artifact_name(Contender::Pmtiles)))
         .map_err(|e| format!("the archive does not open: {e}"))?;
-    let bytes = std::fs::read(pvec_dir.join(artifact_name(Contender::Pvec))).map_err(|e| e.to_string())?;
+    let bytes =
+        std::fs::read(pvec_dir.join(artifact_name(Contender::Pvec))).map_err(|e| e.to_string())?;
     let reader = PvecReader::open(bytes).map_err(|e| format!("the artifact does not open: {e}"))?;
     let id = RasterId::new(0).map_err(|e| e.to_string())?;
     let (mut pm, mut pv) = (BTreeMap::new(), BTreeMap::new());
@@ -614,14 +664,17 @@ pub fn attest(c: Contender, cell: ScanCell, out_dir: &Path, _out: &RepOut) -> Re
     };
     match c {
         Contender::Pmtiles => {
-            let reader = Reader::try_open(&artifact).map_err(|e| format!("the archive does not open: {e}"))?;
+            let reader = Reader::try_open(&artifact)
+                .map_err(|e| format!("the archive does not open: {e}"))?;
             let grid = grid_coords(cell);
             let held = grid
                 .iter()
                 .filter(|(l, c, r)| reader.get_tile(*l as u8, *c, *r).ok().flatten().is_some())
                 .count() as u64;
             if held != expected {
-                return Err(format!("the archive holds {held} of the {expected} grid tiles"));
+                return Err(format!(
+                    "the archive holds {held} of the {expected} grid tiles"
+                ));
             }
             for (l, col, row) in sample(grid) {
                 let t = reader
@@ -633,7 +686,8 @@ pub fn attest(c: Contender, cell: ScanCell, out_dir: &Path, _out: &RepOut) -> Re
         }
         Contender::Pvec => {
             let bytes = std::fs::read(&artifact).map_err(|e| e.to_string())?;
-            let reader = PvecReader::open(bytes).map_err(|e| format!("the artifact does not open: {e}"))?;
+            let reader =
+                PvecReader::open(bytes).map_err(|e| format!("the artifact does not open: {e}"))?;
             let placements = reader.raster_placements().map_err(|e| e.to_string())?;
             let [p] = placements.as_slice() else {
                 return Err(format!("the artifact places {} rasters", placements.len()));
@@ -654,7 +708,9 @@ pub fn attest(c: Contender, cell: ScanCell, out_dir: &Path, _out: &RepOut) -> Re
                 }
             }
             if held != expected {
-                return Err(format!("the artifact holds {held} of the {expected} grid tiles"));
+                return Err(format!(
+                    "the artifact holds {held} of the {expected} grid tiles"
+                ));
             }
             for (l, col, row) in sample(grid) {
                 let t = reader
@@ -676,7 +732,10 @@ pub fn attest(c: Contender, cell: ScanCell, out_dir: &Path, _out: &RepOut) -> Re
                 .map_err(|e| format!("gdalinfo does not answer: {e}"))?;
             let size = (v["size"][0].as_u64(), v["size"][1].as_u64());
             if size != (Some(u64::from(cell.width)), Some(u64::from(cell.height))) {
-                return Err(format!("the file is {size:?}, not {}x{}", cell.width, cell.height));
+                return Err(format!(
+                    "the file is {size:?}, not {}x{}",
+                    cell.width, cell.height
+                ));
             }
             let overviews = v["bands"][0]["overviews"].as_array().map_or(0, Vec::len);
             if overviews != cell.levels() - 1 {
@@ -699,7 +758,9 @@ pub fn attest(c: Contender, cell: ScanCell, out_dir: &Path, _out: &RepOut) -> Re
                 .map_err(|_| "the zip does not list".to_string())?;
             let want = cell.vips_tiles();
             if pngs != want {
-                return Err(format!("the zip holds {pngs} PNG tiles and libvips's pyramid of this scan {want}"));
+                return Err(format!(
+                    "the zip holds {pngs} PNG tiles and libvips's pyramid of this scan {want}"
+                ));
             }
         }
     }
@@ -750,7 +811,9 @@ const OUTPUT_BYTES: MetricSpec = MetricSpec {
 fn agreed<T: Clone + PartialEq>(values: impl Iterator<Item = Option<T>>) -> Option<T> {
     let all: Vec<Option<T>> = values.collect();
     let first = all.first().cloned().flatten()?;
-    all.iter().all(|v| v.as_ref() == Some(&first)).then_some(first)
+    all.iter()
+        .all(|v| v.as_ref() == Some(&first))
+        .then_some(first)
 }
 
 /// Spawn this binary as one child repetition and read its reply.
@@ -778,7 +841,11 @@ fn child_rep(
     let scratch = Scratch::new(None).map_err(|e| format!("no scratch directory: {e}"))?;
     let started_under = wait_for_quiet();
     let out_dir = scratch.path().join("out");
-    let mut args = vec![c.label().to_string(), cell.spec(), out_dir.display().to_string()];
+    let mut args = vec![
+        c.label().to_string(),
+        cell.spec(),
+        out_dir.display().to_string(),
+    ];
     if let Some((rival, input)) = tool {
         args.push(rival.binary.display().to_string());
         args.push(input.display().to_string());
@@ -786,7 +853,8 @@ fn child_rep(
     let ran = run_child_process(exe, &args, &scratch.path().join("stderr.txt"));
     let load = worse(started_under, MachineLoad::sample());
     let out = ran.map_err(|e| format!("{} {}: {e}", c.label(), cell.spec()))?;
-    attest(c, cell, &out_dir, &out).map_err(|e| format!("attest {} {}: {e}", c.label(), cell.spec()))?;
+    attest(c, cell, &out_dir, &out)
+        .map_err(|e| format!("attest {} {}: {e}", c.label(), cell.spec()))?;
     Ok(RepResult { out, load })
 }
 
@@ -823,18 +891,29 @@ fn rows(
         }
     };
     let load = worst_load(acc.reps.iter().map(|r| r.load));
-    let series = |f: &dyn Fn(&RepResult) -> Option<f64>| -> Vec<f64> { acc.reps.iter().filter_map(f).collect() };
+    let series = |f: &dyn Fn(&RepResult) -> Option<f64>| -> Vec<f64> {
+        acc.reps.iter().filter_map(f).collect()
+    };
     let mut metrics = vec![
         (WALL, series(&|r| r.out.build_ms)),
         (
             THROUGHPUT,
             series(&|r| r.out.build_ms.map(|ms| cell.tiles() as f64 / (ms / 1000.0))),
         ),
-        (PEAK_RSS, series(&|r| r.out.peak_rss_bytes.map(|b| b as f64))),
-        (OUTPUT_BYTES, series(&|r| r.out.output_bytes.map(|b| b as f64))),
+        (
+            PEAK_RSS,
+            series(&|r| r.out.peak_rss_bytes.map(|b| b as f64)),
+        ),
+        (
+            OUTPUT_BYTES,
+            series(&|r| r.out.output_bytes.map(|b| b as f64)),
+        ),
     ];
     if matches!(c, Contender::Pmtiles | Contender::Pvec) {
-        metrics.insert(3, (HEAP_PEAK, series(&|r| r.out.heap_peak.map(|b| b as f64))));
+        metrics.insert(
+            3,
+            (HEAP_PEAK, series(&|r| r.out.heap_peak.map(|b| b as f64))),
+        );
     }
     metrics
         .into_iter()
@@ -908,14 +987,20 @@ pub fn run_sweep(profile: Profile) -> Document {
         eprintln!("pvec-sink: cell {}", cell.spec());
         // The scan the tools read, written once and untimed by a child.
         let input_dir = Scratch::new(None).ok();
-        let input: Result<PathBuf, String> = match (&input_dir, rivals.iter().any(|(_, r)| r.is_ok())) {
-            (_, false) => Err("no external tool is available to read a scan".to_string()),
-            (None, _) => Err("no scratch directory for the scan".to_string()),
-            (Some(dir), true) => {
-                let args = vec!["input".to_string(), cell.spec(), dir.path().display().to_string()];
-                run_child_process(&exe, &args, &dir.path().join("stderr.txt")).map(|_| dir.path().join(INPUT_NAME))
-            }
-        };
+        let input: Result<PathBuf, String> =
+            match (&input_dir, rivals.iter().any(|(_, r)| r.is_ok())) {
+                (_, false) => Err("no external tool is available to read a scan".to_string()),
+                (None, _) => Err("no scratch directory for the scan".to_string()),
+                (Some(dir), true) => {
+                    let args = vec![
+                        "input".to_string(),
+                        cell.spec(),
+                        dir.path().display().to_string(),
+                    ];
+                    run_child_process(&exe, &args, &dir.path().join("stderr.txt"))
+                        .map(|_| dir.path().join(INPUT_NAME))
+                }
+            };
         let mut accs: Vec<Accum> = Contender::ALL.iter().map(|_| Accum::default()).collect();
         for rep in 0..reps as usize {
             for k in 0..Contender::ALL.len() {
@@ -927,7 +1012,9 @@ pub fn run_sweep(profile: Profile) -> Document {
                     _ => {
                         let rival = rivals.iter().find(|(r, _)| *r == c).map(|(_, r)| r);
                         match (rival, &input) {
-                            (Some(Ok(rival)), Ok(input)) => child_rep(&exe, c, cell, Some((rival, input))),
+                            (Some(Ok(rival)), Ok(input)) => {
+                                child_rep(&exe, c, cell, Some((rival, input)))
+                            }
                             _ => continue,
                         }
                     }
