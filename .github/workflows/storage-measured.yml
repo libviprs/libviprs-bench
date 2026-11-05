@@ -31,9 +31,10 @@ name: Storage measured claims
 # from over half a pass to three percent of one and the split's own guard
 # refuses the cell as too small to reconcile on.
 
+# Optional, not a gate: no push or pull request triggers this, so nothing
+# waits on it. It runs nightly and on demand from the Actions tab, and a red
+# run is a note to look at, never a reason to hold a merge or a release.
 on:
-  push:
-    branches: ['**']
   schedule:
     - cron: '47 5 * * *'
   workflow_dispatch:
